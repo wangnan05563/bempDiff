@@ -35,3 +35,7 @@ tmp/
 
 # VS Code
 .vscode/
+
+# Large binary files (JDK toolchain, dist exe)
+prototype/toolchain/
+prototype/dist_exe/
