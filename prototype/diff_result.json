@@ -1,0 +1,32 @@
+{
+  "old": "sample_v1.war",
+  "new": "sample_v2.war",
+  "old_version": "5.0.1",
+  "new_version": "5.0.2",
+  "stats": {
+    "ADDED": 1,
+    "DELETED": 1,
+    "MODIFIED": 5,
+    "UNCHANGED": 1,
+    "internal_or_biz_changed": 6,
+    "jar_level_changed": 1
+  },
+  "diff": {
+    "ADDED": [
+      "WEB-INF/classes/com/internal/Add.class"
+    ],
+    "DELETED": [
+      "WEB-INF/classes/com/internal/Del.class"
+    ],
+    "MODIFIED": [
+      "META-INF/MANIFEST.MF",
+      "WEB-INF/classes/com/internal/A.class",
+      "WEB-INF/classes/com/internal/Cfg.properties",
+      "WEB-INF/lib/internal-core.jar/com/internal/B.class",
+      "WEB-INF/lib/third-party.jar"
+    ],
+    "UNCHANGED": [
+      "WEB-INF/lib/internal-core.jar/com/internal/Util.class"
+    ]
+  }
+}

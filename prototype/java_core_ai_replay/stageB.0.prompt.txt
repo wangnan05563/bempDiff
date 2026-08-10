@@ -1,0 +1,62 @@
+请对以下Java类改动做逐文件深读，返回 JSON：改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)。
+
+## 文件：org/apache/commons/lang3/AnnotationUtils$1.class
+```diff
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.AnnotationUtils
+   *  org.apache.commons.lang3.ClassUtils
+   *  org.apache.commons.lang3.builder.ToStringStyle
+   */
+  package org.apache.commons.lang3;
+  
+  import java.lang.annotation.Annotation;
+  import org.apache.commons.lang3.AnnotationUtils;
+  import org.apache.commons.lang3.ClassUtils;
+  import org.apache.commons.lang3.builder.ToStringStyle;
+  
+  /*
+   * Exception performing whole class analysis ignored.
+   */
+- static final class AnnotationUtils.1
++ class AnnotationUtils.1
+  extends ToStringStyle {
+      private static final long serialVersionUID = 1L;
+  
+      AnnotationUtils.1() {
+          this.setDefaultFullDetail(true);
+          this.setArrayContentDetail(true);
+          this.setUseClassName(true);
+          this.setUseShortClassName(true);
+          this.setUseIdentityHashCode(false);
+          this.setContentStart("(");
+          this.setContentEnd(")");
+          this.setFieldSeparator(", ");
+          this.setArrayStart("[");
+          this.setArrayEnd("]");
+      }
+  
+-     protected String getShortClassName(Class<?> cls) {
+-         for (Class iface : ClassUtils.getAllInterfaces(cls)) {
+-             if (!Annotation.class.isAssignableFrom(iface)) continue;
+-             return "@" + iface.getName();
+-         }
+-         return "";
+-     }
+- 
+      protected void appendDetail(StringBuffer buffer, String fieldName, Object value) {
+          if (value instanceof Annotation) {
+              value = AnnotationUtils.toString((Annotation)((Annotation)value));
+          }
+          super.appendDetail(buffer, fieldName, value);
+      }
++ 
++     protected String getShortClassName(Class<?> cls) {
++         return ClassUtils.getAllInterfaces(cls).stream().filter(Annotation.class::isAssignableFrom).findFirst().map(iface -> "@" + iface.getName()).orElse("");
++     }
+  }
+  
+
+```

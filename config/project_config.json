@@ -1,0 +1,67 @@
+{
+  "_meta": {
+    "file": "project_config.json",
+    "purpose": "BempDiff（票据系统WAR-JAR差异比对与智能分析工具）项目特定配置",
+    "version": "1.0.0",
+    "schema_version": "2.4.0",
+    "last_updated": "2026-08-09"
+  },
+  "project": {
+    "key": "bempdiff",
+    "name": "BempDiff - Package Comparison Tool",
+    "base_path": ".",
+    "description": "Java 桌面工具：WAR/JAR 差异比对与智能分析"
+  },
+  "business_constraints": {
+    "_description": "业务特定硬约束文件加载清单",
+    "load_files": []
+  },
+  "modules": {
+    "core": {
+      "path": "prototype/java_core/src",
+      "languages": ["java"],
+      "frameworks": [],
+      "layers": {
+        "model": "com/bempdiff/model",
+        "config": "com/bempdiff/config",
+        "parse": "com/bempdiff/parse",
+        "diff": "com/bempdiff/diff",
+        "decompile": "com/bempdiff/decompile",
+        "ai": "com/bempdiff/ai",
+        "export": "com/bempdiff/export",
+        "report": "com/bempdiff/report"
+      },
+      "exclude": ["demo_export", "demo_export/**", "__pycache__", ".git", "dist", "build"]
+    },
+    "ui": {
+      "path": "prototype/javafx_ui/src",
+      "languages": ["java"],
+      "frameworks": ["javafx"],
+      "layers": {
+        "ui": "com/bempdiff/ui"
+      },
+      "exclude": ["__pycache__", ".git", "dist", "build"]
+    }
+  },
+  "sonar_project_properties": {
+    "_description": "对应项目根目录 sonar-project.properties 文件的关键配置",
+    "projectKey": "bempdiff",
+    "sources": "prototype/java_core/src,prototype/javafx_ui/src",
+    "java_binaries": "prototype/java_core/out,prototype/javafx_ui/out"
+  },
+  "verify": {
+    "test_command": "javac -encoding UTF-8 -d nul -cp \"prototype/java_core/out;prototype/javafx_ui/out;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar;prototype/cfr.jar\" -sourcepath prototype/java_core/src;prototype/javafx_ui/src -Xlint:all 2>&1",
+    "test_commands": {
+      "core_compile": "javac -encoding UTF-8 -d nul -cp \"prototype/java_core/out;prototype/javafx_ui/out;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar;prototype/cfr.jar\" -sourcepath prototype/java_core/src;prototype/javafx_ui/src -Xlint:all 2>&1",
+      "main_verify": "java -cp \"prototype/java_core/out;prototype/javafx_ui/out;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar;prototype/cfr.jar\" com.bempdiff.Main 2>&1"
+    }
+  },
+  "report": {
+    "output_dir": "docs/sonar-reports/"
+  },
+  "quality_gate_baseline": {
+    "scan_date": "2026-08-09",
+    "open_issues_after_fix": 0,
+    "new_violations": 0
+  }
+}

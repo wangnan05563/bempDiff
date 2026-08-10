@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testResults version="1.2">
+<httpSample t="35254" it="0" lt="35243" ct="39" ts="1786269531138" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-1" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="36928" it="0" lt="36928" ct="4" ts="1786269531447" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-2" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="38933" it="0" lt="38933" ct="3" ts="1786269532491" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-4" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="38071" it="0" lt="38071" ct="7" ts="1786269534449" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-8" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="41038" it="0" lt="41038" ct="6" ts="1786269532982" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-5" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="42606" it="0" lt="42606" ct="3" ts="1786269531937" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-3" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="41618" it="0" lt="41618" ct="3" ts="1786269533939" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-7" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="41264" it="0" lt="41264" ct="4" ts="1786269535434" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-10" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="44561" it="0" lt="44561" ct="2" ts="1786269533439" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-6" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="47311" it="0" lt="47311" ct="4" ts="1786269535050" s="true" lb="ai_stageA" rc="200" rm="OK" tn="load10 1-9" dt="text" by="218" sby="353" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/ai/stageA?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="40621" it="0" lt="40621" ct="0" ts="1786269568392" s="true" lb="report" rc="200" rm="OK" tn="load10 1-2" dt="text" by="241" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="43963" it="0" lt="43963" ct="0" ts="1786269566408" s="true" lb="report" rc="200" rm="OK" tn="load10 1-1" dt="text" by="242" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="42456" it="0" lt="42456" ct="0" ts="1786269572521" s="true" lb="report" rc="200" rm="OK" tn="load10 1-8" dt="text" by="242" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="43849" it="0" lt="43849" ct="0" ts="1786269571428" s="true" lb="report" rc="200" rm="OK" tn="load10 1-4" dt="text" by="242" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="40598" it="0" lt="40598" ct="0" ts="1786269578004" s="true" lb="report" rc="200" rm="OK" tn="load10 1-6" dt="text" by="241" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="47002" it="0" lt="47002" ct="0" ts="1786269574022" s="true" lb="report" rc="200" rm="OK" tn="load10 1-5" dt="text" by="241" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="47132" it="0" lt="47132" ct="0" ts="1786269574544" s="true" lb="report" rc="200" rm="OK" tn="load10 1-3" dt="text" by="241" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="46844" it="0" lt="46844" ct="0" ts="1786269576699" s="true" lb="report" rc="200" rm="OK" tn="load10 1-10" dt="text" by="241" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="52523" it="0" lt="52523" ct="0" ts="1786269575558" s="true" lb="report" rc="200" rm="OK" tn="load10 1-7" dt="text" by="242" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="46933" it="0" lt="46933" ct="0" ts="1786269582361" s="true" lb="report" rc="200" rm="OK" tn="load10 1-9" dt="text" by="242" sby="350" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/report?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="43703" it="0" lt="43703" ct="15" ts="1786269609013" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-2" dt="text" by="262" sby="358" ng="10" na="10">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="46826" it="0" lt="46826" ct="2" ts="1786269610371" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-1" dt="text" by="261" sby="358" ng="9" na="9">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="45806" it="0" lt="45806" ct="3" ts="1786269615277" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-4" dt="text" by="262" sby="358" ng="8" na="8">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="46208" it="0" lt="46208" ct="3" ts="1786269614977" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-8" dt="text" by="262" sby="358" ng="7" na="7">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="42523" it="0" lt="42523" ct="2" ts="1786269621025" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-5" dt="text" by="262" sby="358" ng="6" na="6">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="42375" it="0" lt="42375" ct="3" ts="1786269621677" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-3" dt="text" by="262" sby="358" ng="5" na="5">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="45563" it="0" lt="45563" ct="2" ts="1786269618606" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-6" dt="text" by="261" sby="358" ng="4" na="4">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="41132" it="0" lt="41132" ct="2" ts="1786269623543" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-10" dt="text" by="262" sby="358" ng="3" na="3">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="37943" it="0" lt="37943" ct="4" ts="1786269628082" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-7" dt="text" by="262" sby="358" ng="2" na="2">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+<httpSample t="37131" it="0" lt="37131" ct="2" ts="1786269629296" s="true" lb="export_classes" rc="200" rm="OK" tn="load10 1-9" dt="text" by="261" sby="358" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/export/classes?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fsmall_real_v2.jar&amp;expandAll=true&amp;threads=4&amp;topK=8</java.net.URL>
+</httpSample>
+
+</testResults>

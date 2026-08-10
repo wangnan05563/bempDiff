@@ -1,0 +1,37 @@
+# Build outputs
+target/
+*.class
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+*.jar
+*.war
+*.exe
+
+# Build outputs
+dist/
+build/
+out/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+
+# IDEA
+.idea/
+*.iml
+
+# VS Code
+.vscode/

@@ -1,0 +1,2 @@
+﻿D:\code\otherProjects\18_comparePakage\prototype\toolchain\zulu21.52.15-ca-jdk21.0.12-win_x64\bin\java.exe -Dfile.encoding=UTF-8 -Xmx3g -XX:+FlightRecorder -XX:StartFlightRecording=disk=true,filename=logs/harness.jfr,maxsize=400m,settings=default -cp prototype/perf-harness/out;prototype/java_core/out;prototype/javafx_ui/out;prototype/cfr.jar;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar com.bempdiff.perf.Harness 18080
+len=555

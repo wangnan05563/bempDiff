@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testResults version="1.2">
+<httpSample t="203224" it="0" lt="203216" ct="52" ts="1786276356002" s="true" lb="decompile" rc="200" rm="OK" tn="conc 1-1" dt="text" by="256" sby="324" ng="2" na="2">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=8&amp;topK=60</java.net.URL>
+</httpSample>
+<httpSample t="207345" it="0" lt="207345" ct="2" ts="1786276356800" s="true" lb="decompile" rc="200" rm="OK" tn="conc 1-2" dt="text" by="256" sby="324" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=8&amp;topK=60</java.net.URL>
+</httpSample>
+
+</testResults>

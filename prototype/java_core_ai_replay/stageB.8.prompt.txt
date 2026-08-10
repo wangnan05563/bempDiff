@@ -1,0 +1,14 @@
+请对以下Java类改动做逐文件深读，返回 JSON：改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)。
+
+## 文件：org/apache/commons/lang3/CharRange$1.class
+```diff
+  /*
+   * Decompiled with CFR 0.152.
+   */
+  package org.apache.commons.lang3;
+  
+  static class CharRange.1 {
+  }
+  
+
+```

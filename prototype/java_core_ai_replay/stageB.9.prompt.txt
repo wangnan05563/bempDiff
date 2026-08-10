@@ -1,0 +1,112 @@
+请对以下Java类改动做逐文件深读，返回 JSON：改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)。
+
+## 文件：org/apache/commons/lang3/CharRange$CharacterIterator.class
+```diff
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.CharRange
+   */
+  package org.apache.commons.lang3;
+  
+  import java.util.Iterator;
+  import java.util.NoSuchElementException;
+  import org.apache.commons.lang3.CharRange;
+  
+  /*
+   * Exception performing whole class analysis ignored.
+   */
+- private static class CharRange.CharacterIterator
++ private static final class CharRange.CharacterIterator
+  implements Iterator<Character> {
+      private char current;
+      private final CharRange range;
+      private boolean hasNext;
+  
+      private CharRange.CharacterIterator(CharRange r) {
+          this.range = r;
+          this.hasNext = true;
+-         if (CharRange.access$100((CharRange)this.range)) {
+-             if (CharRange.access$200((CharRange)this.range) == '\u0000') {
+-                 if (CharRange.access$300((CharRange)this.range) == '\uffff') {
++         if (CharRange.access$000((CharRange)this.range)) {
++             if (CharRange.access$100((CharRange)this.range) == '\u0000') {
++                 if (CharRange.access$200((CharRange)this.range) == '\uffff') {
+                      this.hasNext = false;
+                  } else {
+-                     this.current = (char)(CharRange.access$300((CharRange)this.range) + '\u0001');
++                     this.current = (char)(CharRange.access$200((CharRange)this.range) + '\u0001');
+                  }
+              } else {
+                  this.current = '\u0000';
+              }
+          } else {
+-             this.current = CharRange.access$200((CharRange)this.range);
+-         }
+-     }
+- 
+-     private void prepareNext() {
+-         if (CharRange.access$100((CharRange)this.range)) {
+-             if (this.current == '\uffff') {
+-                 this.hasNext = false;
+-             } else if (this.current + '\u0001' == CharRange.access$200((CharRange)this.range)) {
+-                 if (CharRange.access$300((CharRange)this.range) == '\uffff') {
+-                     this.hasNext = false;
+-                 } else {
+-                     this.current = (char)(CharRange.access$300((CharRange)this.range) + '\u0001');
+-                 }
+-             } else {
+-                 this.current = (char)(this.current + '\u0001');
+-             }
+-         } else if (this.current < CharRange.access$300((CharRange)this.range)) {
+-             this.current = (char)(this.current + '\u0001');
+-         } else {
+-             this.hasNext = false;
++             this.current = CharRange.access$100((CharRange)this.range);
+          }
+      }
+  
+      @Override
+      public boolean hasNext() {
+          return this.hasNext;
+      }
+  
+      @Override
+      public Character next() {
+          if (!this.hasNext) {
+              throw new NoSuchElementException();
+          }
+          char cur = this.current;
+          this.prepareNext();
+          return Character.valueOf(cur);
+      }
+  
++     private void prepareNext() {
++         if (CharRange.access$000((CharRange)this.range)) {
++             if (this.current == '\uffff') {
++                 this.hasNext = false;
++             } else if (this.current + '\u0001' == CharRange.access$100((CharRange)this.range)) {
++                 if (CharRange.access$200((CharRange)this.range) == '\uffff') {
++                     this.hasNext = false;
++                 } else {
++                     this.current = (char)(CharRange.access$200((CharRange)this.range) + '\u0001');
++                 }
++             } else {
++                 this.current = (char)(this.current + '\u0001');
++             }
++         } else if (this.current < CharRange.access$200((CharRange)this.range)) {
++             this.current = (char)(this.current + '\u0001');
++         } else {
++             this.hasNext = false;
++         }
++     }
++ 
+      @Override
+      public void remove() {
+          throw new UnsupportedOperationException();
+      }
+  }
+  
+
+```

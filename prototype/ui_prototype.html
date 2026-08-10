@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>票据系统 WAR/JAR 差异比对与智能分析工具 · UI 原型 v2.0</title>
+<link rel="stylesheet" href="assets/bootstrap.min.css">
+<link rel="stylesheet" href="assets/bootstrap-icons.css">
+<style>
+  html,body{height:100%}
+  body{display:flex;flex-direction:column;font-size:13px}
+  .brand-mark{width:30px;height:30px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;background:var(--bs-primary);color:#fff}
+  .app-main{flex:1;min-height:0;display:flex}
+  .col-tree{width:300px;flex:none;display:flex;flex-direction:column;border-right:var(--bs-border-color) solid 1px}
+  .col-center{flex:1;min-width:0;display:flex;flex-direction:column}
+  .col-ai{width:370px;flex:none;display:flex;flex-direction:column;border-left:var(--bs-border-color) solid 1px}
+  .pane-head{display:flex;align-items:center;gap:.4rem;padding:.5rem .75rem;border-bottom:var(--bs-border-color) solid 1px;font-weight:600;background:var(--bs-tertiary-bg)}
+  .tree-scroll{overflow:auto;flex:1}
+  .grp-head{font-weight:600;color:var(--bs-secondary-color);background:var(--bs-tertiary-bg)}
+  .filebar{display:flex;align-items:center;gap:.5rem;padding:.5rem .75rem;border-bottom:var(--bs-border-color) solid 1px;background:var(--bs-tertiary-bg);font-size:12px}
+  .filebar .path{font-family:var(--bs-font-monospace)}
+  .diff-area{flex:1;min-height:0;overflow:auto;display:flex}
+  .diff-col{flex:1;min-width:0;overflow:auto;border-right:var(--bs-border-color) solid 1px}
+  .diff-col:last-child{border-right:0}
+  .colhead{position:sticky;top:0;z-index:2;padding:.35rem .75rem;font-weight:600;background:var(--bs-tertiary-bg);border-bottom:var(--bs-border-color) solid 1px}
+  .dl{display:flex;border-left:3px solid transparent;font-family:var(--bs-font-monospace);font-size:12px;line-height:1.5;white-space:pre}
+  .dl .ln{width:3rem;flex:none;color:var(--bs-secondary-color);text-align:right;padding-right:.6rem;user-select:none}
+  .dl.add{background:var(--bs-success-bg-subtle);border-left-color:var(--bs-success)}
+  .dl.del{background:var(--bs-danger-bg-subtle);border-left-color:var(--bs-danger)}
+  .center-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--bs-secondary-color);flex-direction:column;gap:.5rem;text-align:center;padding:2rem}
+  .center-empty .ico{font-size:2rem}
+  .ai-body{flex:1;overflow:auto;padding:.75rem}
+  .ai-card{border:var(--bs-border-color) solid 1px;border-radius:var(--bs-border-radius);padding:.75rem;margin-bottom:.75rem;background:var(--bs-body-bg)}
+  .ai-card h4{font-size:.95rem;margin:0 0 .4rem}
+  .kv{font-size:.8rem;color:var(--bs-secondary-color);margin:.2rem 0}
+  .kv b{color:var(--bs-body-color)}
+  ul.tight{margin:.4rem 0 0;padding-left:1.1rem;font-size:.85rem}
+  ul.tight li{margin:.2rem 0}
+  .note{border:var(--bs-border-color) solid 1px;background:var(--bs-tertiary-bg)}
+  .legend{display:flex;gap:.6rem;flex-wrap:wrap;font-size:.75rem;color:var(--bs-secondary-color);padding:.4rem .75rem;border-bottom:var(--bs-border-color) solid 1px}
+  .legend i{width:.55rem;height:.55rem;border-radius:2px;display:inline-block;margin-right:.25rem;vertical-align:middle}
+</style>
+</head>
+<body>
+
+<!-- ===== 顶部导航 ===== -->
+<nav class="navbar navbar-expand bg-body-tertiary border-bottom px-3 py-1">
+  <span class="brand-mark me-2"><i class="bi bi-box-seam-fill"></i></span>
+  <span class="navbar-brand mb-0 h6 me-2">票据系统 WAR/JAR 差异比对与智能分析工具</span>
+  <span class="badge text-bg-secondary">v2.0 原型</span>
+  <div class="d-flex align-items-center gap-3 ms-auto text-secondary" style="font-size:.75rem">
+    <span><i class="bi bi-pc-display"></i> 桌面端 · 双击 exe 即用 · 离线优先</span>
+    <button class="btn btn-outline-secondary btn-sm" id="themeToggle" onclick="toggleTheme()" title="切换浅色/深色">
+      <i class="bi bi-moon-stars" id="themeIcon"></i>
+    </button>
+  </div>
+</nav>
+
+<!-- ===== 工具条 ===== -->
+<div class="bg-light border-bottom px-3 py-2 d-flex flex-wrap align-items-end gap-2">
+  <div class="input-group input-group-sm" style="max-width:340px">
+    <span class="input-group-text">老包(生产)</span>
+    <input id="oldPath" class="form-control" value="sample_v1.war">
+    <button class="btn btn-outline-secondary" onclick="document.getElementById('oldPath').value=pick()"><i class="bi bi-folder2-open"></i></button>
+  </div>
+  <div class="input-group input-group-sm" style="max-width:340px">
+    <span class="input-group-text">新包(下发)</span>
+    <input id="newPath" class="form-control" value="sample_v2.war">
+    <button class="btn btn-outline-secondary" onclick="document.getElementById('newPath').value=pick()"><i class="bi bi-folder2-open"></i></button>
+  </div>
+  <button class="btn btn-primary btn-sm" onclick="runCompare()"><i class="bi bi-arrow-left-right"></i> 开始比对</button>
+  <div class="ms-auto d-flex gap-2">
+    <div class="dropdown">
+      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-file-earmark-arrow-down"></i> 导出</button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li><a class="dropdown-item" href="#" onclick="alert('导出 Markdown 报告（含差异树/改动明细/风险总结/Top-K 完整 diff）')"><i class="bi bi-filetype-md"></i> 导出报告</a></li>
+        <li><a class="dropdown-item" href="#" onclick="alert('导出差异 class / 差异 jar / 反编译源码 zip + 清单')"><i class="bi bi-box-seam"></i> 导出资产</a></li>
+      </ul>
+    </div>
+    <button class="btn btn-outline-secondary btn-sm" onclick="openCfg()"><i class="bi bi-gear"></i> 设置</button>
+  </div>
+</div>
+
+<!-- ===== 主体三栏 ===== -->
+<div class="app-main">
+
+  <!-- 左：差异文件树 -->
+  <div class="col-tree">
+    <div class="pane-head"><i class="bi bi-diagram-3"></i> 差异文件树
+      <span id="treeStat" class="ms-auto fw-normal" style="font-size:.75rem;color:var(--bs-secondary-color)"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--bs-success)"></i>新增</span>
+      <span><i style="background:var(--bs-danger)"></i>删除</span>
+      <span><i style="background:var(--bs-warning)"></i>修改</span>
+      <span><i style="background:var(--bs-secondary)"></i>未变</span>
+    </div>
+    <div class="btn-group btn-group-sm w-100 rounded-0" id="chips">
+      <button class="btn btn-outline-secondary active" data-f="all">全部</button>
+      <button class="btn btn-outline-secondary" data-f="A">新增 1</button>
+      <button class="btn btn-outline-secondary" data-f="D">删除 1</button>
+      <button class="btn btn-outline-secondary" data-f="M">修改 5</button>
+    </div>
+    <ul class="list-group list-group-flush tree-scroll" id="tree"></ul>
+  </div>
+
+  <!-- 中：双栏源码比对 -->
+  <div class="col-center">
+    <div class="filebar">
+      <i class="bi bi-file-earmark-code"></i>
+      <span class="path" id="curPath">未选择文件</span>
+      <span class="badge text-bg-secondary" id="curTag">—</span>
+      <span class="ms-auto text-secondary" style="font-size:.75rem">双栏源码比对（反编译引擎：CFR 0.152）</span>
+    </div>
+    <div class="diff-area" id="diffWrap">
+      <div class="center-empty">
+        <div class="ico"><i class="bi bi-columns-gap"></i></div>
+        <div>从左侧差异树选择一个 <b>修改/新增/删除</b> 的 class 查看双栏源码比对</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：智能分析 -->
+  <div class="col-ai">
+    <div class="pane-head"><i class="bi bi-cpu"></i> 智能分析</div>
+    <ul class="nav nav-tabs" id="aiTabs" role="tablist">
+      <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#t-file">单文件</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-global">全局汇总</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-break">破坏性</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-audit">审计</button></li>
+    </ul>
+    <div class="tab-content ai-body" id="aiBody">
+      <div class="tab-pane fade show active" id="t-file"></div>
+      <div class="tab-pane fade" id="t-global"></div>
+      <div class="tab-pane fade" id="t-break"></div>
+      <div class="tab-pane fade" id="t-audit"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 状态栏 ===== -->
+<footer class="bg-body-tertiary border-top px-3 py-1 d-flex gap-4" style="font-size:.75rem;color:var(--bs-secondary-color)">
+  <span>统计：新增 <b class="text-body">1</b> · 删除 <b class="text-body">1</b> · 修改 <b class="text-body">5</b> · 未变 <b class="text-body">1</b></span>
+  <span>业务码变更 <b class="text-body">6</b> · jar 级变更 <b class="text-body">1</b></span>
+  <span>反编译引擎 <b class="text-body">CFR 0.152</b></span>
+  <span>分析引擎 <b class="text-body" id="aiStat">本地模型</b></span>
+</footer>
+
+<!-- ===== 配置中心 Modal ===== -->
+<div class="modal fade" id="cfgModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title mb-0"><i class="bi bi-sliders"></i> 配置中心
+          <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">所有配置均在界面完成，无需改文件</small></h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="alert alert-warning d-flex gap-2 align-items-start m-3 mb-0 py-2" role="alert" style="font-size:.8rem">
+        <i class="bi bi-shield-lock fs-6"></i>
+        <div>金融合规：默认优先使用本地/私有化模型；选择公网模型时仅发送脱敏后的 diff 摘要，原始源码不出机。</div>
+      </div>
+      <div class="modal-body">
+        <ul class="nav nav-tabs mb-3" id="cfgTabs" role="tablist">
+          <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#c-ai">AI 服务</button></li>
+          <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#c-parse">解析与导出</button></li>
+          <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#c-ui">界面与高级</button></li>
+        </ul>
+        <div class="tab-content">
+          <!-- AI 服务 -->
+          <div class="tab-pane fade show active" id="c-ai">
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">模型厂商</label>
+              <div class="col-sm-9"><select class="form-select form-select-sm" id="cfgProvider" onchange="onProvider(this)">
+                <option>Ollama（本地/私有化，推荐）</option>
+                <option>OpenAI 兼容</option>
+                <option>通义千问 Qwen</option>
+                <option>DeepSeek</option>
+                <option>文心一言</option>
+                <option>自定义 OpenAI 兼容</option>
+              </select></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">Base URL</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" id="cfgUrl" value="http://127.0.0.1:11434/v1"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">API Key</label>
+              <div class="col-sm-9 input-group input-group-sm">
+                <input class="form-control" id="cfgKey" type="password" value="sk-local-xxxxxxxx" placeholder="本地模型可留空">
+                <button class="btn btn-outline-secondary" type="button" onclick="toggleKey()"><i class="bi bi-eye" id="eyeIcon"></i></button>
+                <button class="btn btn-outline-secondary" type="button" onclick="testConn()"><i class="bi bi-plug"></i> 连接测试</button>
+                <span class="text-success ms-2" id="connOk" style="display:none"><i class="bi bi-check-circle"></i> 已连通</span>
+              </div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">模型名称</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" id="cfgModel" value="qwen2.5-coder:14b"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">HTTP 代理</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" value="http://proxy.internal:8080" placeholder="企业网访问公网模型时使用"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">HTTPS 代理</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" placeholder="可选"></div>
+            </div>
+          </div>
+          <!-- 解析与导出 -->
+          <div class="tab-pane fade" id="c-parse">
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">内部包前缀</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" value="com.internal,com.bemp" placeholder="命中则按 L1 业务码展开 class"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">分层策略</label>
+              <div class="col-sm-9"><select class="form-select form-select-sm">
+                <option>L0 包级 + L1 业务码展开 + L2 三方仅 jar 级（推荐）</option>
+                <option>全部展开（含三方 class）</option>
+                <option>仅包级（不展开 class）</option>
+              </select></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">反编译引擎</label>
+              <div class="col-sm-9"><select class="form-select form-select-sm">
+                <option>CFR（随包内置）</option><option>Procyon</option><option>Quiltflower</option>
+              </select></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">报告格式</label>
+              <div class="col-sm-9"><select class="form-select form-select-sm">
+                <option>Markdown（默认）</option><option>HTML</option><option>PDF</option>
+              </select></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">Top-K 完整 diff</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" value="15" style="max-width:90px">
+                <span class="text-secondary ms-2" style="font-size:.75rem">报告中内嵌 Top-K 风险文件的完整源码 diff</span></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">资产导出</label>
+              <div class="col-sm-9"><select class="form-select form-select-sm">
+                <option>差异 class + 差异 jar + 反编译源码 zip</option>
+                <option>仅差异 class</option><option>仅反编译源码</option>
+              </select></div>
+            </div>
+          </div>
+          <!-- 界面与高级 -->
+          <div class="tab-pane fade" id="c-ui">
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">主题</label>
+              <div class="col-sm-9"><select class="form-select form-select-sm" id="cfgTheme" onchange="setTheme(this.value)">
+                <option value="light">浅色（默认）</option><option value="dark">深色</option>
+              </select></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">临时目录</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" value="%APP%/tmp" placeholder="大包流式解压目录"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm">忽略规则</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" value="*.SF,*.RSA,META-INF/*. MF" placeholder="逗号分隔"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary btn-sm" onclick="saveCfg()"><i class="bi bi-check-lg"></i> 保存配置</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="assets/bootstrap.bundle.min.js"></script>
+<script>
+// ---------- 样例数据（来自原型实测） ----------
+const TREE = [
+  {grp:"L0 包级"},
+  {p:"META-INF/MANIFEST.MF", s:"M", lay:"L0"},
+  {grp:"L1 业务码（内部 jar / WEB-INF/classes 展开）"},
+  {p:"WEB-INF/classes/com/internal/Add.class", s:"A", lay:"L1"},
+  {p:"WEB-INF/classes/com/internal/Del.class", s:"D", lay:"L1"},
+  {p:"WEB-INF/classes/com/internal/A.class", s:"M", lay:"L1"},
+  {p:"WEB-INF/classes/com/internal/Cfg.properties", s:"M", lay:"L1"},
+  {p:"WEB-INF/lib/internal-core.jar/com/internal/B.class", s:"M", lay:"L1"},
+  {p:"WEB-INF/lib/internal-core.jar/com/internal/Util.class", s:"U", lay:"L1"},
+  {grp:"L2 第三方依赖（仅 jar 级，可下钻）"},
+  {p:"WEB-INF/lib/third-party.jar", s:"M", lay:"L2", collapsed:true},
+];
+
+const SRC_V1 = `package com.internal;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+public class InvoiceService {
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999.99");
+
+    public String issue(String string, BigDecimal bigDecimal, List<String> list) {
+        if (bigDecimal == null || bigDecimal.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("金额必须大于0");
+        }
+        if (bigDecimal.compareTo(MAX_AMOUNT) > 0) {
+            throw new IllegalArgumentException("金额超限");
+        }
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("INV|").append(string).append("|").append(bigDecimal.toPlainString());
+        for (String string2 : list) {
+            stringBuilder.append("|").append(string2);
+        }
+        return stringBuilder.toString();
+    }
+
+    public boolean validate(String string) {
+        return string != null && string.startsWith("INV-");
+    }
+}`;
+
+const SRC_V2 = `package com.internal;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+public class InvoiceService {
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("9999999.99");
+    private static final BigDecimal TAX_RATE = new BigDecimal("0.13");
+
+    public String issue(String string, BigDecimal bigDecimal, List<String> list, BigDecimal bigDecimal2) {
+        if (bigDecimal == null || bigDecimal.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("金额必须大于0");
+        }
+        if (bigDecimal.compareTo(MAX_AMOUNT) > 0) {
+            throw new IllegalArgumentException("金额超限");
+        }
+        BigDecimal bigDecimal3 = bigDecimal2 == null ? TAX_RATE : bigDecimal2;
+        BigDecimal bigDecimal4 = bigDecimal.multiply(bigDecimal3).setScale(2, 4);
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("INV|").append(string).append("|").append(bigDecimal.toPlainString());
+        stringBuilder.append("|TAX|").append(bigDecimal4.toPlainString());
+        for (String string2 : list) {
+            stringBuilder.append("|").append(string2);
+        }
+        return stringBuilder.toString();
+    }
+
+    public boolean validate(String string, LocalDate localDate) {
+        if (string == null || !string.startsWith("INV-")) {
+            return false;
+        }
+        return localDate == null || !localDate.isBefore(LocalDate.now());
+    }
+}`;
+
+// ---------- 渲染文件树 ----------
+const STATUS = {A:{t:"新增",c:"text-bg-success"},D:{t:"删除",c:"text-bg-danger"},M:{t:"修改",c:"text-bg-warning"},U:{t:"未变",c:"text-bg-secondary"}};
+const treeEl = document.getElementById('tree');
+const aiBody = document.getElementById('aiBody');
+
+function renderTree(filter='all'){
+  treeEl.innerHTML='';
+  let shown=0;
+  TREE.forEach(n=>{
+    if(n.grp){
+      const li=document.createElement('li');
+      li.className='list-group-item grp-head py-1 px-2';
+      li.textContent=n.grp;
+      treeEl.appendChild(li); return;
+    }
+    if(filter!=='all' && n.s!==filter) return;
+    shown++;
+    const li=document.createElement('li');
+    li.className='list-group-item d-flex align-items-center gap-2 py-1 px-2';
+    li.dataset.path=n.p; li.style.cursor='pointer';
+    const st=STATUS[n.s];
+    li.innerHTML=`<span class="badge ${st.c}">${st.t}</span>`+
+                 `<span class="badge text-bg-light border">${n.lay}</span>`+
+                 `<span class="text-truncate">${n.p}</span>`;
+    li.onclick=()=>selectFile(n,li);
+    treeEl.appendChild(li);
+  });
+  document.getElementById('treeStat').textContent='显示 '+shown+' 项';
+}
+document.getElementById('chips').addEventListener('click',e=>{
+  if(!e.target.dataset.f) return;
+  document.querySelectorAll('#chips .btn').forEach(b=>b.classList.remove('active'));
+  e.target.classList.add('active');
+  renderTree(e.target.dataset.f);
+});
+
+// ---------- 选择文件 -> 双栏 diff ----------
+function selectFile(n,el){
+  document.querySelectorAll('#tree .list-group-item').forEach(x=>x.classList.remove('active'));
+  if(el) el.classList.add('active');
+  document.getElementById('curPath').textContent=n.p;
+  const tag=document.getElementById('curTag');
+  const st=STATUS[n.s];
+  tag.className='badge '+st.c; tag.textContent=st.t+' · '+n.lay;
+  const wrap=document.getElementById('diffWrap');
+  if(n.p.includes('InvoiceService')){ renderSideBySide(wrap,SRC_V1,SRC_V2); showFileAI(); return; }
+  if(n.s==='A'){ wrap.innerHTML=emptyState('bi-plus-circle','新增文件','新包独有，无旧版可比对；完整内容见反编译源码（右侧「单文件」页）。'); return; }
+  if(n.s==='D'){ wrap.innerHTML=emptyState('bi-dash-circle','删除文件','旧包存在、新包已移除，可能为破坏性变更（见右侧「破坏性」页）。'); return; }
+  if(n.lay==='L2'){ wrap.innerHTML=emptyState('bi-box-seam','jar 级变更','第三方依赖仅比对 jar 是否替换（默认不展开内部 class）。可右键「下钻」展开。'); return; }
+  wrap.innerHTML=emptyState('bi-file-earmark-code',(n.s==='M'?'修改':'未变')+' 的 '+(n.p.endsWith('.class')?'class（样例仅 InvoiceService 提供反编译）':'配置/资源'));
+}
+function emptyState(icon,title,sub){
+  return `<div class="center-empty"><div class="ico"><i class="bi ${icon}"></i></div>`+
+         `<div><b>${title}</b></div>`+(sub?`<div style="font-size:.8rem">${sub}</div>`:'')+`</div>`;
+}
+
+// LCS 双栏 diff
+function lcsDiff(a,b){
+  const n=a.length,m=b.length,dp=Array.from({length:n+1},()=>new Array(m+1).fill(0));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const L=[],R=[];let i=0,j=0;
+  while(i<n&&j<m){ if(a[i]===b[j]){L.push({t:'=',v:a[i]});R.push({t:'=',v:b[j]});i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){L.push({t:'-',v:a[i]});R.push(null);i++;}
+    else {L.push(null);R.push({t:'+',v:b[j]});j++;} }
+  while(i<n){L.push({t:'-',v:a[i]});R.push(null);i++;}
+  while(j<m){L.push(null);R.push({t:'+',v:b[j]});j++;}
+  return [L,R];
+}
+function renderSideBySide(wrap,oldS,newS){
+  const a=oldS.split('\n'),b=newS.split('\n');
+  const [L,R]=lcsDiff(a,b);
+  let lo=0,ln=0;
+  let html='<div class="diff-col"><div class="colhead d-flex align-items-center gap-2"><span class="badge text-bg-secondary">旧版 (v1)</span></div><div class="diff-lines">';
+  L.forEach(x=>{lo++; if(x){html+=`<div class="dl ${x.t==='-'?'del':''}"><span class="ln">${lo}</span>${esc(x.v)}</div>`;}else{html+=`<div class="dl"><span class="ln"></span></div>`;}});
+  html+='</div></div><div class="diff-col"><div class="colhead d-flex align-items-center gap-2"><span class="badge text-bg-secondary">新版 (v2)</span></div><div class="diff-lines">';
+  R.forEach(x=>{ln++; if(x){html+=`<div class="dl ${x.t==='+'?'add':''}"><span class="ln">${ln}</span>${esc(x.v)}</div>`;}else{html+=`<div class="dl"><span class="ln"></span></div>`;}});
+  html+='</div></div>';
+  wrap.innerHTML=html;
+}
+function esc(s){return (s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// ---------- 智能分析面板 ----------
+function renderAI(t){
+  if(t==='file') showFileAI();
+  else if(t==='global') document.getElementById('t-global').innerHTML=GLOBAL;
+  else if(t==='break') document.getElementById('t-break').innerHTML=BREAK;
+  else if(t==='audit') document.getElementById('t-audit').innerHTML=AUDIT;
+}
+document.getElementById('aiTabs').addEventListener('click',e=>{
+  if(!e.target.dataset.bsTarget) return;
+  renderAI(e.target.dataset.bsTarget.split('#t-')[1]);
+});
+function showFileAI(){ document.getElementById('t-file').innerHTML=FILE_AI; }
+const FILE_AI=`<div class="ai-card">
+  <h4>com.internal.InvoiceService <span class="badge text-bg-danger">高风险</span></h4>
+  <div class="kv"><b>变更类型：</b>方法签名变更 + 新增逻辑</div>
+  <div class="kv"><b>反编译引擎：</b>CFR 0.152（成功）</div>
+  <div class="kv"><b>改动意图：</b>开具接口引入税率计算，金额上限由 99.9万 提升到 999.9万；校验接口新增有效期判断。</div>
+  <div class="kv"><b>风险：</b>issue()/validate() 入参增加 → 所有调用方需同步改造，属<b>兼容性破坏性变更</b>。</div>
+  <ul class="tight"><li><b>测试要点：</b>开具金额=上限边界值（9999999.99）回归</li><li><b>测试要点：</b>含税率/不含税率两种调用路径</li><li><b>测试要点：</b>校验接口传入过期日期应返回 false</li><li><b>影响范围：</b>调用 issue/validate 的 7 个上游类（见全局汇总）</li></ul>
+  <button class="btn btn-outline-primary btn-sm w-100 mt-2" onclick="alert('阶段B：向模型发送该文件完整 diff 做逐文件深读')"><i class="bi bi-send"></i> 阶段B · 发送完整 diff 深读</button>
+</div>`;
+const GLOBAL=`<div class="ai-card">
+  <h4>整体结论 <span class="badge text-bg-danger">高</span></h4>
+  <div class="kv">本次升级以<b>业务接口扩容 + 税率能力</b>为主，含 1 处对外方法签名破坏性变更。</div>
+  <ul class="tight"><li>新增类 1（Add）· 删除类 1（Del，破坏性）</li><li>修改类 5，其中 1 个为对外 API 签名变更（InvoiceService）</li><li>第三方依赖 third-party.jar 被替换（jar 级，建议核对版本与 CVE）</li></ul>
+</div>
+<div class="ai-card">
+  <h4>影响范围（模型推断）</h4>
+  <ul class="tight"><li>InvoiceService.issue/validate 调用方 7 个类需回归</li><li>Cfg.properties 配置项可能新增税率相关 key</li><li>MAX_AMOUNT 阈值上调，涉及金额校验的账务逻辑需确认</li></ul>
+</div>
+<div class="ai-card">
+  <h4>测试要点汇总</h4>
+  <ul class="tight"><li>金额上限边界、税率计算精度（保留2位）</li><li>删除类 Del 的下游引用是否已清除</li><li>第三方 jar 替换后的兼容性冒烟</li></ul>
+  <button class="btn btn-outline-primary btn-sm w-100 mt-2" onclick="alert('阶段A：已基于差异摘要生成整体结论；阶段B 可对高/中风险文件深读')"><i class="bi bi-arrow-repeat"></i> 重新生成整体分析</button>
+</div>`;
+const BREAK=`<div class="ai-card">
+  <h4><i class="bi bi-exclamation-triangle text-danger"></i> 破坏性变更清单 <span class="badge text-bg-danger">2 项</span></h4>
+  <ul class="tight">
+    <li><b>删除：</b>WEB-INF/classes/com/internal/Del.class — 旧包存在、新包移除，对外 API 可能失效</li>
+    <li><b>签名变更：</b>InvoiceService.issue / validate 入参增加 — 旧调用方编译/运行不兼容</li>
+  </ul>
+  <div class="kv">建议：上线前确认下游系统已适配，并在发布说明中标注。</div>
+</div>`;
+const AUDIT=`<div class="ai-card">
+  <h4><i class="bi bi-journal-text"></i> 审计日志</h4>
+  <div class="kv">2026-08-07 14:32 · 用户 hspcadmin 比对 sample_v1.war → sample_v2.war</div>
+  <div class="kv">差异文件 8 个 · 反编译 2 个 class（CFR 0.152）</div>
+  <div class="kv">模型：本地 Ollama qwen2.5-coder:14b · <b>源码零外发</b></div>
+  <div class="kv">报告/资产导出：未执行（待用户操作）</div>
+</div>`;
+
+// ---------- 配置 Modal ----------
+let cfgModal;
+function openCfg(){ if(!cfgModal) cfgModal=new bootstrap.Modal('#cfgModal'); cfgModal.show(); }
+function closeCfg(){ if(cfgModal) cfgModal.hide(); }
+function toggleKey(){const k=document.getElementById('cfgKey');const e=document.getElementById('eyeIcon');if(k.type==='password'){k.type='text';e.className='bi bi-eye-slash';}else{k.type='password';e.className='bi bi-eye';}}
+function onProvider(s){
+  const v=s.value,url=document.getElementById('cfgUrl'),model=document.getElementById('cfgModel');
+  if(v.startsWith('Ollama')){url.value='http://127.0.0.1:11434/v1';model.value='qwen2.5-coder:14b';document.getElementById('aiStat').textContent='本地模型';}
+  else if(v.includes('OpenAI')){url.value='https://api.openai.com/v1';model.value='gpt-4o';document.getElementById('aiStat').textContent='公网·脱敏';}
+  else if(v.includes('通义')){url.value='https://dashscope.aliyuncs.com/compatible-mode/v1';model.value='qwen-max';document.getElementById('aiStat').textContent='公网·脱敏';}
+  else if(v.includes('DeepSeek')){url.value='https://api.deepseek.com/v1';model.value='deepseek-coder';document.getElementById('aiStat').textContent='公网·脱敏';}
+}
+function testConn(){document.getElementById('connOk').style.display='inline';}
+function saveCfg(){closeCfg();alert('配置已保存到本地加密存储（API Key 不落明文）');}
+
+// ---------- 主题 ----------
+function setTheme(t){
+  document.documentElement.setAttribute('data-bs-theme',t);
+  document.getElementById('themeIcon').className = t==='dark' ? 'bi bi-sun' : 'bi bi-moon-stars';
+  const sel=document.getElementById('cfgTheme'); if(sel) sel.value=t;
+}
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute('data-bs-theme');
+  setTheme(cur==='dark'?'light':'dark');
+}
+function pick(){ return prompt('输入包路径（样例）','sample_v2.war')||''; }
+
+// ---------- 开始比对 ----------
+function runCompare(){ renderTree('all'); selectFile(TREE.find(n=>n.p&&n.p.includes('InvoiceService')), treeEl.querySelector('.list-group-item')); renderAI('file'); }
+
+// init
+renderTree('all');
+</script>
+</body>
+</html>

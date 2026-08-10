@@ -1,0 +1,2 @@
+﻿orphan_cfr_killed=0
+done

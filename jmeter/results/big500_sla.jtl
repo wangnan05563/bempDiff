@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testResults version="1.2">
+<httpSample t="10591" it="0" lt="10586" ct="45" ts="1786269673700" s="true" lb="diff_big500" rc="200" rm="OK" tn="single 1-1" dt="text" by="227" sby="323" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/diff?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v2.jar&amp;expandAll=true</java.net.URL>
+</httpSample>
+<httpSample t="8691" it="0" lt="8691" ct="0" ts="1786269684298" s="true" lb="diff_big500" rc="200" rm="OK" tn="single 1-1" dt="text" by="226" sby="323" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/diff?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v2.jar&amp;expandAll=true</java.net.URL>
+</httpSample>
+<httpSample t="8622" it="0" lt="8622" ct="0" ts="1786269692999" s="true" lb="diff_big500" rc="200" rm="OK" tn="single 1-1" dt="text" by="226" sby="323" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/diff?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v2.jar&amp;expandAll=true</java.net.URL>
+</httpSample>
+<httpSample t="8521" it="0" lt="8521" ct="0" ts="1786269701621" s="true" lb="diff_big500" rc="200" rm="OK" tn="single 1-1" dt="text" by="226" sby="323" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/diff?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Ffixtures%2Fbig500_v2.jar&amp;expandAll=true</java.net.URL>
+</httpSample>
+
+</testResults>

@@ -1,0 +1,1122 @@
+你是 Java 票据系统升级的差异分析助手。下面是新/老两个构建包的差异清单，请据此评估整体风险等级(LOW/MEDIUM/HIGH)、影响范围、全局测试要点，并对每个改动文件给出初评风险(LOW/MEDIUM/HIGH)与一句话理由。以 JSON 返回。
+
+## 差异统计
+新增=63 删除=4 修改=345 未变=1
+
+## 改动文件与 diff 摘要（截断，最多 30 个）
+
+### META-INF/MANIFEST.MF (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### META-INF/NOTICE.txt (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### META-INF/maven/org.apache.commons/commons-lang3/pom.properties (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### META-INF/maven/org.apache.commons/commons-lang3/pom.xml (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/AnnotationUtils$1.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.AnnotationUtils
+   *  org.apache.commons.lang3.ClassUtils
+   *  org.apache.commons.lang3.builder.ToStringStyle
+   */
+  package org.apache.commons.lang3;
+  
+  import java.lang.annotation.Annotation;
+  import org.apache.commons.lang3.AnnotationUtils;
+  import org.apache.commons.lang3.ClassUtils;
+  import org.apache.commons.lang3.builder.ToStringStyle;
+  
+  /*
+   * Exception performing whole class analysis ignored.
+   */
+- static final class AnnotationUtils.1
++ class AnnotationUtils.1
+  extends ToStringStyle {
+      private static final long serialVersionUID = 1L;
+  
+      AnnotationUtils.1() {
+          this.setDefaultFullDetail(true);
+          this.setArrayContentDetail(true);
+          this.setUseClassName(true);
+          this.setUseShortClassName(true);
+          this.setUseIdentityHashCode(false);
+          this.setContentStart("(");
+          this.setContentEnd(")");
+          this.setFieldSeparator(", ");
+          this.setArrayStart("[");
+          this.setArrayEnd("]");
+      }
+  
+-     protected String getShortClassName(Class<?> cls) {
+-         for (Class iface : ClassUtils.getAllInterfaces(cls)) {
+-             if (!Annotation.class.isAssignableFrom(iface)) continue;
+-             return "@" + iface.getName();
+-         }
+-         return "";
+-     }
+- 
+      protected void appendDetail(StringBuffer buffer, String fieldName, Object value) {
+          if (value instanceof Annotation) {
+              value = AnnotationUtils.toString((Annotation)((Annotation)value));
+          }
+          super.appendDetail(buffer, fieldName, value);
+      }
++ 
++     protected String getShortClassName(Class<?> cls) {
++         return ClassUtils.getAllInterfaces(cls).stream().filter(Annotation.class::isAssignableFrom).findFirst().map(iface -> "@" + iface.getName()).orElse("");
++     }
+  }
+  
+
+### org/apache/commons/lang3/AnnotationUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
++  *  org.apache.commons.lang3.ObjectUtils
+   *  org.apache.commons.lang3.Validate
+   *  org.apache.commons.lang3.builder.ToStringBuilder
+   *  org.apache.commons.lang3.builder.ToStringStyle
++  *  org.apache.commons.lang3.exception.UncheckedException
+   */
+  package org.apache.commons.lang3;
+  
+  import java.lang.annotation.Annotation;
+- import java.lang.reflect.InvocationTargetException;
+  import java.lang.reflect.Method;
+  import java.util.Arrays;
++ import org.apache.commons.lang3.ObjectUtils;
+  import org.apache.commons.lang3.Validate;
+  import org.apache.commons.lang3.builder.ToStringBuilder;
+  import org.apache.commons.lang3.builder.ToStringStyle;
++ import org.apache.commons.lang3.exception.UncheckedException;
+  
+  public class AnnotationUtils {
+      private static final ToStringStyle TO_STRING_STYLE = new /* Unavailable Anonymous Inner Class!! */;
+  
++     private static boolean annotationArrayMemberEquals(Annotation[] a1, Annotation[] a2) {
++         if (a1.length != a2.length) {
++             return false;
++         }
++         for (int i = 0; i < a1.length; ++i) {
++             if (AnnotationUtils.equals(a1[i], a2[i])) continue;
++             return false;
++         }
++         return true;
++     }
++ 
++     private static boolean arrayMemberEquals(Class<?> componentType, Object o1, Object o2) {
++         if (componentType.isAnnotation()) {
++             return AnnotationUtils.annotationArrayMemberEquals((Annotation[])o1, (Annotation[])o2);
++         }
++         if (componentType.equals(Byte.TYPE)) {
++             return Arrays.equals((byte[])o1, (byte[])o2);
++         }
++         if (componentType.equals(Short.TYPE)) {
++             return Arrays.equals((short[])o1, (short[])o2);
++         }
++         if (componentType.equals(Integer.TYPE)) {
++             return Arrays.equals((int[])o1, (int[])o2);
++         }
++         if (componentType.equals(Character.TYPE)) {
++             return Arrays.equals((char[])o1, (char[])o2);
++         }
++         if (componentType.equals(Long.TYPE)) {
++             return Arrays.equals((long[])o1, (long[])o2);
++         }
++         if (componentType.equals(Float.TYPE)) {
++             return Arrays.equals((float[])o1, (float[])o2);
++         }
++         if (componentType.equals(Double.TYPE)) {
++             return Arrays.equals((double[])o1, (double[])o2);
++         }
++         if (componentType.equals(Boolean.TYPE)) {
++             return Arrays.equals((boolean[])o1, (boolean[])o2);
++         }
++         return Arrays.equals((Object[])o1, (Object[])o2);
++     }
++ 
++     private static int arrayMemberHash(Class<?> componentType, Object o) {
++         if (componentType.equals(Byte.TYPE)) {
++             return Arrays.hashCode((byte[])o);
++         }
++         if (componentType.equals(Short.TYPE)) {
++             return Arrays.hashCode((short[])o);
++         }
++         if (componentType.equals(Integer.TYPE)) {
++             return Arrays.hashCode((int[])o);
++         }
++         if (componentType.equals(Character.TYPE)) {
++             return Arrays.hashCode((char[])o);
++         }
+... (截断，共 292 行)
+
+### org/apache/commons/lang3/ArchUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+-  *  org.apache.commons.lang3.SystemUtils
++  *  org.apache.commons.lang3.SystemProperties
+   *  org.apache.commons.lang3.arch.Processor
+   *  org.apache.commons.lang3.arch.Processor$Arch
+   *  org.apache.commons.lang3.arch.Processor$Type
++  *  org.apache.commons.lang3.stream.Streams
+   */
+  package org.apache.commons.lang3;
+  
+  import java.util.HashMap;
+  import java.util.Map;
+- import java.util.stream.Stream;
+- import org.apache.commons.lang3.SystemUtils;
++ import org.apache.commons.lang3.SystemProperties;
+  import org.apache.commons.lang3.arch.Processor;
++ import org.apache.commons.lang3.stream.Streams;
+  
+  public class ArchUtils {
+      private static final Map<String, Processor> ARCH_TO_PROCESSOR = new HashMap<String, Processor>();
+  
++     private static void addProcessor(String key, Processor processor) {
++         if (ARCH_TO_PROCESSOR.containsKey(key)) {
++             throw new IllegalStateException("Key " + key + " already exists in processor map");
++         }
++         ARCH_TO_PROCESSOR.put(key, processor);
++     }
++ 
++     private static void addProcessors(Processor processor, String ... keys) {
++         Streams.of((Object[])keys).forEach(e -> ArchUtils.addProcessor(e, processor));
++     }
++ 
++     public static Processor getProcessor() {
++         return ArchUtils.getProcessor(SystemProperties.getOsArch());
++     }
++ 
++     public static Processor getProcessor(String value) {
++         return ARCH_TO_PROCESSOR.get(value);
++     }
++ 
+      private static void init() {
+          ArchUtils.init_X86_32Bit();
+          ArchUtils.init_X86_64Bit();
+          ArchUtils.init_IA64_32Bit();
+          ArchUtils.init_IA64_64Bit();
+          ArchUtils.init_PPC_32Bit();
+          ArchUtils.init_PPC_64Bit();
+-     }
+- 
+-     private static void init_X86_32Bit() {
+-         Processor processor = new Processor(Processor.Arch.BIT_32, Processor.Type.X86);
+-         ArchUtils.addProcessors(processor, "x86", "i386", "i486", "i586", "i686", "pentium");
++         ArchUtils.init_Aarch_64Bit();
++         ArchUtils.init_RISCV_32Bit();
++         ArchUtils.init_RISCV_64Bit();
+      }
+  
+-     private static void init_X86_64Bit() {
+-         Processor processor = new Processor(Processor.Arch.BIT_64, Processor.Type.X86);
+-         ArchUtils.addProcessors(processor, "x86_64", "amd64", "em64t", "universal");
++     private static void init_Aarch_64Bit() {
++         ArchUtils.addProcessors(new Processor(Processor.Arch.BIT_64, Processor.Type.AARCH_64), "aarch64");
+      }
+  
+      private static void init_IA64_32Bit() {
+-         Processor processor = new Processor(Processor.Arch.BIT_32, Processor.Type.IA_64);
+-         ArchUtils.addProcessors(processor, "ia64_32", "ia64n");
++         ArchUtils.addProcessors(new Processor(Processor.Arch.BIT_32, Processor.Type.IA_64), "ia64_32", "ia64n");
+      }
+  
+      private static void init_IA64_64Bit() {
+-         Processor processor = new Processor(Processor.Arch.BIT_64, Processor.Type.IA_64);
+-         ArchUtils.addProcessors(processor, "ia64", "ia64w");
++         ArchUtils.addProcessors(new Processor(Processor.Arch.BIT_64, Processor.Type.IA_64), "ia64", "ia64w");
+      }
+  
+      private static void init_PPC_32Bit() {
+... (截断，共 123 行)
+
+### org/apache/commons/lang3/ArraySorter.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   */
+  package org.apache.commons.lang3;
+  
+  import java.util.Arrays;
+  import java.util.Comparator;
+  
+  public class ArraySorter {
+      public static byte[] sort(byte[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static char[] sort(char[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static double[] sort(double[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static float[] sort(float[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static int[] sort(int[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static long[] sort(long[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static short[] sort(short[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static <T> T[] sort(T[] array) {
+          Arrays.sort(array);
+          return array;
+      }
+  
+      public static <T> T[] sort(T[] array, Comparator<? super T> comparator) {
+          Arrays.sort(array, comparator);
+          return array;
+      }
+  }
+  
+
+### org/apache/commons/lang3/ArrayUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.ArraySorter
+   *  org.apache.commons.lang3.BooleanUtils
+   *  org.apache.commons.lang3.CharUtils
+   *  org.apache.commons.lang3.ClassUtils
++  *  org.apache.commons.lang3.ObjectUtils
+   *  org.apache.commons.lang3.builder.EqualsBuilder
+   *  org.apache.commons.lang3.builder.HashCodeBuilder
+   *  org.apache.commons.lang3.builder.ToStringBuilder
+   *  org.apache.commons.lang3.builder.ToStringStyle
+   *  org.apache.commons.lang3.math.NumberUtils
+   *  org.apache.commons.lang3.mutable.MutableInt
++  *  org.apache.commons.lang3.stream.Streams
+   */
+  package org.apache.commons.lang3;
+  
+  import java.lang.reflect.Array;
+  import java.lang.reflect.Field;
+  import java.lang.reflect.Method;
+  import java.lang.reflect.Type;
++ import java.util.Arrays;
+  import java.util.BitSet;
+  import java.util.Comparator;
+  import java.util.HashMap;
+  import java.util.Map;
++ import java.util.Objects;
+  import java.util.Random;
++ import java.util.concurrent.ThreadLocalRandom;
++ import java.util.function.IntFunction;
++ import java.util.function.Supplier;
+  import org.apache.commons.lang3.ArraySorter;
+  import org.apache.commons.lang3.BooleanUtils;
+  import org.apache.commons.lang3.CharUtils;
+  import org.apache.commons.lang3.ClassUtils;
++ import org.apache.commons.lang3.ObjectUtils;
+  import org.apache.commons.lang3.builder.EqualsBuilder;
+  import org.apache.commons.lang3.builder.HashCodeBuilder;
+  import org.apache.commons.lang3.builder.ToStringBuilder;
+  import org.apache.commons.lang3.builder.ToStringStyle;
+  import org.apache.commons.lang3.math.NumberUtils;
+  import org.apache.commons.lang3.mutable.MutableInt;
++ import org.apache.commons.lang3.stream.Streams;
+  
+  public class ArrayUtils {
+      public static final boolean[] EMPTY_BOOLEAN_ARRAY = new boolean[0];
+      public static final Boolean[] EMPTY_BOOLEAN_OBJECT_ARRAY = new Boolean[0];
+      public static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
+      public static final Byte[] EMPTY_BYTE_OBJECT_ARRAY = new Byte[0];
+      public static final char[] EMPTY_CHAR_ARRAY = new char[0];
+      public static final Character[] EMPTY_CHARACTER_OBJECT_ARRAY = new Character[0];
+      public static final Class<?>[] EMPTY_CLASS_ARRAY = new Class[0];
+      public static final double[] EMPTY_DOUBLE_ARRAY = new double[0];
+      public static final Double[] EMPTY_DOUBLE_OBJECT_ARRAY = new Double[0];
+      public static final Field[] EMPTY_FIELD_ARRAY = new Field[0];
+      public static final float[] EMPTY_FLOAT_ARRAY = new float[0];
+      public static final Float[] EMPTY_FLOAT_OBJECT_ARRAY = new Float[0];
+      public static final int[] EMPTY_INT_ARRAY = new int[0];
+      public static final Integer[] EMPTY_INTEGER_OBJECT_ARRAY = new Integer[0];
+      public static final long[] EMPTY_LONG_ARRAY = new long[0];
+      public static final Long[] EMPTY_LONG_OBJECT_ARRAY = new Long[0];
+      public static final Method[] EMPTY_METHOD_ARRAY = new Method[0];
+      public static final Object[] EMPTY_OBJECT_ARRAY = new Object[0];
+      public static final short[] EMPTY_SHORT_ARRAY = new short[0];
+      public static final Short[] EMPTY_SHORT_OBJECT_ARRAY = new Short[0];
+      public static final String[] EMPTY_STRING_ARRAY = new String[0];
+      public static final Throwable[] EMPTY_THROWABLE_ARRAY = new Throwable[0];
+      public static final Type[] EMPTY_TYPE_ARRAY = new Type[0];
+      public static final int INDEX_NOT_FOUND = -1;
+  
+      public static boolean[] add(boolean[] array, boolean element) {
+          boolean[] newArray = (boolean[])ArrayUtils.copyArrayGrow1(array, Boolean.TYPE);
+          newArray[newArray.length - 1] = element;
+          return newArray;
+      }
+  
+      @Deprecated
+      public static boolean[] add(boolean[] array, int index, boolean element) {
+... (截断，共 4055 行)
+
+### org/apache/commons/lang3/BitField.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   */
+  package org.apache.commons.lang3;
+  
+  public class BitField {
+-     private final int _mask;
+-     private final int _shift_count;
++     private final int mask;
++     private final int shiftCount;
+  
+      public BitField(int mask) {
+-         this._mask = mask;
+-         this._shift_count = mask == 0 ? 0 : Integer.numberOfTrailingZeros(mask);
++         this.mask = mask;
++         this.shiftCount = mask == 0 ? 0 : Integer.numberOfTrailingZeros(mask);
+      }
+  
+-     public int getValue(int holder) {
+-         return this.getRawValue(holder) >> this._shift_count;
++     public int clear(int holder) {
++         return holder & ~this.mask;
+      }
+  
+-     public short getShortValue(short holder) {
+-         return (short)this.getValue(holder);
++     public byte clearByte(byte holder) {
++         return (byte)this.clear(holder);
+      }
+  
++     public short clearShort(short holder) {
++         return (short)this.clear(holder);
++     }
++ 
+      public int getRawValue(int holder) {
+-         return holder & this._mask;
++         return holder & this.mask;
+      }
+  
+      public short getShortRawValue(short holder) {
+          return (short)this.getRawValue(holder);
+      }
+  
+-     public boolean isSet(int holder) {
+-         return (holder & this._mask) != 0;
++     public short getShortValue(short holder) {
++         return (short)this.getValue(holder);
+      }
+  
+-     public boolean isAllSet(int holder) {
+-         return (holder & this._mask) == this._mask;
++     public int getValue(int holder) {
++         return this.getRawValue(holder) >> this.shiftCount;
+      }
+  
+-     public int setValue(int holder, int value) {
+-         return holder & ~this._mask | value << this._shift_count & this._mask;
++     public boolean isAllSet(int holder) {
++         return (holder & this.mask) == this.mask;
+      }
+  
+-     public short setShortValue(short holder, short value) {
+-         return (short)this.setValue(holder, value);
++     public boolean isSet(int holder) {
++         return (holder & this.mask) != 0;
+      }
+  
+-     public int clear(int holder) {
+-         return holder & ~this._mask;
++     public int set(int holder) {
++         return holder | this.mask;
+      }
+  
+-     public short clearShort(short holder) {
+-         return (short)this.clear(holder);
++     public int setBoolean(int holder, boolean flag) {
++         return flag ? this.set(holder) : this.clear(holder);
+      }
+  
+-     public byte clearByte(byte holder) {
+... (截断，共 118 行)
+
+### org/apache/commons/lang3/BooleanUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.ArrayUtils
+   *  org.apache.commons.lang3.ObjectUtils
+   *  org.apache.commons.lang3.math.NumberUtils
+   */
+  package org.apache.commons.lang3;
+  
++ import java.util.Arrays;
++ import java.util.Collections;
++ import java.util.List;
++ import java.util.function.Consumer;
+  import org.apache.commons.lang3.ArrayUtils;
+  import org.apache.commons.lang3.ObjectUtils;
+  import org.apache.commons.lang3.math.NumberUtils;
+  
+  public class BooleanUtils {
++     private static final List<Boolean> BOOLEAN_LIST = Collections.unmodifiableList(Arrays.asList(Boolean.FALSE, Boolean.TRUE));
+      public static final String FALSE = "false";
+      public static final String NO = "no";
+      public static final String OFF = "off";
+      public static final String ON = "on";
+      public static final String TRUE = "true";
+      public static final String YES = "yes";
+  
+      public static boolean and(boolean ... array) {
+          ObjectUtils.requireNonEmpty((Object)array, (String)"array");
+          for (boolean element : array) {
+              if (element) continue;
+              return false;
+          }
+          return true;
+      }
+  
+      public static Boolean and(Boolean ... array) {
+          ObjectUtils.requireNonEmpty((Object)array, (String)"array");
+-         try {
+-             boolean[] primitive = ArrayUtils.toPrimitive((Boolean[])array);
+-             return BooleanUtils.and(primitive) ? Boolean.TRUE : Boolean.FALSE;
+-         }
+-         catch (NullPointerException ex) {
+-             throw new IllegalArgumentException("The array must not contain any null elements");
+-         }
++         return BooleanUtils.and(ArrayUtils.toPrimitive((Boolean[])array)) ? Boolean.TRUE : Boolean.FALSE;
+      }
+  
+      public static Boolean[] booleanValues() {
+          return new Boolean[]{Boolean.FALSE, Boolean.TRUE};
+      }
+  
+      public static int compare(boolean x, boolean y) {
+          if (x == y) {
+              return 0;
+          }
+          return x ? 1 : -1;
+      }
+  
++     public static void forEach(Consumer<Boolean> action) {
++         BooleanUtils.values().forEach(action);
++     }
++ 
+      public static boolean isFalse(Boolean bool) {
+          return Boolean.FALSE.equals(bool);
+      }
+  
+      public static boolean isNotFalse(Boolean bool) {
+          return !BooleanUtils.isFalse(bool);
+      }
+  
+      public static boolean isNotTrue(Boolean bool) {
+          return !BooleanUtils.isTrue(bool);
+      }
+  
+      public static boolean isTrue(Boolean bool) {
+          return Boolean.TRUE.equals(bool);
+      }
+  
+      public static Boolean negate(Boolean bool) {
+... (截断，共 422 行)
+
+### org/apache/commons/lang3/CharEncoding.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   */
+  package org.apache.commons.lang3;
+  
+  import java.nio.charset.Charset;
+  import java.nio.charset.IllegalCharsetNameException;
+  
+  @Deprecated
+  public class CharEncoding {
+      public static final String ISO_8859_1 = "ISO-8859-1";
+      public static final String US_ASCII = "US-ASCII";
+      public static final String UTF_16 = "UTF-16";
+      public static final String UTF_16BE = "UTF-16BE";
+      public static final String UTF_16LE = "UTF-16LE";
+      public static final String UTF_8 = "UTF-8";
+  
+      @Deprecated
+      public static boolean isSupported(String name) {
+          if (name == null) {
+              return false;
+          }
+          try {
+              return Charset.isSupported(name);
+          }
+          catch (IllegalCharsetNameException ex) {
+              return false;
+          }
+      }
+  }
+  
+
+### org/apache/commons/lang3/CharRange$1.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   */
+  package org.apache.commons.lang3;
+  
+  static class CharRange.1 {
+  }
+  
+
+### org/apache/commons/lang3/CharRange$CharacterIterator.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.CharRange
+   */
+  package org.apache.commons.lang3;
+  
+  import java.util.Iterator;
+  import java.util.NoSuchElementException;
+  import org.apache.commons.lang3.CharRange;
+  
+  /*
+   * Exception performing whole class analysis ignored.
+   */
+- private static class CharRange.CharacterIterator
++ private static final class CharRange.CharacterIterator
+  implements Iterator<Character> {
+      private char current;
+      private final CharRange range;
+      private boolean hasNext;
+  
+      private CharRange.CharacterIterator(CharRange r) {
+          this.range = r;
+          this.hasNext = true;
+-         if (CharRange.access$100((CharRange)this.range)) {
+-             if (CharRange.access$200((CharRange)this.range) == '\u0000') {
+-                 if (CharRange.access$300((CharRange)this.range) == '\uffff') {
++         if (CharRange.access$000((CharRange)this.range)) {
++             if (CharRange.access$100((CharRange)this.range) == '\u0000') {
++                 if (CharRange.access$200((CharRange)this.range) == '\uffff') {
+                      this.hasNext = false;
+                  } else {
+-                     this.current = (char)(CharRange.access$300((CharRange)this.range) + '\u0001');
++                     this.current = (char)(CharRange.access$200((CharRange)this.range) + '\u0001');
+                  }
+              } else {
+                  this.current = '\u0000';
+              }
+          } else {
+-             this.current = CharRange.access$200((CharRange)this.range);
+-         }
+-     }
+- 
+-     private void prepareNext() {
+-         if (CharRange.access$100((CharRange)this.range)) {
+-             if (this.current == '\uffff') {
+-                 this.hasNext = false;
+-             } else if (this.current + '\u0001' == CharRange.access$200((CharRange)this.range)) {
+-                 if (CharRange.access$300((CharRange)this.range) == '\uffff') {
+-                     this.hasNext = false;
+-                 } else {
+-                     this.current = (char)(CharRange.access$300((CharRange)this.range) + '\u0001');
+-                 }
+-             } else {
+-                 this.current = (char)(this.current + '\u0001');
+-             }
+-         } else if (this.current < CharRange.access$300((CharRange)this.range)) {
+-             this.current = (char)(this.current + '\u0001');
+-         } else {
+-             this.hasNext = false;
++             this.current = CharRange.access$100((CharRange)this.range);
+          }
+      }
+  
+      @Override
+      public boolean hasNext() {
+          return this.hasNext;
+      }
+  
+      @Override
+      public Character next() {
+          if (!this.hasNext) {
+              throw new NoSuchElementException();
+          }
+          char cur = this.current;
+          this.prepareNext();
+          return Character.valueOf(cur);
+      }
+  
+... (截断，共 106 行)
+
+### org/apache/commons/lang3/CharRange.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.CharRange$CharacterIterator
+-  *  org.apache.commons.lang3.Validate
+   */
+  package org.apache.commons.lang3;
+  
+  import java.io.Serializable;
+  import java.util.Iterator;
++ import java.util.Objects;
+  import org.apache.commons.lang3.CharRange;
+- import org.apache.commons.lang3.Validate;
+  
+  final class CharRange
+  implements Iterable<Character>,
+  Serializable {
+      private static final long serialVersionUID = 8270183163158333422L;
++     static final CharRange[] EMPTY_ARRAY = new CharRange[0];
+      private final char start;
+      private final char end;
+      private final boolean negated;
+      private transient String iToString;
+-     static final CharRange[] EMPTY_ARRAY = new CharRange[0];
+  
+-     private CharRange(char start, char end, boolean negated) {
+-         if (start > end) {
+-             char temp = start;
+-             start = end;
+-             end = temp;
+-         }
+-         this.start = start;
+-         this.end = end;
+-         this.negated = negated;
+-     }
+- 
+      public static CharRange is(char ch) {
+          return new CharRange(ch, ch, false);
+      }
+  
+-     public static CharRange isNot(char ch) {
+-         return new CharRange(ch, ch, true);
+-     }
+- 
+      public static CharRange isIn(char start, char end) {
+          return new CharRange(start, end, false);
+      }
+  
+-     public static CharRange isNotIn(char start, char end) {
+-         return new CharRange(start, end, true);
+-     }
+- 
+-     public char getStart() {
+-         return this.start;
++     public static CharRange isNot(char ch) {
++         return new CharRange(ch, ch, true);
+      }
+  
+-     public char getEnd() {
+-         return this.end;
++     public static CharRange isNotIn(char start, char end) {
++         return new CharRange(start, end, true);
+      }
+  
+-     public boolean isNegated() {
+-         return this.negated;
++     private CharRange(char start, char end, boolean negated) {
++         if (start > end) {
++             char temp = start;
++             start = end;
++             end = temp;
++         }
++         this.start = start;
++         this.end = end;
++         this.negated = negated;
+      }
+  
+      public boolean contains(char ch) {
+          return (ch >= this.start && ch <= this.end) != this.negated;
+... (截断，共 166 行)
+
+### org/apache/commons/lang3/CharSequenceUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.ArrayUtils
+   *  org.apache.commons.lang3.StringUtils
+   */
+  package org.apache.commons.lang3;
+  
+  import org.apache.commons.lang3.ArrayUtils;
+  import org.apache.commons.lang3.StringUtils;
+  
+  public class CharSequenceUtils {
+      private static final int NOT_FOUND = -1;
+      static final int TO_STRING_LIMIT = 16;
+  
+-     public static CharSequence subSequence(CharSequence cs, int start) {
+-         return cs == null ? null : cs.subSequence(start, cs.length());
+-     }
+- 
+-     static int indexOf(CharSequence cs, int searchChar, int start) {
+-         if (cs instanceof String) {
+-             return ((String)cs).indexOf(searchChar, start);
+-         }
+-         int sz = cs.length();
+-         if (start < 0) {
+-             start = 0;
+-         }
+-         if (searchChar < 65536) {
+-             for (int i = start; i < sz; ++i) {
+-                 if (cs.charAt(i) != searchChar) continue;
+-                 return i;
+-             }
+-             return -1;
+-         }
+-         if (searchChar <= 0x10FFFF) {
+-             char[] chars = Character.toChars(searchChar);
+-             for (int i = start; i < sz - 1; ++i) {
+-                 char high = cs.charAt(i);
+-                 char low = cs.charAt(i + 1);
+-                 if (high != chars[0] || low != chars[1]) continue;
+-                 return i;
+-             }
++     private static boolean checkLaterThan1(CharSequence cs, CharSequence searchChar, int len2, int start1) {
++         int i = 1;
++         for (int j = len2 - 1; i <= j; ++i, --j) {
++             if (cs.charAt(start1 + i) == searchChar.charAt(i) && cs.charAt(start1 + j) == searchChar.charAt(j)) continue;
++             return false;
+          }
+-         return -1;
++         return true;
+      }
+  
+      static int indexOf(CharSequence cs, CharSequence searchChar, int start) {
+          if (cs instanceof String) {
+              return ((String)cs).indexOf(searchChar.toString(), start);
+          }
+          if (cs instanceof StringBuilder) {
+              return ((StringBuilder)cs).indexOf(searchChar.toString(), start);
+          }
+          if (cs instanceof StringBuffer) {
+              return ((StringBuffer)cs).indexOf(searchChar.toString(), start);
+          }
+          return cs.toString().indexOf(searchChar.toString(), start);
+      }
+  
+-     static int lastIndexOf(CharSequence cs, int searchChar, int start) {
++     static int indexOf(CharSequence cs, int searchChar, int start) {
+          if (cs instanceof String) {
+-             return ((String)cs).lastIndexOf(searchChar, start);
++             return ((String)cs).indexOf(searchChar, start);
+          }
+          int sz = cs.length();
+          if (start < 0) {
+-             return -1;
+-         }
+-         if (start >= sz) {
+-             start = sz - 1;
++             start = 0;
+          }
+... (截断，共 267 行)
+
+### org/apache/commons/lang3/CharSet.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.CharRange
+   */
+  package org.apache.commons.lang3;
+  
+  import java.io.Serializable;
+  import java.util.Collections;
+  import java.util.HashMap;
+  import java.util.HashSet;
+  import java.util.Map;
+  import java.util.Set;
++ import java.util.stream.Stream;
+  import org.apache.commons.lang3.CharRange;
+  
+  public class CharSet
+  implements Serializable {
+      private static final long serialVersionUID = 5947847346149275958L;
+      public static final CharSet EMPTY = new CharSet(new String[]{null});
+      public static final CharSet ASCII_ALPHA = new CharSet("a-zA-Z");
+      public static final CharSet ASCII_ALPHA_LOWER = new CharSet("a-z");
+      public static final CharSet ASCII_ALPHA_UPPER = new CharSet("A-Z");
+      public static final CharSet ASCII_NUMERIC = new CharSet("0-9");
+      protected static final Map<String, CharSet> COMMON = Collections.synchronizedMap(new HashMap());
+      private final Set<CharRange> set = Collections.synchronizedSet(new HashSet());
+  
+      public static CharSet getInstance(String ... setStrs) {
+          CharSet common;
+          if (setStrs == null) {
+              return null;
+          }
+          if (setStrs.length == 1 && (common = COMMON.get(setStrs[0])) != null) {
+              return common;
+          }
+          return new CharSet(setStrs);
+      }
+  
+      protected CharSet(String ... set) {
+-         for (String s : set) {
+-             this.add(s);
+-         }
++         Stream.of(set).forEach(this::add);
+      }
+  
+      protected void add(String str) {
+          if (str == null) {
+              return;
+          }
+          int len = str.length();
+          int pos = 0;
+          while (pos < len) {
+              int remainder = len - pos;
+              if (remainder >= 4 && str.charAt(pos) == '^' && str.charAt(pos + 2) == '-') {
+                  this.set.add(CharRange.isNotIn((char)str.charAt(pos + 1), (char)str.charAt(pos + 3)));
+                  pos += 4;
+                  continue;
+              }
+              if (remainder >= 3 && str.charAt(pos + 1) == '-') {
+                  this.set.add(CharRange.isIn((char)str.charAt(pos), (char)str.charAt(pos + 2)));
+                  pos += 3;
+                  continue;
+              }
+              if (remainder >= 2 && str.charAt(pos) == '^') {
+                  this.set.add(CharRange.isNot((char)str.charAt(pos + 1)));
+                  pos += 2;
+                  continue;
+              }
+              this.set.add(CharRange.is((char)str.charAt(pos)));
+              ++pos;
+          }
+      }
+  
+-     CharRange[] getCharRanges() {
+-         return this.set.toArray(CharRange.EMPTY_ARRAY);
+-     }
+- 
+      /*
+       * WARNING - Removed try catching itself - possible behaviour change.
+... (截断，共 127 行)
+
+### org/apache/commons/lang3/CharSetUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
+   *  org.apache.commons.lang3.CharSet
+   *  org.apache.commons.lang3.StringUtils
++  *  org.apache.commons.lang3.stream.Streams
+   */
+  package org.apache.commons.lang3;
+  
+  import org.apache.commons.lang3.CharSet;
+  import org.apache.commons.lang3.StringUtils;
++ import org.apache.commons.lang3.stream.Streams;
+  
+  public class CharSetUtils {
+      public static boolean containsAny(String str, String ... set) {
+          if (StringUtils.isEmpty((CharSequence)str) || CharSetUtils.deepEmpty(set)) {
+              return false;
+          }
+          CharSet chars = CharSet.getInstance((String[])set);
+          for (char c : str.toCharArray()) {
+              if (!chars.contains(c)) continue;
+              return true;
+          }
+          return false;
+      }
+  
+      public static int count(String str, String ... set) {
+          if (StringUtils.isEmpty((CharSequence)str) || CharSetUtils.deepEmpty(set)) {
+              return 0;
+          }
+          CharSet chars = CharSet.getInstance((String[])set);
+          int count = 0;
+          for (char c : str.toCharArray()) {
+              if (!chars.contains(c)) continue;
+              ++count;
+          }
+          return count;
+      }
+  
+      private static boolean deepEmpty(String[] strings) {
+-         if (strings != null) {
+-             for (String s : strings) {
+-                 if (!StringUtils.isNotEmpty((CharSequence)s)) continue;
+-                 return false;
+-             }
+-         }
+-         return true;
++         return Streams.of((Object[])strings).allMatch(StringUtils::isEmpty);
+      }
+  
+      public static String delete(String str, String ... set) {
+          if (StringUtils.isEmpty((CharSequence)str) || CharSetUtils.deepEmpty(set)) {
+              return str;
+          }
+          return CharSetUtils.modify(str, set, false);
+      }
+  
+      public static String keep(String str, String ... set) {
+          if (str == null) {
+              return null;
+          }
+          if (str.isEmpty() || CharSetUtils.deepEmpty(set)) {
+              return "";
+          }
+          return CharSetUtils.modify(str, set, true);
+      }
+  
+      private static String modify(String str, String[] set, boolean expect) {
+          char[] chrs;
+          CharSet chars = CharSet.getInstance((String[])set);
+          StringBuilder buffer = new StringBuilder(str.length());
+          for (char chr : chrs = str.toCharArray()) {
+              if (chars.contains(chr) != expect) continue;
+              buffer.append(chr);
+          }
+          return buffer.toString();
+      }
+  
+      public static String squeeze(String str, String ... set) {
+... (截断，共 112 行)
+
+### org/apache/commons/lang3/CharUtils.class (修改)
+  /*
+   * Decompiled with CFR 0.152.
+   * 
+   * Could not load the following classes:
++  *  org.apache.commons.lang3.ArrayUtils
+   *  org.apache.commons.lang3.StringUtils
+   *  org.apache.commons.lang3.Validate
+   */
+  package org.apache.commons.lang3;
+  
++ import java.util.Objects;
++ import org.apache.commons.lang3.ArrayUtils;
+  import org.apache.commons.lang3.StringUtils;
+  import org.apache.commons.lang3.Validate;
+  
+  public class CharUtils {
+      private static final String[] CHAR_STRING_ARRAY = new String[128];
+      private static final char[] HEX_DIGITS = new char[]{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+      public static final char LF = '\n';
+      public static final char CR = '\r';
+      public static final char NUL = '\u0000';
+  
+-     @Deprecated
+-     public static Character toCharacterObject(char ch) {
+-         return Character.valueOf(ch);
++     public static int compare(char x, char y) {
++         return x - y;
+      }
+  
+-     public static Character toCharacterObject(String str) {
+-         if (StringUtils.isEmpty((CharSequence)str)) {
+-             return null;
+-         }
+-         return Character.valueOf(str.charAt(0));
++     public static boolean isAscii(char ch) {
++         return ch < '?';
+      }
+  
++     public static boolean isAsciiAlpha(char ch) {
++         return CharUtils.isAsciiAlphaUpper(ch) || CharUtils.isAsciiAlphaLower(ch);
++     }
++ 
++     public static boolean isAsciiAlphaLower(char ch) {
++         return ch >= 'a' && ch <= 'z';
++     }
++ 
++     public static boolean isAsciiAlphanumeric(char ch) {
++         return CharUtils.isAsciiAlpha(ch) || CharUtils.isAsciiNumeric(ch);
++     }
++ 
++     public static boolean isAsciiAlphaUpper(char ch) {
++         return ch >= 'A' && ch <= 'Z';
++     }
++ 
++     public static boolean isAsciiControl(char ch) {
++         return ch < ' ' || ch == '';
++     }
++ 
++     public static boolean isAsciiNumeric(char ch) {
++         return ch >= '0' && ch <= '9';
++     }
++ 
++     public static boolean isAsciiPrintable(char ch) {
++         return ch >= ' ' && ch < '';
++     }
++ 
+      public static char toChar(Character ch) {
+-         Validate.notNull((Object)ch, (String)"ch", (Object[])new Object[0]);
+-         return ch.charValue();
++         return Objects.requireNonNull(ch, "ch").charValue();
+      }
+  
+      public static char toChar(Character ch, char defaultValue) {
+-         if (ch == null) {
+-             return defaultValue;
+-         }
+-         return ch.charValue();
++         return ch != null ? ch.charValue() : defaultValue;
+      }
+  
+... (截断，共 204 行)
+
+### org/apache/commons/lang3/Charsets.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/ClassLoaderUtils.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/ClassPathUtils.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/ClassUtils$1.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/ClassUtils$2.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/ClassUtils$Interfaces.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/ClassUtils.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/Conversion.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/EnumUtils.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/Functions$FailableBiConsumer.class (修改)
+(无反编译源码，或未纳入 Top-K)
+
+### org/apache/commons/lang3/Functions$FailableBiFunction.class (修改)
+(无反编译源码，或未纳入 Top-K)

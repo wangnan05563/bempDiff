@@ -1,0 +1,38 @@
+/*
+ * Decompiled with CFR 0.152.
+ */
+package com.internal;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+public class InvoiceService {
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("9999999.99");
+    private static final BigDecimal TAX_RATE = new BigDecimal("0.13");
+
+    public String issue(String string, BigDecimal bigDecimal, List<String> list, BigDecimal bigDecimal2) {
+        if (bigDecimal == null || bigDecimal.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("金额必须大于0");
+        }
+        if (bigDecimal.compareTo(MAX_AMOUNT) > 0) {
+            throw new IllegalArgumentException("金额超限");
+        }
+        BigDecimal bigDecimal3 = bigDecimal2 == null ? TAX_RATE : bigDecimal2;
+        BigDecimal bigDecimal4 = bigDecimal.multiply(bigDecimal3).setScale(2, 4);
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("INV|").append(string).append("|").append(bigDecimal.toPlainString());
+        stringBuilder.append("|TAX|").append(bigDecimal4.toPlainString());
+        for (String string2 : list) {
+            stringBuilder.append("|").append(string2);
+        }
+        return stringBuilder.toString();
+    }
+
+    public boolean validate(String string, LocalDate localDate) {
+        if (string == null || !string.startsWith("INV-")) {
+            return false;
+        }
+        return localDate == null || !localDate.isBefore(LocalDate.now());
+    }
+}

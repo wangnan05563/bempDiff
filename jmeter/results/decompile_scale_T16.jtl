@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testResults version="1.2">
+<httpSample t="84930" it="0" lt="84922" ct="44" ts="1786272362391" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="255" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+<httpSample t="88301" it="0" lt="88301" ct="5" ts="1786272447333" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="255" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+<httpSample t="104092" it="0" lt="104092" ct="5" ts="1786272535636" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="258" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+<httpSample t="114417" it="0" lt="114417" ct="3" ts="1786272639730" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="258" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+<httpSample t="103768" it="0" lt="103767" ct="4" ts="1786272754149" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="258" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+<httpSample t="102206" it="0" lt="102206" ct="3" ts="1786272857919" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="258" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+<httpSample t="98827" it="0" lt="98827" ct="4" ts="1786272960127" s="true" lb="decompile" rc="200" rm="OK" tn="scale 1-1" dt="text" by="256" sby="325" ng="1" na="1">
+  <java.net.URL>http://localhost:18080/api/decompile/batch?old=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v1.jar&amp;new=D%3A%2Fcode%2FotherProjects%2F18_comparePakage%2Fprototype%2Flib_v2.jar&amp;expandAll=true&amp;threads=16&amp;topK=80</java.net.URL>
+</httpSample>
+
+</testResults>
