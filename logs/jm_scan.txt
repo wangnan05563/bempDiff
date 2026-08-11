@@ -1,3 +1,0 @@
-﻿found_jmeter=
-PID=3324 "java.exe"   -XX:+HeapDumpOnOutOfMemoryError -Xms1g -Xmx1g -XX:MaxMetaspaceSize=256m  -XX:
-after_kill_found_jmeter=0

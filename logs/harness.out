@@ -1,5 +1,0 @@
-OpenJDK 64-Bit Server VM warning: Option FlightRecorder was deprecated in version 13.0 and will likely be removed in a future release.
-[0.958s][info][jfr,startup] Started recording 1.
-[0.958s][info][jfr,startup] 
-[0.958s][info][jfr,startup] Use jcmd 39028 JFR.dump name=1 to copy recording data to file.
-[Harness] listening on http://0.0.0.0:18080  cfr=D:\code\otherProjects\18_comparePakage\prototype\cfr.jar  javaBin=D:\code\otherProjects\18_comparePakage\prototype\toolchain\zulu21.52.15-ca-jdk21.0.12-win_x64\bin\java.exe

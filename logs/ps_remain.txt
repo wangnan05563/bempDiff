@@ -1,2 +1,0 @@
-﻿remaining_orphan_cfr=7
-harness={"ok":true,"role":"bempdiff-perf-harness"}

@@ -1,3 +1,0 @@
-﻿attrs=Archive IsReadOnly=False
-JMETER_PID=41764 "java.exe"   -XX:+HeapDumpOnOutOfMemoryError -Xms1g -Xmx1g -XX:MaxMetaspaceSize=
-scan_done

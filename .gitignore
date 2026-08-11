@@ -39,3 +39,14 @@ tmp/
 # Large binary files (JDK toolchain, dist exe)
 prototype/toolchain/
 prototype/dist_exe/
+
+# ---------- 清理技能生成规则 (2026-08-11) ----------
+# 编译中间产物目录（javac 可再生）
+.scannerwork/
+out_test/
+out_test_ui/
+# JMeter 压测结果（jtl 为结果日志，可重跑生成）
+**/*.jtl
+# jar/war 测试垃圾目录（已清，防复发：fixtures 压测夹具 / dist_input 构建中间产物）
+prototype/fixtures/
+prototype/dist_input/
