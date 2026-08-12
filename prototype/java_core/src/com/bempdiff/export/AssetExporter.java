@@ -99,7 +99,8 @@ public final class AssetExporter {
         Files.write(target, bytes);
     }
 
-    /** ③ 反编译源码 zip：Top-K 完整源码 + manifest 清单。 */
+    /** ③ 反编译源码 zip：Top-K 完整源码 + manifest 清单。
+     *  前端 JS/HTML/CSS 按原始扩展名落盘（如 .js），Java 类仍为 .java。 */
     public Path exportDecompiledSources(Map<String, DecompiledUnit> decompiled, Path outDir,
                                         int topK) throws IOException {
         Files.createDirectories(outDir);
@@ -109,12 +110,12 @@ public final class AssetExporter {
              BufferedOutputStream bos = new BufferedOutputStream(fos);
              ZipOutputStream zos = new ZipOutputStream(bos)) {
             StringBuilder manifest = new StringBuilder();
-            manifest.append("# 反编译源码导出清单（Top-K=").append(topK).append("）\n");
+            manifest.append("# 反编译/前端源码导出清单（Top-K=").append(topK).append("）\n");
             manifest.append("# key | engine | ok\n");
             for (Map.Entry<String, DecompiledUnit> e : decompiled.entrySet()) {
                 if (shown >= topK) break;
                 DecompiledUnit u = e.getValue();
-                String name = e.getKey().replace("/", "_") + ".java";
+                String name = e.getKey().replace("/", "_") + sourceExtension(e.getKey());
                 zos.putNextEntry(new ZipEntry(name));
                 String content;
                 if (u.getNewSource() != null) {
@@ -135,6 +136,19 @@ public final class AssetExporter {
             zos.closeEntry();
         }
         return zip;
+    }
+
+    /** 按 key 推断源码导出扩展名：文本类资源（前端 JS/HTML/CSS、JSP、XML/Properties 等）
+     *  用原扩展名；其余（Java 类）用 .java。 */
+    private static String sourceExtension(String key) {
+        for (String ext : new String[]{".jsp", ".jspx", ".tag", ".tagx",
+                ".xml", ".properties", ".yml", ".yaml", ".json", ".conf", ".cfg",
+                ".tld", ".xhtml", ".wsdl", ".xsl", ".xslt", ".dtd", ".vm", ".ftl",
+                ".ini", ".toml", ".txt", ".csv",
+                ".js", ".html", ".htm", ".css"}) {
+            if (key.endsWith(ext)) return ext;
+        }
+        return ".java";
     }
 
     private static boolean isClassEntry(LogicalEntry e) {

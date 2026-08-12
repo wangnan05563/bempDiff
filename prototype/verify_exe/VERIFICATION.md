@@ -1,7 +1,7 @@
 # 验证：打包后的 exe 内嵌逻辑确实能干活（无需桌面显示）
 
-> 目的：证明 `dist_exe/BempDiff/BempDiff.exe` 双击即用、且内部封装的核心比对逻辑（compare / decompile / report / export）真实可用。
-> 触发背景：最初尝试用 `dist_exe/BempDiff/runtime/bin/java.exe` 直接跑 `Main` —— 但该文件**不存在**，验证命令直接报 `No such file or directory`。
+> 目的：证明 `dist/BempDiff/BempDiff.exe` 双击即用、且内部封装的核心比对逻辑（compare / decompile / report / export）真实可用。
+> 触发背景：最初尝试用 `dist/BempDiff/runtime/bin/java.exe` 直接跑 `Main` —— 但该文件**不存在**，验证命令直接报 `No such file or directory`。
 
 ## 关键结论（先说重点）
 
@@ -15,14 +15,14 @@
 ## 验证环境与命令
 
 - JDK：与内嵌 runtime 同族的 Zulu JDK21（`prototype/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64`）
-- 待验证字节：`prototype/dist_exe/BempDiff/app/app.jar`（exe 内真实打包的字节）
+- 待验证字节：`prototype/dist/BempDiff/app/app.jar`（exe 内真实打包的字节）
 - 依赖：`app/` 下 4 个 javafx jar + `prototype/cfr.jar`（反编译）
 - 夹具：`prototype/lib_v1.jar`(3.12.0) / `prototype/lib_v2.jar`(3.14.0)
 
 ```bash
 JAVA="D:/code/otherProjects/18_comparePakage/prototype/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/java.exe"
-APPJAR="D:/code/otherProjects/18_comparePakage/prototype/dist_exe/BempDiff/app/app.jar"
-FX="D:/code/otherProjects/18_comparePakage/prototype/dist_exe/BempDiff/app"
+APPJAR="D:/code/otherProjects/18_comparePakage/prototype/dist/BempDiff/app/app.jar"
+FX="D:/code/otherProjects/18_comparePakage/prototype/dist/BempDiff/app"
 CFR="D:/code/otherProjects/18_comparePakage/prototype/cfr.jar"
 CP="$APPJAR;$FX/javafx-base-21-win.jar;$FX/javafx-controls-21-win.jar;$FX/javafx-fxml-21-win.jar;$FX/javafx-graphics-21-win.jar;$CFR"
 
@@ -62,9 +62,9 @@ CP="$APPJAR;$FX/javafx-base-21-win.jar;$FX/javafx-controls-21-win.jar;$FX/javafx
 验证（沙箱无桌面，输出重定向到文件；GUI 子系统 exe 的输出需 `> file 2>&1` 才能落盘）：
 
 ```bash
-dist_exe/BempDiff/BempDiff.exe compare lib_v1.jar lib_v2.jar --expand-all > verify_exe/exe_headless_compare.txt 2>&1
-dist_exe/BempDiff/BempDiff.exe report  lib_v1.jar lib_v2.jar --expand-all --top-k 15 --cfr cfr.jar --out verify_exe/exe_report.md > verify_exe/exe_report.log 2>&1
-dist_exe/BempDiff/BempDiff.exe export  lib_v1.jar lib_v2.jar --expand-all --top-k 15 --cfr cfr.jar --out verify_exe/exe_export  > verify_exe/exe_export.log 2>&1
+dist/BempDiff/BempDiff.exe compare lib_v1.jar lib_v2.jar --expand-all > verify_exe/exe_headless_compare.txt 2>&1
+dist/BempDiff/BempDiff.exe report  lib_v1.jar lib_v2.jar --expand-all --top-k 15 --cfr cfr.jar --out verify_exe/exe_report.md > verify_exe/exe_report.log 2>&1
+dist/BempDiff/BempDiff.exe export  lib_v1.jar lib_v2.jar --expand-all --top-k 15 --cfr cfr.jar --out verify_exe/exe_export  > verify_exe/exe_export.log 2>&1
 ```
 
 实跑结果（全部经**真实 BempDiff.exe 启动器 + 内嵌 runtime**）：

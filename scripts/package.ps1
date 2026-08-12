@@ -75,6 +75,24 @@ function Invoke-NativeCmd {
     }
 }
 
+# jar uf 合并带重试：Windows Defender 实时扫描刚写入的 app.jar 时偶发加锁
+# （"另一个程序正在使用此文件"），导致合并瞬时失败。此处最多重试 6 次、每次间隔 1s，
+# 锁释放后自动续跑，避免整包构建被偶发锁中断。stderr 重定向到 $null 以免 EAP=Stop 下触发 NativeCommandError。
+function Merge-JarWithRetry {
+    param($jarExe, $appJar, $changeDir, $entry, $label)
+    $max = 6
+    for ($i = 1; $i -le $max; $i++) {
+        & $jarExe uf $appJar -C $changeDir $entry > $null 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            if ($i -gt 1) { Write-Host ("  重试成功(" + $i + "/" + $max + "): " + $label) }
+            return $true
+        }
+        Write-Host ("  (重试 " + $i + "/" + $max + ") jar 合并遇瞬时锁，1s 后重试: " + $label)
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
 Write-Host "============================================"
 Write-Host "  BempDiff 构建打包 (Build + Package)"
 Write-Host "============================================"
@@ -100,6 +118,9 @@ $distExeDir = Join-Path $Root $cfg.build.dist_exe_dir_rel
 $appName    = $cfg.build.app_name
 $appJar     = Join-Path $distInput 'app.jar'
 $mainClass  = $cfg.project.main_class
+$iconIco    = Join-Path $Root 'prototype/assets/bempdiff.ico'
+$iconPng    = Join-Path $Root 'prototype/javafx_ui/resources/bempdiff-logo.png'
+if (-not (Test-Path $iconIco)) { throw ("缺少图标文件: " + $iconIco) }
 
 # [1/5] 清理旧产物
 Write-Host "[1/5] 清理旧编译产物 ..."
@@ -137,6 +158,16 @@ Write-Host "[4/5] 打包 app.jar ..."
 Invoke-NativeCmd { & $jar --create --main-class $mainClass -f $appJar -C $outDir . }
 if ($LASTEXITCODE -ne 0) { throw "jar 打包失败 (exit $LASTEXITCODE)" }
 
+# [4.6/5] 合并应用图标 PNG 进 app.jar 根目录（运行时 getResourceAsStream("/bempdiff-logo.png") 加载窗口/任务栏图标）
+# App.java 的 start() 从此资源加载，缺失时静默降级为平台默认图标。
+if (Test-Path $iconPng) {
+    Write-Host "[4.6/5] 合并应用图标进 app.jar ..."
+    $iconResDir = Split-Path $iconPng
+    if (-not (Merge-JarWithRetry $jar $appJar $iconResDir 'bempdiff-logo.png' '合并图标')) {
+        throw "合并图标进 app.jar 失败"
+    }
+}
+
 # [4.5/5] 合并 cfr.jar 类进 app.jar（P0-1 进程内 CFR 落地）
 # cfr 是非模块 classpath jar，无签名 / 无 META-INF services，合并安全。
 # 排除其 META-INF（含 MANIFEST.MF，会覆盖 app.jar 主清单导致 Main-Class 丢失）。
@@ -152,15 +183,17 @@ try {
     Pop-Location
 }
 Remove-Path (Join-Path $cfrExtract 'META-INF')
-Invoke-NativeCmd { & $jar uf $appJar -C $cfrExtract . }
-if ($LASTEXITCODE -ne 0) { throw "合并 cfr 进 app.jar 失败 (exit $LASTEXITCODE)" }
+if (-not (Merge-JarWithRetry $jar $appJar $cfrExtract '.' '合并 cfr')) {
+    throw "合并 cfr 进 app.jar 失败"
+}
 Remove-Path $cfrExtract
 
 # [5/5] jpackage 自包含 exe
 # 先结束可能占用 app-image 的旧 BempDiff 进程(重打包时常见)，释放文件锁；
-# 再用镜像名结束整棵进程树，并兜底结束命令行含 app 名的残留 JVM。
-# 同时清理上一次被中断留下的 _fresh 暂存目录。进程释放句柄有短暂延迟，
-# 删除失败则重试数次；若仍被占用(常见于资源管理器打开了该文件夹)，给出明确指引。
+# 旧 app-image 优先「改名移走」(BempDiff._old_<时间戳>)而非原地删除：
+# 改名只改目录项、不触碰内部文件锁，即使 BempDiff.exe 被资源管理器预览窗格/
+# 缩略图或残留进程占用，jpackage 也能在干净新路径写自包含 exe，构建不再被锁中断。
+# 改名失败才回退到删除重试；仍失败则给出明确指引。
 Write-Host "[5/5] 释放旧进程占用 ..."
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -173,18 +206,54 @@ Start-Sleep -Seconds 2
 $appImage  = Join-Path $distExeDir $appName
 $appFresh = Join-Path $distExeDir "_fresh"
 Remove-Path $appFresh
-$removed = $false
-for ($i = 0; $i -lt 8; $i++) {
-    Remove-Path $appImage
-    if (-not (Test-Path $appImage)) { $removed = $true; break }
-    Start-Sleep -Seconds 1
+
+# 先清掉上次遗留的 _old_* 暂存目录（尽力而为，失败忽略；锁释放后通常能删掉）
+Get-ChildItem $distExeDir -Directory -Filter ($appName + '._old_*') -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Path $_.FullName
 }
-if (-not $removed) {
-    throw ("无法删除旧 app-image（仍被占用）: " + $appImage + "`n  常见原因：资源管理器正打开该文件夹(含预览窗格/缩略图)。`n  请关闭该文件夹窗口后重新执行打包。")
+
+if (Test-Path $appImage) {
+    # 优先「改名移走」而非原地删除：即使 BempDiff.exe 被资源管理器预览窗格/缩略图
+    # 或残留进程占用（句柄仍有效），改名只改目录项、不触碰内部文件锁，
+    # jpackage 即可在干净的新路径写自包含 exe，避免被占用导致构建中断。
+    $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+    $appOld = Join-Path $distExeDir ($appName + '._old_' + $stamp)
+    $moved = $false
+    try {
+        [System.IO.Directory]::Move($appImage, $appOld)
+        Write-Host ("  已将旧 app-image 改名移走: " + $appOld)
+        $moved = $true
+    } catch {
+        Write-Host ("  [WARN] 改名移走失败，回退到删除重试: " + $_.Exception.Message)
+    }
+    if (-not $moved) {
+        $removed = $false
+        for ($i = 0; $i -lt 8; $i++) {
+            Remove-Path $appImage
+            if (-not (Test-Path $appImage)) { $removed = $true; break }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $removed) {
+            throw ("无法删除旧 app-image（仍被占用）: " + $appImage + "`n  常见原因：资源管理器正打开该文件夹(含预览窗格/缩略图)，或有 BempDiff.exe 进程未退出。`n  请关闭该文件夹窗口 / 结束 BempDiff.exe 进程后重新执行打包。")
+        }
+    }
 }
 Write-Host "[5/5] jpackage 打包自包含 exe (预计 10-30 秒) ..."
-Invoke-NativeCmd { & $jpackage --type app-image --name $appName --input $distInput --main-jar app.jar --module-path $distInput --add-modules $addModules --dest $distExeDir --java-options $cfg.build.jvm_options }
+Invoke-NativeCmd { & $jpackage --type app-image --name $appName --input $distInput --main-jar app.jar --module-path $distInput --add-modules $addModules --dest $distExeDir --icon $iconIco --java-options $cfg.build.jvm_options }
 if ($LASTEXITCODE -ne 0) { throw "jpackage 打包失败 (exit $LASTEXITCODE)" }
+
+# [5.5] 用完整 JDK 的 java.security 覆盖 jlinked 运行时的精简版
+# jlink/jpackage 生成的最小化运行时可能缺少部分 security provider 配置或
+# TLS cipher suite 设置，导致对部分 HTTPS 站点握手失败（handshake_failure）。
+# 用完整 JDK 的 java.security 覆盖可恢复全部安全 provider + TLS 默认配置。
+$jdkSecurity = Join-Path $jdk "conf\security\java.security"
+$runtimeSecurity = Join-Path $distExeDir (Join-Path $cfg.build.exe_subdir "runtime\conf\security\java.security")
+if ((Test-Path $jdkSecurity) -and (Test-Path $runtimeSecurity)) {
+    Copy-Item -Path $jdkSecurity -Destination $runtimeSecurity -Force
+    Write-Host "[5.5] 已用完整 JDK java.security 覆盖运行时安全配置（修复 TLS 兼容性）"
+} else {
+    Write-Host "[WARN] 跳过 java.security 覆盖: JDK=$jdkSecurity Runtime=$runtimeSecurity"
+}
 
 # 校验产物
 $exe = Join-Path $distExeDir (Join-Path $cfg.build.exe_subdir ($appName + '.exe'))

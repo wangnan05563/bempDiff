@@ -15,7 +15,7 @@ javafx_ui/
 └── README.md
 prototype/
 ├── toolchain/            # JDK21 (Zulu) + JavaFX 21 win jars（编译/运行/打包用）
-├── dist_exe/BempDiff/    # ✅ 已打包的 exe（自包含，双击即用）
+├── dist/BempDiff/    # ✅ 已打包的 exe（自包含，双击即用）
 └── java_core/            # 已验证的 core.* 服务层
 ```
 
@@ -48,10 +48,10 @@ cp toolchain/javafx-*-21-win.jar dist_input/
 "$JAR21" --create --main-class com.bempdiff.ui.App -f dist_input/app.jar -C javafx_ui/out .
 "$JP21" --type app-image --name BempDiff --input dist_input --main-jar app.jar \
   --module-path dist_input --add-modules javafx.controls,javafx.fxml \
-  --dest dist_exe --java-options "-Dfile.encoding=UTF-8"
+  --dest dist --java-options "-Dfile.encoding=UTF-8"
 ```
 
-产出 `dist_exe/BempDiff/BempDiff.exe`：内嵌 runtime（JRE）+ `app/` 下的 javafx 模块，双击即起。**无需安装 Java、无需联网**（AI 分析在离线 Mock 模式下也能跑基础比对）。
+产出 `dist/BempDiff/BempDiff.exe`：内嵌 runtime（JRE）+ `app/` 下的 javafx 模块，双击即起。**无需安装 Java、无需联网**（AI 分析在离线 Mock 模式下也能跑基础比对）。
 
 ## 功能对应
 
@@ -71,7 +71,7 @@ cp toolchain/javafx-*-21-win.jar dist_input/
 - ✅ **编译**：JDK21 + JavaFX 21 全量编译通过（`javafx_ui/out` 生成全部 class）。
 - ✅ **启动**：`java -cp ... com.bempdiff.ui.App` 与打包后的 `BempDiff.exe` 均无模块/链接错误，干净初始化（被工具超时 kill 仅因无桌面显示、GUI 等待窗口）。
 - ✅ **打包**：`jpackage --type app-image` 产出自包含 exe，结构正确（runtime/ + app/ 含 javafx 模块）。
-- ⚠️ **交互测试**：本沙箱无桌面显示设备，**未做真人点击式 UI 交互验证**。请在你的 Windows 桌面双击 `dist_exe/BempDiff/BempDiff.exe` 实测：选两个 war/jar → 开始比对 → 选中类看双栏 diff → ⚙设置填 AI → AI 分析 → 导出报告/资产。
+- ⚠️ **交互测试**：本沙箱无桌面显示设备，**未做真人点击式 UI 交互验证**。请在你的 Windows 桌面双击 `dist/BempDiff/BempDiff.exe` 实测：选两个 war/jar → 开始比对 → 选中类看双栏 diff → ⚙设置填 AI → AI 分析 → 导出报告/资产。
 - ⚠️ **真实 AI 调用**：需你自己的 API Key（设置弹窗填 openai/azure/ollama 的 BaseURL+Key）；离线无 Key 时走 Mock 回放，仍能完成基础比对与文件树/源码 diff。
 
 ## 已知限制 / 后续

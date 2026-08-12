@@ -92,6 +92,6 @@ com.bempdiff
 ## UI 与可双击 exe（已完成）
 
 - **JavaFX 三区 UI + 配置中心**：见 `../javafx_ui/`（App / ConfigDialog / UiConfig / DiffTree），集成本 core 层。
-- **自包含 exe**：`../dist_exe/BempDiff/BempDiff.exe` 已由 `jpackage --type app-image` 产出，内嵌 JRE + JavaFX，**双击即用、无需安装 Java**。
+- **自包含 exe**：`../dist/BempDiff/BempDiff.exe` 已由 `jpackage --type app-image` 产出，内嵌 JRE + JavaFX，**双击即用、无需安装 Java**。
 - 编译/运行需 JDK21 + JavaFX21（已随原型放在 `../toolchain/`）：见 `../javafx_ui/README.md`。
 - 验证：JDK21 全量编译通过；`App` 与打包 exe 均干净启动（无模块/链接错误）；交互式点击测试需在你的 Windows 桌面进行（沙箱无显示设备）。

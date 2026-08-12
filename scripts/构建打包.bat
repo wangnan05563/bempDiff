@@ -14,7 +14,7 @@ echo   3. Copy JavaFX runtime jars
 echo   4. Build app.jar
 echo   5. jpackage self-contained exe
 echo.
-echo Output: prototype\dist_exe\BempDiff\BempDiff.exe
+echo Output: dist\BempDiff\BempDiff.exe
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0package.ps1" %*
@@ -31,7 +31,7 @@ echo.
 echo ============================================
 echo   Build complete!
 echo ============================================
-echo   EXE:  prototype\dist_exe\BempDiff\BempDiff.exe
+echo   EXE:  dist\BempDiff\BempDiff.exe
 echo   Next: double-click scripts\????.bat
 echo ============================================
 echo.

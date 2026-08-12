@@ -4,5 +4,7 @@ package com.bempdiff.model;
 public enum PackageType {
     WAR,
     FAT_JAR,
-    JAR
+    JAR,
+    /** 文件夹（FR：新增的文件夹比较功能，直接对目录树做内容/结构比对）。 */
+    FOLDER
 }

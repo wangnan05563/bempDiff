@@ -29,11 +29,11 @@
     "javafx_ui_src_rel": "prototype\\javafx_ui\\src",
     "out_dir_rel": "prototype\\javafx_ui\\out",
     "dist_input_rel": "prototype\\dist_input",
-    "dist_exe_dir_rel": "prototype\\dist_exe",
+    "dist_exe_dir_rel": "dist",
     "app_name": "BempDiff",
     "exe_subdir": "BempDiff",
     "add_modules": "javafx.controls,javafx.fxml,org.kordamp.bootstrapfx.core,org.kordamp.ikonli.core,org.kordamp.ikonli.javafx,org.kordamp.ikonli.bootstrapicons",
-    "jvm_options": "-Dfile.encoding=UTF-8"
+    "jvm_options": "-Dfile.encoding=UTF-8 -Dhttps.protocols=TLSv1.2,TLSv1.3 -Djdk.tls.client.protocols=TLSv1.2,TLSv1.3 -Djava.net.useSystemProxies=true"
   },
   "runtime": {
     "log_dir_rel": "logs",

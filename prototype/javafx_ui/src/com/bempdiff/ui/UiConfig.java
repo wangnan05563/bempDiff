@@ -37,11 +37,29 @@ public class UiConfig {
     private boolean blockPrivateEndpoints = false;        // 严格 SSRF：拒绝回环/私网（本地 Ollama 需关）
     private boolean persistApiKey = false;                // 密钥隔离：默认 false，API Key 仅内存态不落盘
 
+    private String projectContextDir = "";                // 项目级上下文：工程/目录路径（空=不扫描）
+    private boolean projectContextEnabled = false;        // 项目级上下文：是否启用增强分析
+
+    // 差异树过滤偏好（搜索/勾选持久化）：默认全部显示，与历史行为一致
+    private String filterSearch = "";                     // 搜索词（模糊或正则）
+    private boolean filterRegex = false;                  // 搜索是否正则模式
+    private boolean filterShowModified = true;            // 显示「修改」
+    private boolean filterShowAdded = true;               // 显示「新增」
+    private boolean filterShowDeleted = true;             // 显示「删除」
+    private boolean filterShowUnchanged = true;           // 显示「未变」
+
+    private boolean autoAiOnCompare = true;               // FR-CX-01：开始比对后自动触发 AI 两阶段分析（等价 report --ai）
+
     private final Path file;
 
     public UiConfig(Path file) {
         this.file = file;
         load();
+    }
+
+    /** 配置文件路径（供派生 ai-profiles.properties 等兄弟文件）。 */
+    public Path getConfigFile() {
+        return file;
     }
 
     public String getAiProvider() {
@@ -164,6 +182,78 @@ public class UiConfig {
         this.persistApiKey = persistApiKey;
     }
 
+    public String getProjectContextDir() {
+        return projectContextDir;
+    }
+
+    public void setProjectContextDir(String projectContextDir) {
+        this.projectContextDir = projectContextDir;
+    }
+
+    public boolean isProjectContextEnabled() {
+        return projectContextEnabled;
+    }
+
+    public void setProjectContextEnabled(boolean projectContextEnabled) {
+        this.projectContextEnabled = projectContextEnabled;
+    }
+
+    public String getFilterSearch() {
+        return filterSearch;
+    }
+
+    public void setFilterSearch(String filterSearch) {
+        this.filterSearch = filterSearch;
+    }
+
+    public boolean isFilterRegex() {
+        return filterRegex;
+    }
+
+    public void setFilterRegex(boolean filterRegex) {
+        this.filterRegex = filterRegex;
+    }
+
+    public boolean isFilterShowModified() {
+        return filterShowModified;
+    }
+
+    public void setFilterShowModified(boolean filterShowModified) {
+        this.filterShowModified = filterShowModified;
+    }
+
+    public boolean isFilterShowAdded() {
+        return filterShowAdded;
+    }
+
+    public void setFilterShowAdded(boolean filterShowAdded) {
+        this.filterShowAdded = filterShowAdded;
+    }
+
+    public boolean isFilterShowDeleted() {
+        return filterShowDeleted;
+    }
+
+    public void setFilterShowDeleted(boolean filterShowDeleted) {
+        this.filterShowDeleted = filterShowDeleted;
+    }
+
+    public boolean isFilterShowUnchanged() {
+        return filterShowUnchanged;
+    }
+
+    public void setFilterShowUnchanged(boolean filterShowUnchanged) {
+        this.filterShowUnchanged = filterShowUnchanged;
+    }
+
+    public boolean isAutoAiOnCompare() {
+        return autoAiOnCompare;
+    }
+
+    public void setAutoAiOnCompare(boolean autoAiOnCompare) {
+        this.autoAiOnCompare = autoAiOnCompare;
+    }
+
     public void load() {
         if (!Files.exists(file)) {
             return;
@@ -186,6 +276,15 @@ public class UiConfig {
             httpsProxy = p.getProperty("httpsProxy", "");
             blockPrivateEndpoints = Boolean.parseBoolean(p.getProperty("blockPrivateEndpoints", DEFAULT_FALSE));
             persistApiKey = Boolean.parseBoolean(p.getProperty("persistApiKey", DEFAULT_FALSE));
+            projectContextDir = p.getProperty("projectContextDir", "");
+            projectContextEnabled = Boolean.parseBoolean(p.getProperty("projectContextEnabled", DEFAULT_FALSE));
+            filterSearch = p.getProperty("filterSearch", "");
+            filterRegex = Boolean.parseBoolean(p.getProperty("filterRegex", DEFAULT_FALSE));
+            filterShowModified = Boolean.parseBoolean(p.getProperty("filterShowModified", "true"));
+            filterShowAdded = Boolean.parseBoolean(p.getProperty("filterShowAdded", "true"));
+            filterShowDeleted = Boolean.parseBoolean(p.getProperty("filterShowDeleted", "true"));
+            filterShowUnchanged = Boolean.parseBoolean(p.getProperty("filterShowUnchanged", "true"));
+            autoAiOnCompare = Boolean.parseBoolean(p.getProperty("autoAiOnCompare", "true"));
         } catch (IOException | NumberFormatException e) {
             LOG.log(Level.WARNING, "加载 UI 配置失败", e);
         }
@@ -217,6 +316,16 @@ public class UiConfig {
         p.setProperty("httpProxy", httpProxy);
         p.setProperty("httpsProxy", httpsProxy);
         p.setProperty("blockPrivateEndpoints", String.valueOf(blockPrivateEndpoints));
+        p.setProperty("projectContextDir", projectContextDir == null ? "" : projectContextDir);
+        p.setProperty("projectContextEnabled", String.valueOf(projectContextEnabled));
+        // 差异树过滤偏好（搜索/勾选持久化）
+        p.setProperty("filterSearch", filterSearch == null ? "" : filterSearch);
+        p.setProperty("filterRegex", String.valueOf(filterRegex));
+        p.setProperty("filterShowModified", String.valueOf(filterShowModified));
+        p.setProperty("filterShowAdded", String.valueOf(filterShowAdded));
+        p.setProperty("filterShowDeleted", String.valueOf(filterShowDeleted));
+        p.setProperty("filterShowUnchanged", String.valueOf(filterShowUnchanged));
+        p.setProperty("autoAiOnCompare", String.valueOf(autoAiOnCompare));
         // 密钥隔离（BR-SEC-01）：默认 persistApiKey=false，API Key 仅内存态不落盘；
         // 仅当显式开启时才明文写入——本文件可能含敏感凭据，勿提交/共享。
         if (persistApiKey && aiApiKey != null && !aiApiKey.isEmpty()) {

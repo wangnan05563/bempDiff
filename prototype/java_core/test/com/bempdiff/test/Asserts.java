@@ -12,6 +12,10 @@ public final class Asserts {
         if (cond) throw new AssertionError("断言失败[false 期望]: " + msg);
     }
 
+    public static void fail(String msg) {
+        throw new AssertionError("断言失败[fail]: " + msg);
+    }
+
     public static void assertEquals(String msg, Object expected, Object actual) {
         if (!java.util.Objects.equals(expected, actual)) {
             throw new AssertionError("断言失败[相等期望]\n  描述: " + msg

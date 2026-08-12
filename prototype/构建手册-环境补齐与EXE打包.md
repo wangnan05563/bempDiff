@@ -11,7 +11,7 @@
 - 工具本体是纯 Java；**core 层**用 JDK8 就能编译验证，**JavaFX UI + exe 打包必须用 JDK21**。
 - JavaFX 21 的类文件是 Java 21 字节码，只有 JDK21 的 `javac` 能读取其 jar；JDK8 编译会报
   `unsupported class file major version`。所以**必须拿到 JDK21**。
-- 产出：`dist_exe/BempDiff/BempDiff.exe` —— 内嵌 JRE + JavaFX，**双击即用、无需安装 Java、无需联网**。
+- 产出：`dist/BempDiff/BempDiff.exe` —— 内嵌 JRE + JavaFX，**双击即用、无需安装 Java、无需联网**。
 
 ---
 
@@ -110,10 +110,10 @@ rm -rf dist_input/cfr_extract
 
 "$JP21" --type app-image --name BempDiff --input dist_input --main-jar app.jar \
   --module-path dist_input --add-modules javafx.controls,javafx.fxml,org.kordamp.bootstrapfx.core,org.kordamp.ikonli.core,org.kordamp.ikonli.javafx,org.kordamp.ikonli.bootstrapicons \
-  --dest dist_exe --java-options "-Dfile.encoding=UTF-8"
+  --dest dist --java-options "-Dfile.encoding=UTF-8"
 ```
 
-产出：`dist_exe/BempDiff/BempDiff.exe`（含 `runtime/` 内嵌 JRE 与 `app/` 下 javafx 模块）。
+产出：`dist/BempDiff/BempDiff.exe`（含 `runtime/` 内嵌 JRE 与 `app/` 下 javafx 模块）。
 双击即用。**`--type app-image` 不需要 Wix**（仅 `.msi`/安装包类型才需要）。
 
 ### 6.1 双模：GUI 双击 + 命令行 headless
@@ -128,6 +128,9 @@ BempDiff.exe compare  <old> <new> [--expand-all]
 BempDiff.exe report   <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--out <md>]
 BempDiff.exe export   <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--out <dir>]
 BempDiff.exe decompile/inspect/ai ...   # 同 Main 用法
+# ai 子命令支持项目级上下文增强（离线扫描工程，作为 AI 分析依据）：
+BempDiff.exe ai <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] \
+    [--project <工程目录>] [--replay <dir>] [--apikey KEY] [--baseurl URL] [--provider P]
 ```
 
 > ⚠️ 默认 `app-image` 启动器是 **GUI 子系统**，headless 模式输出需用 `> out.txt 2>&1` 重定向到文件才能看到（直接双击控制台看不到）。
@@ -136,7 +139,7 @@ BempDiff.exe decompile/inspect/ai ...   # 同 Main 用法
 ```bash
 "$JP21" --type app-image --name BempDiff --input dist_input --main-jar app.jar \
   --module-path dist_input --add-modules javafx.controls,javafx.fxml,org.kordamp.bootstrapfx.core,org.kordamp.ikonli.core,org.kordamp.ikonli.javafx,org.kordamp.ikonli.bootstrapicons \
-  --dest dist_exe --java-options "-Dfile.encoding=UTF-8" --win-console
+  --dest dist --java-options "-Dfile.encoding=UTF-8" --win-console
 ```
 
 （`--win-console` 会让 GUI 模式也弹出一个控制台窗口，属可接受取舍；换来 headless 输出直通终端。）
@@ -147,7 +150,7 @@ BempDiff.exe decompile/inspect/ai ...   # 同 Main 用法
 
 ```bash
 "$JAR21" --create --main-class com.bempdiff.ui.App -f dist_input/app.jar -C javafx_ui/out .
-cp dist_input/app.jar dist_exe/BempDiff/app/app.jar
+cp dist_input/app.jar dist/BempDiff/app/app.jar
 ```
 
 ---
@@ -157,7 +160,7 @@ cp dist_input/app.jar dist_exe/BempDiff/app/app.jar
 - [ ] `java -version` 指向 JDK21（21.x）。
 - [ ] `javafx_ui/out` 编译无错。
 - [ ] `bash javafx_ui/run_ui.sh` 启动无模块/链接报错（沙箱无显示会常驻等待窗口，属正常）。
-- [ ] `dist_exe/BempDiff/BempDiff.exe` 存在；结构含 `runtime/` 与 `app/javafx-*-21-win.jar`。
+- [ ] `dist/BempDiff/BempDiff.exe` 存在；结构含 `runtime/` 与 `app/javafx-*-21-win.jar`。
 - [ ] **交互实测在你 Windows 桌面做**：选两个 war/jar → 开始比对 → 选中类看双栏 diff → ⚙设置填 AI → AI 分析 → 导出报告/资产。
 
 ---

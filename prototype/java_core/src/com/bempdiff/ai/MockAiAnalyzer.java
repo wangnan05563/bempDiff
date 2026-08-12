@@ -1,9 +1,11 @@
 package com.bempdiff.ai;
 
+import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.config.AiConfig;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.model.DecompiledUnit;
+import com.bempdiff.model.FileClass;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -35,8 +37,18 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     }
 
     @Override
-    public String buildStageBPrompt(String key, DecompiledUnit unit, AiConfig cfg) {
-        return PromptBuilders.buildStageB(key, unit, cfg);
+    public String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx) {
+        return PromptBuilders.buildStageA(diff, decompiled, cfg, ctx);
+    }
+
+    @Override
+    public String buildStageBPrompt(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg) {
+        return PromptBuilders.buildStageB(key, unit, fc, cfg);
+    }
+
+    @Override
+    public String buildStageBPrompt(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg, ProjectContext ctx) {
+        return PromptBuilders.buildStageB(key, unit, fc, cfg, ctx);
     }
 
     @Override
@@ -44,12 +56,33 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         String prompt = buildStageAPrompt(diff, decompiled, cfg);
         writePrompt("stageA.prompt.txt", prompt);
         String resp = readResponse("stageA.response.txt");
-        if (resp != null) return parseStageA(resp);
-        // 兜底摘要（离线无回放文件时）
+        if (resp != null) return parseStageA(resp, false);
+        return buildFallbackSummary(diff, null);
+    }
+
+    @Override
+    public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx) {
+        String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx);
+        writePrompt("stageA.prompt.txt", prompt);
+        String resp = readResponse("stageA.response.txt");
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        if (resp != null) return parseStageA(resp, withCtx);
+        return buildFallbackSummary(diff, ctx);
+    }
+
+    private static StageASummary buildFallbackSummary(DiffResult diff, ProjectContext ctx) {
         StageASummary s = new StageASummary();
         s.setOverallRisk(DEFAULT_RISK);
-        s.setImpactScope("离线回放模式：未提供 stageA.response.txt，使用内置兜底摘要。差异文件数="
-                + (diff.get(DiffStatus.ADDED).size() + diff.get(DiffStatus.DELETED).size() + diff.get(DiffStatus.MODIFIED).size()));
+        int changed = diff.get(DiffStatus.ADDED).size() + diff.get(DiffStatus.DELETED).size()
+                + diff.get(DiffStatus.MODIFIED).size();
+        if (ctx != null && !ctx.isEmpty()) {
+            s.setImpactScope("离线回放模式（含项目上下文[" + ctx.getBuildSystem() + "]）：未提供 stageA.response.txt，"
+                    + "使用内置兜底摘要。差异文件数=" + changed);
+            s.setContextInfluence("已结合项目上下文（构建系统=" + ctx.getBuildSystem()
+                    + "）做基础判断；未接入 LLM，影响评估限于结构层面。");
+        } else {
+            s.setImpactScope("离线回放模式：未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
+        }
         s.setTestThemes(java.util.Arrays.asList("回归核心业务流程", "校验对外接口兼容性", "验证删除类无外部依赖"));
         s.setFileRisks(new ArrayList<>());
         return s;
@@ -57,17 +90,26 @@ public final class MockAiAnalyzer implements AiAnalyzer {
 
     @Override
     public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg) {
+        return stageB(candidates, cfg, null);
+    }
+
+    @Override
+    public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx) {
         List<FileAnalysis> out = new ArrayList<>();
         int idx = 0;
+        boolean withCtx = ctx != null && !ctx.isEmpty();
         for (DecompileReq req : candidates) {
-            String prompt = buildStageBPrompt(req.key, req.unit, cfg);
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx);
             writePrompt("stageB." + idx + ".prompt.txt", prompt);
             String resp = readResponse("stageB." + idx + ".response.txt");
             if (resp != null) {
-                out.add(parseFileAnalysis(req.key, resp));
+                out.add(parseFileAnalysis(req.key, resp, withCtx));
             } else {
+                String influence = withCtx
+                        ? "已结合项目上下文（" + ctx.getBuildSystem() + "）做基础判断；未接入 LLM。"
+                        : "";
                 out.add(new FileAnalysis(req.key, "离线回放模式：未提供回放响应", DEFAULT_RISK,
-                        "需人工核对", java.util.Arrays.asList("回归该类的调用方")));
+                        "需人工核对", java.util.Arrays.asList("回归该类的调用方"), influence));
             }
             idx++;
         }
@@ -82,50 +124,169 @@ public final class MockAiAnalyzer implements AiAnalyzer {
 
     // ---- 轻量解析（足够验证流程；量产能用 JSON 库严格解析） ----
     public static StageASummary parseStageAStatic(String resp) {
+        return parseStageAStatic(resp, false);
+    }
+
+    public static StageASummary parseStageAStatic(String resp, boolean withContext) {
         StageASummary s = new StageASummary();
         s.setOverallRisk(pick(resp, "overallRisk", DEFAULT_RISK));
         s.setImpactScope(pick(resp, "impactScope", ""));
-        List<String> themes = new ArrayList<>();
-        for (String t : resp.split("\n")) {
-            String t2 = t.trim();
-            if (t2.startsWith("-") && (t2.contains("测试") || t2.contains("回归") || t2.contains("验证"))) {
-                themes.add(t2.replaceFirst("^-", "").trim());
+        // 测试主题：优先从 JSON 数组提取，回退 markdown 行扫描
+        List<String> themes = extractStringArray(resp, "testThemes", "test_themes", "测试主题");
+        if (themes == null) themes = new ArrayList<>();
+        if (themes.isEmpty()) {
+            for (String t : resp.split("\n")) {
+                String t2 = t.trim();
+                if (t2.startsWith("-") && (t2.contains("测试") || t2.contains("回归") || t2.contains("验证"))) {
+                    themes.add(t2.replaceFirst("^-", "").trim());
+                }
             }
         }
         s.setTestThemes(themes);
-        s.setFileRisks(new ArrayList<>());
+        // 每文件初评风险：从 JSON 数组（fileRisks / files）提取
+        List<FileRisk> risks = extractFileRiskArray(resp, "fileRisks", "files", "file_risks");
+        s.setFileRisks(risks != null ? risks : new ArrayList<>());
+        if (withContext) {
+            s.setContextInfluence(pick(resp, "contextInfluence", pick(resp, "上下文影响", "")));
+        }
         return s;
     }
 
     public static FileAnalysis parseFileAnalysisStatic(String key, String resp) {
+        return parseFileAnalysisStatic(key, resp, false);
+    }
+
+    public static FileAnalysis parseFileAnalysisStatic(String key, String resp, boolean withContext) {
+        String influence = withContext ? pick(resp, "contextInfluence", pick(resp, "上下文影响", "")) : "";
+        // 测试要点：从 JSON 数组（testPoints 等）提取
+        List<String> testPoints = extractStringArray(resp, "testPoints", "test_points", "testingPoints", "测试要点");
+        if (testPoints == null) testPoints = new ArrayList<>();
         return new FileAnalysis(key, pick(resp, "intent", ""), pick(resp, "risk", DEFAULT_RISK),
-                pick(resp, "impact", ""), new ArrayList<>());
+                pick(resp, "impact", ""), testPoints, influence);
     }
 
-    private static StageASummary parseStageA(String resp) {
-        return parseStageAStatic(resp);
+    private static StageASummary parseStageA(String resp, boolean withContext) {
+        return parseStageAStatic(resp, withContext);
     }
 
-    private static FileAnalysis parseFileAnalysis(String key, String resp) {
-        return parseFileAnalysisStatic(key, resp);
+    private static FileAnalysis parseFileAnalysis(String key, String resp, boolean withContext) {
+        return parseFileAnalysisStatic(key, resp, withContext);
     }
 
     private static String pick(String resp, String field, String def) {
         for (String line : resp.split("\n")) {
-            // 纯文本形态: field: value
-            int i = line.indexOf(field + ":");
-            if (i >= 0) return line.substring(i + field.length() + 1).trim().replaceAll("[\"',]", "");
-            // JSON 形态: "field": "value"（仅取本字段标量，避免越界吞掉后续字段）
-            int j = line.indexOf("\"" + field + "\"");  // JSON 形态
+            // JSON 形态优先: "field": "value"（仅取本字段标量，避免越界吞掉后续字段）
+            int j = line.indexOf("\"" + field + "\"");
             if (j >= 0) {
                 int c = line.indexOf(':', j);
                 if (c >= 0) {
                     String val = extractJsonScalar(line, c + 1);
-                    if (val != null) return val;
+                    if (val != null && !val.isEmpty()) return val;
                 }
             }
+            // 纯文本形态: field: value（兜底，兼容非 JSON 输出）
+            int i = line.indexOf(field + ":");
+            if (i >= 0) return line.substring(i + field.length() + 1).trim().replaceAll("[\"',]", "");
         }
         return def;
+    }
+
+    /** 提取 JSON 字符串数组（候选字段名依次尝试）。未找到返回 null；找到空数组返回空列表。 */
+    private static List<String> extractStringArray(String resp, String... fieldNames) {
+        String inner = findJsonArray(resp, fieldNames);
+        if (inner == null) return null;
+        List<String> out = new ArrayList<>();
+        boolean inStr = false, escaped = false;
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (escaped) { cur.append(unescape(c)); escaped = false; continue; }
+            if (c == '\\') { escaped = true; continue; }
+            if (c == '"') {
+                if (inStr) { out.add(cur.toString()); cur.setLength(0); inStr = false; }
+                else inStr = true;
+                continue;
+            }
+            if (inStr) cur.append(c);
+        }
+        return out;
+    }
+
+    /** 提取 JSON 对象数组为 FileRisk 列表（候选字段名依次尝试）。未找到返回 null。 */
+    private static List<FileRisk> extractFileRiskArray(String resp, String... fieldNames) {
+        String inner = findJsonArray(resp, fieldNames);
+        if (inner == null) return null;
+        List<FileRisk> out = new ArrayList<>();
+        int depth = 0, objStart = -1;
+        boolean inStr = false, escaped = false;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (escaped) { escaped = false; continue; }
+            if (c == '\\') { escaped = true; continue; }
+            if (c == '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+            if (c == '{') { if (depth == 0) objStart = i; depth++; }
+            else if (c == '}') { depth--; if (depth == 0 && objStart >= 0) {
+                out.add(parseFileRiskObject(inner.substring(objStart + 1, i)));
+                objStart = -1;
+            } }
+        }
+        return out;
+    }
+
+    /** 解析单个 fileRisks 对象（key/risk/oneLineReason，兼容别名）。 */
+    private static FileRisk parseFileRiskObject(String obj) {
+        String key = pickObjectField(obj, "key", "fileName", "file");
+        String risk = pickObjectField(obj, "risk", "riskLevel");
+        String reason = pickObjectField(obj, "oneLineReason", "reason", "description");
+        return new FileRisk(key.isEmpty() ? "?" : key, risk.isEmpty() ? DEFAULT_RISK : risk, reason);
+    }
+
+    /** 从子对象串中取字段（JSON 形态）。逐个候选名尝试，命中非空即返回。 */
+    private static String pickObjectField(String obj, String... names) {
+        for (String n : names) {
+            String v = pick(obj, n, null);
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return "";
+    }
+
+    /** 在响应中定位首个候选字段名对应的 JSON 数组内部文本（不含外层方括号）。 */
+    private static String findJsonArray(String resp, String... fieldNames) {
+        for (String name : fieldNames) {
+            int idx = resp.indexOf("\"" + name + "\"");
+            if (idx < 0) continue;
+            int bracket = resp.indexOf('[', idx);
+            if (bracket < 0) continue;
+            int depth = 0, end = -1;
+            boolean inStr = false, escaped = false;
+            for (int i = bracket; i < resp.length(); i++) {
+                char c = resp.charAt(i);
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (c == '"') { inStr = !inStr; continue; }
+                if (inStr) continue;
+                if (c == '[') depth++;
+                else if (c == ']') { depth--; if (depth == 0) { end = i; break; } }
+            }
+            if (end > bracket) return resp.substring(bracket + 1, end);
+        }
+        return null;
+    }
+
+    /** 还原 JSON 转义字符（用于数组字符串值内）。 */
+    private static char unescape(char c) {
+        switch (c) {
+            case 'n': return '\n';
+            case 't': return '\t';
+            case 'r': return '\r';
+            case 'b': return '\b';
+            case 'f': return '\f';
+            case '/': return '/';
+            case '\\': return '\\';
+            case '"': return '"';
+            default: return c;
+        }
     }
 
     /** 从 JSON 冒号后提取标量值（字符串或数字/布尔/null）。字符串取到匹配的右引号；其余取到逗号/右花括号。 */

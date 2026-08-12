@@ -148,7 +148,7 @@ public final class PackageParser {
             processNonLibEntries(zf, prefixes.libPrefix, prefixes.classesPrefix,
                     type, expandAll, cfg, entries);
 
-            String version = extractVersion(zf);
+            String version = pickBestVersion(extractVersion(zf), extractVersionFromFileName(file));
             return new PackageSnapshot(file, type, version, entries);
         }
     }
@@ -237,6 +237,13 @@ public final class PackageParser {
         }
     }
 
+    /** 供 FolderParser 复用：对磁盘上的真实文件流式计算 sha256（不驻留整文件字节）。 */
+    public static String sha256(Path p) throws IOException {
+        try (InputStream in = Files.newInputStream(p)) {
+            return sha256Stream(in);
+        }
+    }
+
     /** 返回临时 jar 文件（用于嵌套 zip 打开）。量产版可改用内存映射，原型/移植用临时文件。 */
     private File createTempJar(byte[] data) throws IOException {
         File f = File.createTempFile("bempdiff-nested-", ".jar");
@@ -308,9 +315,9 @@ public final class PackageParser {
     }
 
     private String extractVersion(ZipFile zf) {
-        String version = extractVersionFromManifest(zf);
-        if (version != null) return version;
-        return extractVersionFromPom(zf);
+        String manifest = extractVersionFromManifest(zf);
+        String pom = extractVersionFromPom(zf);
+        return pickBestVersion(manifest, pom);
     }
 
     private String extractVersionFromManifest(ZipFile zf) {
@@ -320,15 +327,54 @@ public final class PackageParser {
                 return null;
             }
             String txt = new String(readAll(zf, mf), StandardCharsets.UTF_8);
+            String best = null;
             for (String line : txt.split("\n")) {
-                if (line.startsWith("Implementation-Version:")) {
-                    return line.split(":", 2)[1].trim();
+                for (String key : MANIFEST_VERSION_KEYS) {
+                    if (line.startsWith(key + ":")) {
+                        String v = line.split(":", 2)[1].trim();
+                        best = pickBestVersion(best, v);
+                    }
                 }
             }
+            return best;
         } catch (IOException e) {
             LOG.fine("无法读取 MANIFEST.MF: " + e.getMessage());
         }
         return null;
+    }
+
+    /** MANIFEST.MF 中可能携带版本号的 key（按常见优先级）。 */
+    private static final String[] MANIFEST_VERSION_KEYS = {
+            "Bundle-Version",
+            "Implementation-Version",
+            "Specification-Version",
+            "Build-Version",
+            "Version"
+    };
+
+    /** 从包文件名兜底提取版本号，支持 old-1.6.1.war / app-1.6.1-SNAPSHOT.jar 等。 */
+    private String extractVersionFromFileName(Path file) {
+        String name = file.getFileName().toString();
+        // 取最后一个点之前的部分
+        int lastDot = name.lastIndexOf('.');
+        String stem = (lastDot > 0) ? name.substring(0, lastDot) : name;
+        // 优先匹配末尾的 x.y.z... 版本段（数字.数字.数字... 或带 -SNAPSHOT 等后缀）
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("[Vv]?([0-9]+(?:\\.[0-9]+)*(?:[-_][A-Za-z0-9]+)?)$");
+        java.util.regex.Matcher m = p.matcher(stem);
+        if (m.find()) {
+            return m.group(1);
+        }
+        return null;
+    }
+
+    /** 在多个版本来源中取"最详细"的一个：段数更多优先；段数相同则字符更长优先。 */
+    private String pickBestVersion(String a, String b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        int sa = a.split("\\.").length;
+        int sb = b.split("\\.").length;
+        if (sa != sb) return (sa > sb) ? a : b;
+        return (a.length() >= b.length()) ? a : b;
     }
 
     private String extractVersionFromPom(ZipFile zf) {
@@ -356,13 +402,30 @@ public final class PackageParser {
     public static FileClass classify(String name) {
         if (name.endsWith(CLASS_EXT)) return FileClass.CLASS;
         if (name.endsWith(".jar")) return FileClass.JAR;
+        // JSP 页面/标签文件：服务端文本，需内容级逐行 diff（必须先于 CONFIG 判定，
+        // 否则 .jspx 等 XML 语法变体会被 CONFIG 抢走）。
+        if (name.endsWith(".jsp") || name.endsWith(".jspx")
+                || name.endsWith(".tag") || name.endsWith(".tagx")) return FileClass.JSP;
+        // 文本配置 / 描述符 / 模板：纳入内容 diff（XML/Properties/YAML/JSON/TLD/XHTML/WS
+        // DL/XSL/模板语言等）；.svg 视作图片（二进制 sha 比对，见下方 STATIC）。
         if (name.endsWith(".xml") || name.endsWith(".properties") || name.endsWith(".yml")
                 || name.endsWith(".yaml") || name.endsWith(".json") || name.endsWith(".conf")
-                || name.endsWith(".cfg")) return FileClass.CONFIG;
-        if (name.endsWith(".jsp") || name.endsWith(".html") || name.endsWith(".js")
-                || name.endsWith(".css") || name.endsWith(".png") || name.endsWith(".jpg")
-                || name.endsWith(".gif") || name.endsWith(".svg") || name.endsWith(".woff")
-                || name.endsWith(".woff2") || name.endsWith(".ttf") || name.endsWith(".eot"))
+                || name.endsWith(".cfg") || name.endsWith(".tld") || name.endsWith(".xhtml")
+                || name.endsWith(".wsdl") || name.endsWith(".xsl") || name.endsWith(".xslt")
+                || name.endsWith(".dtd") || name.endsWith(".vm") || name.endsWith(".ftl")
+                || name.endsWith(".ini") || name.endsWith(".toml") || name.endsWith(".txt")
+                || name.endsWith(".csv")) return FileClass.CONFIG;
+        // 前端源码文本：纳入内容 diff 与 AI 分析（FR4.4 增强）
+        if (name.endsWith(".js")) return FileClass.JS;
+        if (name.endsWith(".html") || name.endsWith(".htm")) return FileClass.HTML;
+        if (name.endsWith(".css")) return FileClass.CSS;
+        // 二进制静态资源（图片/字体/原生库）：仅比对存在性 + sha256（FR4.8）。
+        // 图片按需求以哈希/字节级比对，故 .svg 也归入此处（视为图片资源）。
+        if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")
+                || name.endsWith(".gif") || name.endsWith(".bmp") || name.endsWith(".ico")
+                || name.endsWith(".webp") || name.endsWith(".svg") || name.endsWith(".woff")
+                || name.endsWith(".woff2") || name.endsWith(".ttf") || name.endsWith(".eot")
+                || name.endsWith(".so") || name.endsWith(".dll") || name.endsWith(".exe"))
             return FileClass.STATIC;
         return FileClass.OTHER;
     }

@@ -81,4 +81,42 @@ public final class DiffEngine {
         }
         return cands;
     }
+
+    /**
+     * 收集「前端源码文本候选」（MODIFIED/ADDED/DELETED 中、分类为 JS/HTML/CSS 的条目）。
+     * 这些文件需做美化后内容 diff 与 AI 分析（FR4.4 增强）。返回全量候选，调用方按需截断。
+     */
+    public static List<String> collectFrontendTextCandidates(DiffResult r, PackageSnapshot oldSnap, PackageSnapshot newSnap) {
+        List<String> cands = new ArrayList<>();
+        for (DiffStatus st : new DiffStatus[]{DiffStatus.MODIFIED, DiffStatus.ADDED, DiffStatus.DELETED}) {
+            for (String k : r.get(st)) {
+                LogicalEntry oe = oldSnap.getEntries().get(k);
+                LogicalEntry ne = newSnap.getEntries().get(k);
+                boolean isFrontend = (oe != null && oe.getFileClass().isFrontendText())
+                        || (ne != null && ne.getFileClass().isFrontendText());
+                if (isFrontend) cands.add(k);
+            }
+        }
+        return cands;
+    }
+
+    /**
+     * 收集「可内容 diff 的文本资源候选」（MODIFIED/ADDED/DELETED 中、分类为
+     * CONFIG/JSP/JS/HTML/CSS 的条目）。本需求扩展：在原有前端文本基础上纳入
+     * XML/Properties 等配置文件与 JSP 页面，统一做内容级逐行 diff。
+     * 返回全量候选，调用方按需截断（Top-K）。
+     */
+    public static List<String> collectTextDiffCandidates(DiffResult r, PackageSnapshot oldSnap, PackageSnapshot newSnap) {
+        List<String> cands = new ArrayList<>();
+        for (DiffStatus st : new DiffStatus[]{DiffStatus.MODIFIED, DiffStatus.ADDED, DiffStatus.DELETED}) {
+            for (String k : r.get(st)) {
+                LogicalEntry oe = oldSnap.getEntries().get(k);
+                LogicalEntry ne = newSnap.getEntries().get(k);
+                boolean isText = (oe != null && oe.getFileClass().isTextDiffable())
+                        || (ne != null && ne.getFileClass().isTextDiffable());
+                if (isText) cands.add(k);
+            }
+        }
+        return cands;
+    }
 }
