@@ -12,6 +12,7 @@ import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.export.AssetExporter;
 import com.bempdiff.model.DecompiledUnit;
+import com.bempdiff.model.FileClass;
 import com.bempdiff.model.Layer;
 import com.bempdiff.model.LogicalEntry;
 import com.bempdiff.model.PackageSnapshot;
@@ -359,7 +360,7 @@ public final class Harness {
                 overallRisk = s.getOverallRisk();
             } else {
                 List<AiAnalyzer.DecompileReq> bCands = new ArrayList<>();
-                for (String k : cands) bCands.add(new AiAnalyzer.DecompileReq(k, decompiled.get(k)));
+                for (String k : cands) bCands.add(new AiAnalyzer.DecompileReq(k, decompiled.get(k), FileClass.CLASS));
                 if (bCands.size() > cfg.getStageBTopK()) bCands = bCands.subList(0, cfg.getStageBTopK());
                 List<FileAnalysis> fa = analyzer.stageB(bCands, cfg);
                 stageBCount = fa.size();
@@ -399,7 +400,7 @@ public final class Harness {
                 try { decompiled.put(cands.get(i), futures.get(i).get()); } catch (Exception ignored) {}
             }
             Path out = Files.createTempFile("bempdiff-report-", ".md");
-            new MarkdownReport(topK).writeToFile(o, n, r, s, decompiled, out);
+            new MarkdownReport(topK).writeToFile(o, n, r, s, decompiled, new LinkedHashMap<>(), out);
             long ms = (System.nanoTime() - t0) / 1_000_000;
             long size = Files.size(out);
             StringBuilder b = new StringBuilder();
