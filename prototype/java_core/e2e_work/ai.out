@@ -1,0 +1,17 @@
+8月 12, 2026 1:08:14 上午 com.bempdiff.Main ai
+信息: [AI] 使用 MockAiAnalyzer（离线回放，--apikey 未提供）
+8月 12, 2026 1:08:14 上午 com.bempdiff.Main ai
+信息: [AI] 连接测试=true
+== AI (两阶段 / 离线回放) ==
+阶段A: overallRisk=MEDIUM 影响=离线回放模式：未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=8
+阶段A: 测试主题=[回归核心业务流程, 校验对外接口兼容性, 验证删除类无外部依赖]
+阶段A prompt tokens≈1742 成本闸门触发=false (阈值8000.0)
+阶段B: 深读文件数=7 / 候选=1
+  - WEB-INF/classes/com/demo/Demo.class | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+  - css/style.css | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+  - static/app.js | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+  - static/app.min.js | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+  - templates/page.html | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+  - static/new-feature.js | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+  - static/old-lib.js | risk=MEDIUM | intent=离线回放模式：未提供回放响应
+prompt 已落地: D:\code\otherProjects\18_comparePakage\prototype\java_core\e2e_work\ai_replay

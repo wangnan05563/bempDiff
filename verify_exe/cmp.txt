@@ -1,0 +1,18 @@
+== COMPARE ==
+old: demo_v1.war  version=1
+new: demo_v2.war  version=2
+stats: added=2 deleted=0 modified=8 unchanged=3 | bizChanged=10 jarChanged=0
+--- tree (status / layer) ---
+        MODIFIED [L1] WEB-INF/classes/com/example/Service.class
+    MODIFIED [L1] WEB-INF/classes/config.properties
+  MODIFIED [L0] WEB-INF/web.xml
+MODIFIED [L0] index.jsp
+  MODIFIED [L0] static/app.js
+  MODIFIED [L0] static/logo.png
+  MODIFIED [L0] static/style.css
+  MODIFIED [L0] tags/common.tag
+    ADDED [L1] WEB-INF/classes/new.properties
+ADDED [L0] new.jsp
+  UNCHANGED [L0] META-INF/MANIFEST.MF
+        UNCHANGED [L1] WEB-INF/lib/util-lib.jar/META-INF/MANIFEST.MF
+          UNCHANGED [L1] WEB-INF/lib/util-lib.jar/com/lib/Util.class

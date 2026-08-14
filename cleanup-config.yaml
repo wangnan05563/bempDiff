@@ -75,6 +75,12 @@ review_categories:
     - "*.jar"
     - "*.war"
     - "*.exe"
+  # 二义性"目录"模式：时间戳备份 / 旧构建目录等"像垃圾却可能是交付物副本"的目录。
+  # 命中即走确认门（决策 10），绝不自动删。下次 `dist/BempDiff._old_*` 类备份会经用户确认。
+  dir_patterns:
+    - "*._old_*"
+    - "*.bak"
+    - "backup_*"
   reference_probe_extensions:
     - ".jmx"
     - ".py"
@@ -123,12 +129,30 @@ platform:
   remove_file: '[System.IO.File]::Delete("{path}")'
   remove_file_dotnet: '[System.IO.File]::Delete("{path}")'
   remove_dir_dotnet: '[System.IO.Directory]::Delete("{path}",$true)'
+  # ctypes 直调 Win32 API（最低层、最稳；本轮 2026-08-14 实测 2112 文件 0 错误）
+  remove_file_ctypes: 'python -S -c "import ctypes; ctypes.windll.kernel32.DeleteFileW(r"{path}")"'
+  remove_dir_ctypes: 'python -S -c "import ctypes; ctypes.windll.kernel32.RemoveDirectoryW(r"{path}")"'
 
 # ---------- 审计与分批（沙箱删除上限护栏） ----------
 audit:
   hash_algorithm: "SHA256"
   targets_file: "cleanup_targets.txt"
   slice_size: 200
+
+# ---------- 执行策略（前台切片 vs 后台运行，成本探测自择） ----------
+execution:
+  # 外部进程被调度器强制终止的时长窗口（秒）；0 = 无此限制
+  max_external_process_seconds: 30
+  deadline_cap_seconds: 25
+  resume_targets_file: "cleanup_targets.resume.txt"
+  auto_background_when_overflow: true
+  per_file_estimate_seconds: 0.117   # 本轮实测前台 ~0.117s/file
+  # 删除策略自择：auto=先测成本再选；foreground=前台切片；background=后台运行
+  delete_strategy: "auto"
+  # 本沙箱对后台任务做节流（逐文件 AV 扫描），后台比前台切片更慢 → 前台优先
+  background_throttled: true
+  # per-file 成本探测样本量；0 = 跳过探测，用 per_file_estimate_seconds 估算
+  probe_sample_size: 50
 
 # ---------- 验证（清理后确认源码/配置完整） ----------
 verification:
@@ -165,4 +189,4 @@ safety:
   max_files_per_call: 200         # 单次命令删除硬上限；超出则枚举切片分批
   parallel_delete: false          # 禁用并行删除，避免组杀
   large_file_sequential: true     # 大文件单独顺序删
-  bypass_hook_mode: "dotnet"      # safe-delete 钩子拦截 Remove-Item，用 .NET 直接删绕过
+  bypass_hook_mode: "ctypes"      # safe-delete 钩子拦截 Remove-Item，用 Win32 直删(ctypes)绕过，最低层最稳

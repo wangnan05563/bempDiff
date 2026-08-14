@@ -1,0 +1,163 @@
+== DECOMPILE ==
+old: old.war  new: new.war
+L1 class 候选=1 反编译=1 跳过=0 (topK=20)
+----------------------------------------
+KEY   : WEB-INF/classes/com/demo/Demo.class
+ENGINE: cfr(in-process)  OK=true
+DIFF  :
+  /*
+   * Decompiled with CFR 0.152.
+   */
+  package com.demo;
+  
+  class Demo {
+-     private String name = "legacy";
++     private String name = "current";
+  
+      Demo() {
+      }
+  
+      public String sayHello(String string) {
+-         if (string == null || string.isEmpty()) {
++         if (string == null || string.trim().isEmpty()) {
+              return "Hello, guest";
+          }
+-         return "Hello, " + string;
++         return "Hello, " + string.trim();
+      }
+  
+      public int calc(int n, int n2) {
+-         return n + n2;
++         return n * n2;
+      }
++ 
++     public boolean isAdmin(String string) {
++         return "admin".equalsIgnoreCase(string);
++     }
+  }
+  
+
+----------------------------------------
+KEY   : css/style.css (前端 CSS)
+ENGINE: css-beautify  OK=true
+DIFF  :
+- body{margin:0;padding:0;background:#fff;}a{color:#00f;}
++ body{margin:0;padding:8px;background:#fafafa;}a{color:#0a0;}
+
+----------------------------------------
+KEY   : static/app.js (前端 JS)
+ENGINE: js-beautify  OK=true
+DIFF  :
+  function validateForm(form) {
+    var name = form.name.value;
+    if (name.length === 0) {
+-     return false;
++     alert('name required'); return false;
+    }
+    return true;
+  }
+  
+
+----------------------------------------
+KEY   : static/app.min.js (前端 JS)
+ENGINE: js-beautify  OK=true
+DIFF  :
+  function init(){
+    var a=1;
+    var b=2;
+    var total=a+b;
+    function calc(x){
+-     return x*2+total;
++     return x*3+total;
+      
+    }function render(){
+-     document.getElementById('app').innerHTML='old';
++     document.getElementById('app').innerHTML='new-v2';
+      
+    }var api=new Object();
+    api.get=function(){
+      return fetch('/api/x');
+      
+    };
+    function bootstrap(){
+      init();
+      render();
+      calc(10);
+      
+    }window.onload=bootstrap;
+    function init(){
+      var a=1;
+      var b=2;
+      var total=a+b;
+      function calc(x){
+-       return x*2+total;
++       return x*3+total;
+        
+      }function render(){
+-       document.getElementById('app').innerHTML='old';
++       document.getElementById('app').innerHTML='new-v2';
+        
+      }var api=new Object();
+      api.get=function(){
+        return fetch('/api/x');
+        
+      };
+      function bootstrap(){
+        init();
+        render();
+        calc(10);
+        
+      }window.onload=bootstrap;
+      function init(){
+        var a=1;
+        var b=2;
+        var total=a+b;
+        function calc(x){
+-         return x*2+total;
++         return x*3+total;
+          
+        }function render(){
+-         document.getElementById('app').innerHTML='old';
++         document.getElementById('app').innerHTML='new-v2';
+          
+        }var api=new Object();
+        api.get=function(){
+          return fetch('/api/x');
+          
+        };
+        function bootstrap(){
+          init();
+          render();
+          calc(10);
+          
+        }window.onload=bootstrap;
+        
+
+----------------------------------------
+KEY   : templates/page.html (前端 HTML)
+ENGINE: html-beautify  OK=true
+DIFF  :
+  <div>
+  <span>hello</span>
+- <p>old content</p>
++ <p>new content v2</p>
+  </div>
+  <ul>
+  <li>item1</li>
++ <li>item2</li>
+  </ul>
+
+----------------------------------------
+KEY   : static/new-feature.js (前端 JS)
+ENGINE: js-beautify  OK=true
+DIFF  :
+// [新增文件] 老包无此文件
+export function newFeature(){return 'added in v2';}
+----------------------------------------
+KEY   : static/old-lib.js (前端 JS)
+ENGINE: js-beautify  OK=true
+DIFF  :
+// [删除文件] 新包无此文件（前端资源移除，需确认引用方）
+function deprecated(){return 'gone';}
+----------------------------------------
+反编译成功=1 / 1  前端源码比对=6 / 6

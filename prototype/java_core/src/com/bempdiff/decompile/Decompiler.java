@@ -83,7 +83,7 @@ public final class Decompiler {
         }
 
         File tmp = File.createTempFile("bempdiff-cls-", ".class");
-        tmp.deleteOnExit();
+        // 注：finally 中已显式删除，无需 deleteOnExit（避免长生命周期 GUI 累积路径引用）。
         Files.write(tmp.toPath(), classBytes);
         try {
             String result;
@@ -91,13 +91,13 @@ public final class Decompiler {
                 try {
                     result = cfrInProcess(tmp);
                 } catch (Exception cfrFail) {
-                    result = "// [降级] " + JAVAP + "（CFR 进程内失败：" + cfrFail.getMessage() + "）\n" + javap(tmp);
+                    result = "// [降级] CFR 进程内失败：" + cfrFail.getMessage() + "；已回退 javap\n" + javap(tmp);
                 }
             } else if (cfrJar != null && cfrJar.toFile().isFile()) {
                 try {
                     result = cfr(tmp, cfrJar);
                 } catch (IOException cfrFail) {
-                    result = "// [降级] " + JAVAP + "（CFR 失败：" + cfrFail.getMessage() + "）\n" + javap(tmp);
+                    result = "// [降级] CFR 失败：" + cfrFail.getMessage() + "；已回退 javap\n" + javap(tmp);
                 }
             } else {
                 result = javap(tmp);
@@ -194,12 +194,25 @@ public final class Decompiler {
         }
     }
 
-    /** 对单个 key 做双栏源码 diff（prototype: DecompileReq + difflib.unified_diff）。 */
+    /** 对单个 key 做双栏源码 diff（prototype: DecompileReq + difflib.unified_diff）。
+     *  先取出两侧 class 字节，再委托 {@link #decompileBytes(byte[], byte[], String)} 完成反编译与 diff，避免逻辑重复。 */
     public DecompiledUnit decompile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
                                     LogicalEntry oldEntry, LogicalEntry newEntry, String key) {
         try {
             byte[] oldBytes = (oldEntry != null) ? readBytes(oldSnap, oldEntry) : null;
             byte[] newBytes = (newEntry != null) ? readBytes(newSnap, newEntry) : null;
+            return decompileBytes(oldBytes, newBytes, key);
+        } catch (IOException e) {
+            return DecompiledUnit.fail(key, e.getMessage());
+        } catch (Exception e) {
+            return DecompiledUnit.fail(key, e.toString());
+        }
+    }
+
+    /** 直接对原始 class 字节做反编译并双栏源码 diff（供 LibJarDiff 对 lib jar 内部 class 使用）。
+     *  任一側字节为 null 表示该侧不存在（新增类/删除类），与 decompile() 语义一致。 */
+    public DecompiledUnit decompileBytes(byte[] oldBytes, byte[] newBytes, String key) {
+        try {
             String oldSrc = (oldBytes != null) ? decompileOne(oldBytes) : null;
             String newSrc = (newBytes != null) ? decompileOne(newBytes) : null;
             String diff = unifiedDiff(oldSrc, newSrc);

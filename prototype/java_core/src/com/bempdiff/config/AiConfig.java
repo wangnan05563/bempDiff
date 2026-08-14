@@ -19,13 +19,13 @@ public final class AiConfig {
     private boolean blockPrivateEndpoints = false; // 严格 SSRF：额外拒绝回环/私网（本地 Ollama 需关）
 
     public String getProvider() { return provider; }
-    public void setProvider(String v) { this.provider = v; }
+    public void setProvider(String v) { if (v != null) this.provider = v; }
     public String getBaseUrl() { return baseUrl; }
-    public void setBaseUrl(String v) { this.baseUrl = v; }
+    public void setBaseUrl(String v) { this.baseUrl = (v == null) ? "" : v.trim(); }
     public String getApiKey() { return apiKey; }
-    public void setApiKey(String v) { this.apiKey = v; }
+    public void setApiKey(String v) { this.apiKey = (v == null) ? "" : v; }
     public String getModel() { return model; }
-    public void setModel(String v) { this.model = v; }
+    public void setModel(String v) { this.model = (v == null) ? "" : v.trim(); }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean v) { this.enabled = v; }
     public int getStageAFileSampleLines() { return stageAFileSampleLines; }

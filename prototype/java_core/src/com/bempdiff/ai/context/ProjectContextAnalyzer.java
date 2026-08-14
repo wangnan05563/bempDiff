@@ -45,7 +45,7 @@ public final class ProjectContextAnalyzer {
         List<String> entryPoints = findEntryPoints(root, files);
         List<String> configFiles = findConfigFiles(root, files);
         List<String> techStack = inferTechStack(buildSystem, dependencies);
-        List<String> conventions = inferConventions(root, files);
+        List<String> conventions = inferConventions(files);
         String summary = synthesizeSummary(buildSystem, modules, dependencies, entryPoints, conventions);
         return new ProjectContext(root.toString(), buildSystem, modules, dependencies,
                 entryPoints, configFiles, techStack, conventions, summary);
@@ -220,28 +220,44 @@ public final class ProjectContextAnalyzer {
 
     // ---- 约定推断（包根 + 命名） ----
 
-    private static List<String> inferConventions(Path root, List<Path> files) {
+    private static List<String> inferConventions(List<Path> files) {
         Set<String> conv = new LinkedHashSet<>();
-        // 包根：src/main/java 下公共前缀
-        String pkgRoot = null;
-        int maxDepth = -1;
+        // 包根：所有 src/main/java 下 Java 源文件所在包目录（文件名之前的目录）的公共前缀
+        List<String[]> pkgDirs = new ArrayList<>();
         for (Path f : files) {
-            if (!f.toString().replace('\\', '/').contains("/src/main/java/")) continue;
-            Path rel = root.relativize(f);
-            // 去除 src/main/java 之后的部分，取包路径
-            String s = rel.toString().replace('\\', '/');
+            String s = f.toString().replace('\\', '/');
             int idx = s.indexOf("/src/main/java/");
             if (idx < 0) continue;
             String after = s.substring(idx + "/src/main/java/".length());
-            int slash = after.indexOf('/');
-            String base = (slash < 0) ? after : after.substring(0, slash);
-            if (!base.isEmpty() && (pkgRoot == null || base.length() < pkgRoot.length())) {
-                pkgRoot = base;
-                maxDepth = base.split("/").length;
+            int lastSlash = after.lastIndexOf('/');
+            // 去掉文件名，取其所在包的目录路径（如 com/example/foo）
+            String dir = (lastSlash < 0) ? "" : after.substring(0, lastSlash);
+            if (!dir.isEmpty()) {
+                pkgDirs.add(dir.split("/"));
             }
         }
-        if (pkgRoot != null) {
-            conv.add("Java 包根：com 层级 " + pkgRoot.replace('/', '.') + "（" + maxDepth + " 级）");
+        if (!pkgDirs.isEmpty()) {
+            // 计算所有包目录的公共前缀层级（真正的「包根」）
+            String[] first = pkgDirs.get(0);
+            int common = first.length;
+            for (String[] p : pkgDirs) {
+                int lim = Math.min(common, p.length);
+                int i = 0;
+                while (i < lim && p[i].equals(first[i])) i++;
+                common = i;
+            }
+            // 最深包层级（用于判断项目包结构深度）
+            int maxDepth = 0;
+            for (String[] p : pkgDirs) {
+                maxDepth = Math.max(maxDepth, p.length);
+            }
+            StringBuilder rootSb = new StringBuilder();
+            for (int i = 0; i < common; i++) {
+                if (i > 0) rootSb.append('.');
+                rootSb.append(first[i]);
+            }
+            String rootStr = rootSb.length() == 0 ? "(默认包/无层级)" : rootSb.toString();
+            conv.add("Java 包根：" + rootStr + "（公共 " + common + " 级 / 最深 " + maxDepth + " 级）");
         }
         // 命名约定频次
         long mapper = 0, service = 0, controller = 0;

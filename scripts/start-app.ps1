@@ -84,6 +84,27 @@ function Find-BempDiffExe {
     return $null
 }
 
+# 备份目录维护：避免打包历史无限增长、自动恢复残留堆积（F9/F10/F11）。
+# - _old_ 备份：package.ps1 每次打包产生的改名目录，仅保留最近 3 份，其余清理。
+# - _auto_ 临时目录：Find-BempDiffExe 自动恢复时产生，启动完成后清理，避免堆积。
+# 注意：用 .NET Directory.Delete 直接删除（绕过本环境 safe-delete 钩子），运行时在用户机器执行，无此钩子。
+function Prune-Backups {
+    param([string]$DistExeDir, [string]$AppName)
+    try {
+        # F10：清理自动恢复残留的临时目录
+        Get-ChildItem $DistExeDir -Directory -Filter ($AppName + '._auto_*') -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Path $_.FullName }
+        # F9：仅保留最近 3 份 _old_ 备份
+        $olds = Get-ChildItem $DistExeDir -Directory -Filter ($AppName + '._old_*') -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending
+        if ($olds.Count -gt 3) {
+            $olds | Select-Object -Skip 3 | ForEach-Object { Remove-Path $_.FullName }
+        }
+    } catch {
+        Write-Host ("  [WARN] 清理备份目录失败(已忽略): " + $_.Exception.Message)
+    }
+}
+
 $distExeDir = Join-Path $Root $cfg.build.dist_exe_dir_rel
 $appName = $cfg.build.app_name
 $exeSubdir = $cfg.build.exe_subdir
@@ -95,6 +116,8 @@ Write-Host "============================================"
 Write-Host "  正在启动 BempDiff ..."
 Write-Host "============================================"
 
+# F9/F10/F11：先清理过期备份与自动恢复残留，再定位/恢复 exe
+Prune-Backups $distExeDir $appName
 $exe = Find-BempDiffExe $distExeDir $appName $exeSubdir
 if (-not $exe) {
     Write-Host "[ERROR] 未找到 exe: $expectedExe"

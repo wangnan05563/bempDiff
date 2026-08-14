@@ -8,6 +8,7 @@ import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.diff.DiffStats;
 import com.bempdiff.diff.FolderDiff;
+import com.bempdiff.diff.FolderEntryFormatter;
 import com.bempdiff.model.*;
 import com.bempdiff.parse.PackageParser;
 import com.bempdiff.parse.FolderParser;
@@ -122,27 +123,17 @@ public final class Main {
     /** 展开式差异树打印（缩进体现层级，标注状态与属性变更；文本文件内容不同则附行级 diff）。 */
     private static void printFolderTree(List<FolderDiff.FolderEntry> nodes, String indent) {
         for (FolderDiff.FolderEntry e : nodes) {
-            String marker;
-            String name = e.relPath.substring(e.relPath.lastIndexOf('/') + 1);
-            switch (e.status) {
-                case LEFT_ONLY: marker = "[<]"; break;
-                case RIGHT_ONLY: marker = "[>]"; break;
-                case MODIFIED: marker = "[*]"; break;
-                case TYPE_MISMATCH: marker = "[!]"; break;
-                default: marker = "[=]";
-            }
-            // 目录自身为 SAME 但子树含差异时，显式标注，避免父节点"看起来没变"
-            boolean subtreeDiff = e.type == FolderDiff.EntryType.DIR
-                    && e.status == FolderDiff.FolderDiffStatus.SAME && FolderDiff.subtreeHasDiff(e);
-            if (subtreeDiff) marker = "[*]";
+            String marker = FolderEntryFormatter.marker(e);
+            String name = FolderEntryFormatter.name(e);
             StringBuilder sb = new StringBuilder();
             sb.append(indent).append(marker).append(' ').append(name);
             if (e.type == FolderDiff.EntryType.DIR) sb.append('/');
-            if (e.status == FolderDiff.FolderDiffStatus.MODIFIED) sb.append(' ').append(attrSummary(e));
-            else if (subtreeDiff) sb.append(" (子树含差异)");
+            if (e.status == FolderDiff.FolderDiffStatus.MODIFIED) sb.append(' ').append(FolderEntryFormatter.attrSummary(e));
+            else if (FolderEntryFormatter.subtreeDiff(e)) sb.append(" (子树含差异)");
             System.out.println(sb); // NOSONAR
-            if (e.lineDiff != null) {
-                for (String line : e.lineDiff.split("\n", -1)) {
+            List<String> lines = FolderEntryFormatter.lineDiffLines(e);
+            if (lines != null) {
+                for (String line : lines) {
                     System.out.println(indent + "    " + line); // NOSONAR
                 }
             }
@@ -150,18 +141,6 @@ public final class Main {
                 printFolderTree(e.children, indent + "  ");
             }
         }
-    }
-
-    /** MODIFIED 条目的属性/内容变更摘要（供树与报告复用）。 */
-    private static String attrSummary(FolderDiff.FolderEntry e) {
-        List<String> parts = new ArrayList<>();
-        if (e.attrChanges.contains(FolderDiff.AttrChange.SIZE))
-            parts.add("大小 " + FolderDiff.fmtSize(e.sizeLeft) + "→" + FolderDiff.fmtSize(e.sizeRight));
-        if (e.attrChanges.contains(FolderDiff.AttrChange.MTIME))
-            parts.add("修改时间 " + FolderDiff.fmtMtime(e.mtimeLeft) + "→" + FolderDiff.fmtMtime(e.mtimeRight));
-        if (e.attrChanges.contains(FolderDiff.AttrChange.CONTENT)) parts.add("内容不同");
-        if (e.attrChanges.contains(FolderDiff.AttrChange.TYPE)) parts.add("类型冲突(文件/目录)");
-        return "[" + String.join(", ", parts) + "]";
     }
 
     /** 统一的差异树打印（按 status 分组，缩进体现层级，标注 layer）。 */
@@ -274,6 +253,10 @@ public final class Main {
         }
         Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
 
+        // Req 6：差异依赖 JAR 内部源码对比章节（自动识别差异 lib jar → 反编译内部 class → 源码级 diff）
+        com.bempdiff.diff.LibJarDiff.Result libJar = com.bempdiff.diff.LibJarDiff.analyze(
+                oldSnap, newSnap, r, dec, topK);
+
         MarkdownReport rep = new MarkdownReport(topK);
 
         // --ai：两阶段 AI 分析并写回「七、AI 智能分析」章节（FR-CX-01），支持项目级上下文增强。
@@ -329,20 +312,74 @@ public final class Main {
             } catch (RuntimeException ex) {
                 LOG.log(java.util.logging.Level.WARNING, "[AI] 阶段B 调用失败，已降级（仅保留阶段A）：{0}", ex.getMessage());
             }
-            rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, summary, b, ctx, outMd);
+            rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, summary, b, ctx, libJar, outMd);
             System.out.println("== REPORT (AI) =="); // NOSONAR
-            System.out.println("项目级上下文: " + (ctx != null ? ("已启用（构建系统=" + ctx.getBuildSystem() + ", 模块数=" + ctx.getModules().size() + "）") : "未启用")); // NOSONAR
+            System.out.println("项目级上下文: " + (ctx != null && !ctx.isEmpty() ? ("已启用（构建系统=" + ctx.getBuildSystem() + ", 模块数=" + ctx.getModules().size() + "）") : "未启用")); // NOSONAR
             System.out.println("out: " + outMd); // NOSONAR
             System.out.println("AI 整体风险=" + summary.getOverallRisk() + "  阶段B 深读=" + b.size() + " 文件"); // NOSONAR
-            System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size()); // NOSONAR
+            System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size()
+                    + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
             return;
         }
 
-        rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, outMd);
+        rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
         System.out.println("== REPORT =="); // NOSONAR
         System.out.println("out: " + outMd); // NOSONAR
         System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size()
-                + "  text=" + text.size()); // NOSONAR
+                + "  text=" + text.size()
+                + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
+    }
+
+    /** Req 6：差异依赖 JAR 内部源码对比。自动识别差异 lib jar → 提取内部 class → 反编译 → 逐对源码 diff，
+     *  输出聚焦报告（含「五、差异依赖 JAR 内部源码对比」章节）+ 控制台汇总。 */
+    private static void diffJars(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
+        PackageParser parser = new PackageParser();
+        ParseConfig cfg = new ParseConfig();
+        PackageSnapshot oldSnap = parser.parse(oldP, cfg, expandAll);
+        PackageSnapshot newSnap = parser.parse(newP, cfg, expandAll);
+        DiffEngine engine = new DiffEngine();
+        DiffResult r = engine.compute(oldSnap, newSnap);
+        DiffStats s = engine.stats(r);
+
+        Decompiler dec = new Decompiler(cfrJar, findJava());
+        com.bempdiff.diff.LibJarDiff.Result libJar = com.bempdiff.diff.LibJarDiff.analyze(
+                oldSnap, newSnap, r, dec, topK);
+
+        System.out.println("== DIFF-JARS =="); // NOSONAR
+        System.out.println("old: " + oldP.getFileName()); // NOSONAR
+        System.out.println("new: " + newP.getFileName()); // NOSONAR
+        if (libJar.isEmpty()) {
+            System.out.println("差异依赖 JAR: 无（WEB-INF/lib 下无 ADDED/MODIFIED/DELETED 的 JAR）"); // NOSONAR
+        } else {
+            long jarAdded = 0, jarModified = 0, jarDeleted = 0;
+            for (com.bempdiff.diff.LibJarDiff.DiffJarInfo jar : libJar.jars) {
+                if (jar.jarStatus == DiffStatus.ADDED) jarAdded++;
+                else if (jar.jarStatus == DiffStatus.MODIFIED) jarModified++;
+                else if (jar.jarStatus == DiffStatus.DELETED) jarDeleted++;
+            }
+            System.out.println("差异依赖 JAR 数: " + libJar.totalJars // NOSONAR
+                    + "（新增=" + jarAdded + " / 修改=" + jarModified + " / 删除=" + jarDeleted + "）"); // NOSONAR
+            for (com.bempdiff.diff.LibJarDiff.DiffJarInfo jar : libJar.jars) {
+                System.out.println("  - " + jar.jarKey + " [" + jar.jarStatus + "]" // NOSONAR
+                        + "  class: +" + jar.added + " -" + jar.removed
+                        + " ~" + jar.modified + " =" + jar.unchanged); // NOSONAR
+            }
+            System.out.println("内部 class 合计: 新增 " + libJar.totalAdded // NOSONAR
+                    + " · 删除 " + libJar.totalRemoved + " · 修改 " + libJar.totalModified
+                    + " · 未变 " + libJar.totalUnchanged); // NOSONAR
+        }
+
+        // 生成聚焦报告（含通用章节 + 差异 JAR 内部源码对比章节）
+        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
+        List<String> cands = DiffEngine.collectL1ClassCandidates(r, oldSnap, newSnap);
+        if (cands.size() > topK) cands = cands.subList(0, topK);
+        for (String k : cands) {
+            decompiled.put(k, dec.decompile(oldSnap, newSnap,
+                    oldSnap.getEntries().get(k), newSnap.getEntries().get(k), k));
+        }
+        Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
+        new MarkdownReport(topK).writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
+        System.out.println("report: " + outMd); // NOSONAR
     }
 
     /** 从持久化 ui-config.properties 加载 AI 配置（与 UI 同路径）；CLI --apikey/--baseurl/--provider/--model/--aiconfig 可覆盖。 */
@@ -508,7 +545,7 @@ public final class Main {
         }
 
         System.out.println("== AI (两阶段 / 离线回放) =="); // NOSONAR
-        System.out.println("项目级上下文: " + (ctx != null ? ("已启用（构建系统=" + ctx.getBuildSystem() + ", 模块数=" + ctx.getModules().size() + "）") : "未启用")); // NOSONAR
+        System.out.println("项目级上下文: " + (ctx != null && !ctx.isEmpty() ? ("已启用（构建系统=" + ctx.getBuildSystem() + ", 模块数=" + ctx.getModules().size() + "）") : "未启用")); // NOSONAR
         System.out.println("阶段A: overallRisk=" + summary.getOverallRisk() + " 影响=" + summary.getImpactScope()); // NOSONAR
         if (ctx != null && summary.getContextInfluence() != null && !summary.getContextInfluence().isEmpty()) {
             System.out.println("阶段A 上下文影响: " + summary.getContextInfluence()); // NOSONAR
@@ -602,18 +639,34 @@ public final class Main {
             case "report":
                 requireArgs(args, 3, cmd);
                 report(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
-                        outPath(a, "--out", "bempdiff-report.md"), a);
+                        reportOutPath(a, "bempdiff-report.md"), a);
                 break;
             case "export":
                 requireArgs(args, 3, cmd);
                 export(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
                         outPath(a, "--out", "bempdiff-export"));
                 break;
+            case "diff-jars":
+                requireArgs(args, 3, cmd);
+                diffJars(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
+                        reportOutPath(a, "bempdiff-libjar-report.md"));
+                break;
             case "ai":
                 requireArgs(args, 3, cmd);
                 ai(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
                         outPath(a, "--replay", "bempdiff-ai-replay"), a);
                 break;
+            case "server": {
+                int srvPort = 18765;
+                Path srvWeb = null;
+                if (a.contains("--port")) srvPort = Integer.parseInt(a.get(a.indexOf("--port") + 1));
+                if (a.contains("--webroot")) srvWeb = Paths.get(a.get(a.indexOf("--webroot") + 1));
+                com.bempdiff.server.BempServer srv =
+                        new com.bempdiff.server.BempServer(
+                                com.bempdiff.server.ServerConfig.defaultLocation(), srvWeb);
+                srv.start(srvPort);
+                break;
+            }
             default:
                 System.out.println("unknown subcommand: " + cmd); // NOSONAR
                 printUsage();
@@ -631,6 +684,8 @@ public final class Main {
         System.out.println("  report  <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--out <md>] [--ai] [--apikey KEY] [--baseurl URL] [--provider P] [--model M] [--aiconfig <path>] [--project <dir>] [--replay <dir>]"); // NOSONAR
         System.out.println("  export  <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--out <dir>]"); // NOSONAR
         System.out.println("  ai      <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--replay <dir>] [--apikey KEY] [--baseurl URL] [--provider P]"); // NOSONAR
+        System.out.println("  diff-jars <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--out <md>]   (Req6: 差异 lib jar 内部 class 反编译源码对比)"); // NOSONAR
+        System.out.println("  server [--port N] [--webroot <dir>]   (Web UI 后端：启动内嵌 HTTP 服务，托管 SPA + REST API)"); // NOSONAR
         System.out.println("（省略 --out/--replay 时输出到当前目录的相对路径）"); // NOSONAR
     }
 
@@ -646,5 +701,13 @@ public final class Main {
     /** 取 --flag 后的路径；未提供则用相对默认名（避免硬编码开发机绝对路径，适配分发后的 exe）。 */
     private static Path outPath(List<String> a, String flag, String def) {
         return Paths.get(a.contains(flag) ? a.get(a.indexOf(flag) + 1) : def);
+    }
+
+    /** 报告输出路径：兼容 --out 与 --report 两种写法（历史子命令曾混用，统一为别名）。 */
+    private static Path reportOutPath(List<String> a, String def) {
+        for (String flag : new String[]{"--out", "--report"}) {
+            if (a.contains(flag)) return Paths.get(a.get(a.indexOf(flag) + 1));
+        }
+        return Paths.get(def);
     }
 }

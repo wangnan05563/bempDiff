@@ -35,7 +35,7 @@ public final class FrontendTest {
         Asserts.assertEquals(".css → CSS", FileClass.CSS, PackageParser.classify("static/a.css"));
         Asserts.assertEquals("回归: .class 仍是 CLASS", FileClass.CLASS, PackageParser.classify("com/x/A.class"));
         Asserts.assertEquals("回归: .png 仍是 STATIC", FileClass.STATIC, PackageParser.classify("img/logo.png"));
-        Asserts.assertEquals("回归: .jsp 仍是 STATIC", FileClass.STATIC, PackageParser.classify("index.jsp"));
+        Asserts.assertEquals("扩展后: .jsp 应归 JSP(服务端页面,纳入内容级逐行 diff)", FileClass.JSP, PackageParser.classify("index.jsp"));
         Asserts.assertTrue(".js 属于前端文本", FileClass.JS.isFrontendText());
         Asserts.assertFalse(".class 不属于前端文本", FileClass.CLASS.isFrontendText());
     }

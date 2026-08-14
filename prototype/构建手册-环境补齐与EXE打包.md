@@ -1,5 +1,7 @@
 # 构建手册：环境补齐（JDK21/JavaFX）→ 编译 → 运行 → 打包自包含 EXE
 
+> ⚠️ **已归档（旧链路）**：本手册描述的是 **JavaFX + jpackage** 的桌面打包方式。迁移后新 UI 为 **Web UI（Vue 3 + Bootstrap）+ Tauri 2 桌面壳**，打包请用 [`scripts/build_tauri_app.ps1`](scripts/build_tauri_app.ps1)（见 [`WebUI迁移方案.md`](WebUI迁移方案.md) §9）。本文件仅保留作历史参考，其中 JavaFX 依赖、`jpackage` 参数等内容已不再用于新构建。
+
 > 适用：在一台**只有 JDK8** 的 Windows 机器上，把 `prototype/` 下的 BEMP 差异比对工具（core + JavaFX UI）
 > 编译成可双击运行的 exe。所有命令均已在本项目实测通过。
 > 踩坑点与"为什么"都写在末尾 FAQ，照做可避开。

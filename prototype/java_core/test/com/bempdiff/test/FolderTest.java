@@ -72,7 +72,7 @@ public class FolderTest {
         Asserts.assertEquals("java 源码应为 OTHER", FileClass.OTHER, e.get("Src.java").getFileClass());
         Asserts.assertEquals("js 应为 JS", FileClass.JS, e.get("Y.js").getFileClass());
         Asserts.assertEquals("jar 应为 JAR", FileClass.JAR, e.get("Z.jar").getFileClass());
-        Asserts.assertEquals("txt 应为 OTHER", FileClass.OTHER, e.get("W.txt").getFileClass());
+        Asserts.assertEquals("txt 应归 CONFIG(文本配置,纳入内容 diff)", FileClass.CONFIG, e.get("W.txt").getFileClass());
 
         // sha256：同内容不同路径 → 相同；不同内容 → 不同
         Path d2 = mkDir();

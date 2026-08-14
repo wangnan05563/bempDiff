@@ -1,0 +1,13 @@
+== COMPARE ==
+old: old.war  version=1.6.1
+new: new.war  version=1.6.2
+stats: added=1 deleted=1 modified=6 unchanged=0 | bizChanged=8 jarChanged=0
+--- tree (status / layer) ---
+  MODIFIED [L0] META-INF/MANIFEST.MF
+        MODIFIED [L1] WEB-INF/classes/com/demo/Demo.class
+  MODIFIED [L0] css/style.css
+  MODIFIED [L0] static/app.js
+  MODIFIED [L0] static/app.min.js
+  MODIFIED [L0] templates/page.html
+  ADDED [L0] static/new-feature.js
+  DELETED [L0] static/old-lib.js

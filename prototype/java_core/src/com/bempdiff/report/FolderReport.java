@@ -1,12 +1,12 @@
 package com.bempdiff.report;
 
 import com.bempdiff.diff.FolderDiff;
+import com.bempdiff.diff.FolderEntryFormatter;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -46,12 +46,11 @@ public final class FolderReport {
         sb.append("\n## 三、修改文件内容差异（行级）\n\n");
         boolean any = false;
         for (FolderDiff.FolderEntry e : r.flat.values()) {
-            if (e.lineDiff != null && !e.lineDiff.isEmpty()) {
+            List<String> lines = FolderEntryFormatter.lineDiffLines(e);
+            if (lines != null) {
                 any = true;
                 sb.append("### ").append(e.relPath).append("\n\n");
-                String ld = e.lineDiff;
-                if (ld.endsWith("\n")) ld = ld.substring(0, ld.length() - 1);
-                sb.append("```diff\n").append(ld).append("```\n\n");
+                sb.append("```diff\n").append(String.join("\n", lines)).append("```\n\n");
             }
         }
         if (!any) {
@@ -69,23 +68,13 @@ public final class FolderReport {
 
     private static void appendTree(StringBuilder sb, List<FolderDiff.FolderEntry> nodes, String indent) {
         for (FolderDiff.FolderEntry e : nodes) {
-            String marker;
-            switch (e.status) {
-                case LEFT_ONLY: marker = "[<]"; break;
-                case RIGHT_ONLY: marker = "[>]"; break;
-                case MODIFIED: marker = "[*]"; break;
-                case TYPE_MISMATCH: marker = "[!]"; break;
-                default: marker = "[=]";
-            }
-            boolean subtreeDiff = e.type == FolderDiff.EntryType.DIR
-                    && e.status == FolderDiff.FolderDiffStatus.SAME && FolderDiff.subtreeHasDiff(e);
-            if (subtreeDiff) marker = "[*]";
-            String name = e.relPath.substring(e.relPath.lastIndexOf('/') + 1);
+            String marker = FolderEntryFormatter.marker(e);
+            String name = FolderEntryFormatter.name(e);
             sb.append(indent).append("- ").append(marker).append(' ').append(name);
             if (e.type == FolderDiff.EntryType.DIR) sb.append('/');
             if (e.status == FolderDiff.FolderDiffStatus.MODIFIED) {
-                sb.append(' ').append(attrSummary(e));
-            } else if (subtreeDiff) {
+                sb.append(' ').append(FolderEntryFormatter.attrSummary(e));
+            } else if (FolderEntryFormatter.subtreeDiff(e)) {
                 sb.append(" (子树含差异)");
             }
             sb.append('\n');
@@ -93,19 +82,6 @@ public final class FolderReport {
                 appendTree(sb, e.children, indent + "  ");
             }
         }
-    }
-
-    private static String attrSummary(FolderDiff.FolderEntry e) {
-        List<String> parts = new ArrayList<>();
-        if (e.attrChanges.contains(FolderDiff.AttrChange.SIZE)) {
-            parts.add("大小 " + FolderDiff.fmtSize(e.sizeLeft) + "→" + FolderDiff.fmtSize(e.sizeRight));
-        }
-        if (e.attrChanges.contains(FolderDiff.AttrChange.MTIME)) {
-            parts.add("修改时间 " + FolderDiff.fmtMtime(e.mtimeLeft) + "→" + FolderDiff.fmtMtime(e.mtimeRight));
-        }
-        if (e.attrChanges.contains(FolderDiff.AttrChange.CONTENT)) parts.add("内容不同");
-        if (e.attrChanges.contains(FolderDiff.AttrChange.TYPE)) parts.add("类型冲突(文件/目录)");
-        return "[" + String.join(", ", parts) + "]";
     }
 
     public static void writeToFile(FolderDiff.FolderDiffResult r, Path out) throws IOException {

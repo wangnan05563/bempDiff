@@ -5,6 +5,7 @@ import com.bempdiff.ai.FileRisk;
 import com.bempdiff.ai.StageASummary;
 import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.diff.DiffResult;
+import com.bempdiff.diff.LibJarDiff;
 import com.bempdiff.diff.DiffStats;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.model.DecompiledUnit;
@@ -39,6 +40,14 @@ public final class MarkdownReport {
                           DiffResult r, DiffStats stats,
                           Map<String, DecompiledUnit> decompiled,
                           Map<String, DecompiledUnit> text) {
+        return render(oldSnap, newSnap, r, stats, decompiled, text, (LibJarDiff.Result) null);
+    }
+
+    /** 渲染（含差异依赖 JAR 内部源码对比章节）。libJar 为 null 时跳过该章节。 */
+    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                          DiffResult r, DiffStats stats,
+                          Map<String, DecompiledUnit> decompiled,
+                          Map<String, DecompiledUnit> text, LibJarDiff.Result libJar) {
         StringBuilder sb = new StringBuilder();
         renderHeader(sb, oldSnap, newSnap);
         renderStats(sb, stats);
@@ -46,6 +55,7 @@ public final class MarkdownReport {
         renderFileTree(sb, r);
         renderDecompiledDiff(sb, decompiled);
         renderTextDiff(sb, text);
+        renderLibJarDiff(sb, libJar);
         renderBreakingChanges(sb, r);
         renderFooter(sb, oldSnap, newSnap, false);
         return sb.toString();
@@ -60,6 +70,17 @@ public final class MarkdownReport {
                           Map<String, DecompiledUnit> decompiled,
                           Map<String, DecompiledUnit> text,
                           StageASummary summary, List<FileAnalysis> fileAnalyses, ProjectContext ctx) {
+        return render(oldSnap, newSnap, r, stats, decompiled, text,
+                summary, fileAnalyses, ctx, (LibJarDiff.Result) null);
+    }
+
+    /** 渲染（含差异依赖 JAR 内部源码对比章节 + AI 智能分析章节）。libJar 为 null 时跳过 JAR 章节。 */
+    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                          DiffResult r, DiffStats stats,
+                          Map<String, DecompiledUnit> decompiled,
+                          Map<String, DecompiledUnit> text,
+                          StageASummary summary, List<FileAnalysis> fileAnalyses, ProjectContext ctx,
+                          LibJarDiff.Result libJar) {
         StringBuilder sb = new StringBuilder();
         renderHeader(sb, oldSnap, newSnap);
         renderStats(sb, stats);
@@ -67,6 +88,7 @@ public final class MarkdownReport {
         renderFileTree(sb, r);
         renderDecompiledDiff(sb, decompiled);
         renderTextDiff(sb, text);
+        renderLibJarDiff(sb, libJar);
         renderBreakingChanges(sb, r);
         appendAiSection(sb, summary, fileAnalyses, ctx);
         renderFooter(sb, oldSnap, newSnap, summary != null);
@@ -187,6 +209,93 @@ public final class MarkdownReport {
         }
     }
 
+    /**
+     * 差异依赖 JAR 内部源码对比（Req 6）：对 WAR 中存在差异的 lib jar，逐一展开内部 class，
+     * 反编译后做源码级 diff，清晰标注每个 class 的新增/删除/修改/未变，并附 Top-K 源码 diff。
+     * libJar 为 null 时跳过（向后兼容无 JAR 对比的报告）。
+     */
+    private void renderLibJarDiff(StringBuilder sb, LibJarDiff.Result libJar) {
+        if (libJar == null || libJar.isEmpty()) {
+            return;
+        }
+        sb.append("## 五、差异依赖 JAR 内部源码对比（Top-").append(topK)
+          .append(" 内部 class 反编译源码级 diff）\n");
+        sb.append("> 共 ").append(libJar.totalJars).append(" 个差异 JAR（新增 ")
+          .append(countJarStatus(libJar, DiffStatus.ADDED)).append(" / 修改 ")
+          .append(countJarStatus(libJar, DiffStatus.MODIFIED)).append(" / 删除 ")
+          .append(countJarStatus(libJar, DiffStatus.DELETED)).append("）；其内部 class 合计：新增 ")
+          .append(libJar.totalAdded).append(" · 删除 ").append(libJar.totalRemoved)
+          .append(" · 修改 ").append(libJar.totalModified).append(" · 未变 ")
+          .append(libJar.totalUnchanged).append("。\n\n");
+
+        for (LibJarDiff.DiffJarInfo jar : libJar.jars) {
+            if (jar.failed) {
+                sb.append("### ").append(jar.jarKey).append("  [分析失败]\n");
+                sb.append("- ⚠️ 该 JAR 读取/枚举失败，已跳过（不影响其余 JAR 与报告其余章节）：")
+                  .append(jar.error == null ? "未知错误" : jar.error).append("\n\n");
+                continue;
+            }
+            sb.append("### ").append(jar.jarKey).append("  [")
+              .append(statusLabel(jar.jarStatus)).append("]\n");
+            sb.append("- 内部 class：新增 **").append(jar.added).append("** · 删除 **").append(jar.removed)
+              .append("** · 修改 **").append(jar.modified).append("** · 未变 ").append(jar.unchanged).append("\n\n");
+
+            int shown = 0;
+            for (LibJarDiff.LibClassUnit u : jar.classes) {
+                DecompiledUnit du = u.unit;
+                if (du == null || !du.isOk()) {
+                    // 未反编译（Top-K 之外）或反编译失败：仅状态标注，不展开源码
+                    if (du != null && !du.isOk()) {
+                        sb.append("- `").append(u.innerClass).append("` [").append(statusLabel(u.status))
+                          .append("] 反编译失败：").append(du.getError()).append("\n");
+                    }
+                    continue;
+                }
+                if (shown >= topK) {
+                    continue;
+                }
+                sb.append("#### ").append(u.innerClass).append("  [").append(statusLabel(u.status)).append("]\n");
+                sb.append("- 反编译引擎：").append(du.getEngine()).append("\n");
+                sb.append("```diff\n").append(du.getDiffText() == null ? "" : du.getDiffText()).append("\n```\n\n");
+                shown++;
+            }
+            // 收尾计数拆分：未变更 / 反编译失败 / 超出全局 Top-K 三类，避免把未变更误归为 Top-K 限制
+            long unchanged = 0, failedUnits = 0, decompiledCount = 0;
+            for (LibJarDiff.LibClassUnit u : jar.classes) {
+                if (u.status == DiffStatus.UNCHANGED) unchanged++;
+                if (u.unit != null && !u.unit.isOk()) failedUnits++;
+                if (u.unit != null && u.unit.isOk()) decompiledCount++;
+            }
+            long beyondTopK = jar.classes.size() - unchanged - failedUnits - decompiledCount;
+            List<String> parts = new java.util.ArrayList<>();
+            if (beyondTopK > 0) parts.add(beyondTopK + " 个超出全局 Top-K 未展开源码");
+            if (unchanged > 0) parts.add(unchanged + " 个未变更（已折叠，无需反编译）");
+            if (failedUnits > 0) parts.add(failedUnits + " 个反编译失败");
+            if (!parts.isEmpty()) {
+                sb.append("> 另有 ").append(String.join(" · ", parts)).append("；")
+                  .append("可在 GUI 双击该 JAR 查看全部内部 class 的逐项反编译对比。\n\n");
+            }
+        }
+    }
+
+    /** 统计差异 JAR 的个数（按 jar 自身状态），用于章节开头的总览。 */
+    private static long countJarStatus(LibJarDiff.Result libJar, DiffStatus st) {
+        long c = 0;
+        for (LibJarDiff.DiffJarInfo jar : libJar.jars) {
+            if (jar.jarStatus == st) c++;
+        }
+        return c;
+    }
+
+    private static String statusLabel(DiffStatus st) {
+        switch (st) {
+            case ADDED: return "新增 +";
+            case DELETED: return "删除 -";
+            case MODIFIED: return "修改 ~";
+            default: return "未变 =";
+        }
+    }
+
     /** 按文件类型汇总变更分布（新增/删除/修改），清晰标注每种文件类型的变更情况（需求扩展）。 */
     private void renderTypeBreakdown(StringBuilder sb, DiffResult r,
                                      PackageSnapshot oldSnap, PackageSnapshot newSnap) {
@@ -252,7 +361,7 @@ public final class MarkdownReport {
     }
 
     private void renderBreakingChanges(StringBuilder sb, DiffResult r) {
-        sb.append("## 五、破坏性变更清单（删除类/删除前端资源）\n");
+        sb.append("## 六、破坏性变更清单（删除类/删除前端资源）\n");
         if (r.get(DiffStatus.DELETED).isEmpty()) {
             sb.append("- 无删除类。\n");
         } else {
@@ -264,7 +373,8 @@ public final class MarkdownReport {
     }
 
     private void renderFooter(StringBuilder sb, PackageSnapshot oldSnap, PackageSnapshot newSnap, boolean aiEnabled) {
-        sb.append("## 六、审计摘要（基础）\n");
+        // 有 AI 章节时审计为 八（位于 AI 之后）；无 AI 时为 七（紧接破坏性变更）。
+        sb.append(aiEnabled ? "## 八、审计摘要（基础）\n" : "## 七、审计摘要（基础）\n");
         sb.append("- 比对时间：").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n");
         sb.append("- 老包标识：").append(nullToNA(oldSnap.getVersion())).append("\n");
         sb.append("- 新包标识：").append(nullToNA(newSnap.getVersion())).append("\n");
@@ -275,7 +385,16 @@ public final class MarkdownReport {
                             DiffResult r, DiffStats stats,
                             Map<String, DecompiledUnit> decompiled,
                             Map<String, DecompiledUnit> text, Path outFile) throws IOException {
-        String md = render(oldSnap, newSnap, r, stats, decompiled, text);
+        writeToFile(oldSnap, newSnap, r, stats, decompiled, text, (LibJarDiff.Result) null, outFile);
+    }
+
+    /** 写报告（含差异依赖 JAR 内部源码对比章节）。 */
+    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                            DiffResult r, DiffStats stats,
+                            Map<String, DecompiledUnit> decompiled,
+                            Map<String, DecompiledUnit> text, LibJarDiff.Result libJar,
+                            Path outFile) throws IOException {
+        String md = render(oldSnap, newSnap, r, stats, decompiled, text, libJar);
         Path parent = outFile.getParent();
         if (parent != null) Files.createDirectories(parent);  // 防御：输出目录可能不存在
         try (Writer w = Files.newBufferedWriter(outFile, StandardCharsets.UTF_8)) {
@@ -290,7 +409,18 @@ public final class MarkdownReport {
                             Map<String, DecompiledUnit> text,
                             StageASummary summary, List<FileAnalysis> fileAnalyses,
                             ProjectContext ctx, Path outFile) throws IOException {
-        String md = render(oldSnap, newSnap, r, stats, decompiled, text, summary, fileAnalyses, ctx);
+        writeToFile(oldSnap, newSnap, r, stats, decompiled, text,
+                summary, fileAnalyses, ctx, (LibJarDiff.Result) null, outFile);
+    }
+
+    /** 写报告（含 AI 智能分析章节、项目级上下文增强与差异依赖 JAR 内部源码对比章节）。 */
+    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                            DiffResult r, DiffStats stats,
+                            Map<String, DecompiledUnit> decompiled,
+                            Map<String, DecompiledUnit> text,
+                            StageASummary summary, List<FileAnalysis> fileAnalyses,
+                            ProjectContext ctx, LibJarDiff.Result libJar, Path outFile) throws IOException {
+        String md = render(oldSnap, newSnap, r, stats, decompiled, text, summary, fileAnalyses, ctx, libJar);
         Path parent = outFile.getParent();
         if (parent != null) Files.createDirectories(parent);
         try (Writer w = Files.newBufferedWriter(outFile, StandardCharsets.UTF_8)) {

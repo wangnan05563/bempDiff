@@ -1,0 +1,15 @@
+请对以下前端HTML 模板代码改动做逐文件深读，返回 JSON：改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact，含对页面/交互/接口的潜在影响)、测试要点(testPoints数组)。
+
+## 文件：templates/page.html （HTML 模板）
+```diff
+  <div>
+  <span>hello</span>
+- <p>old content</p>
++ <p>new content v2</p>
+  </div>
+  <ul>
+  <li>item1</li>
++ <li>item2</li>
+  </ul>
+
+```

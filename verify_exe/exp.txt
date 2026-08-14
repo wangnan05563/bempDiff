@@ -1,0 +1,6 @@
+== EXPORT ==
+outDir : D:\code\otherProjects\18_comparePakage\verify_exe\wartest-export
+classes: D:\code\otherProjects\18_comparePakage\verify_exe\wartest-export\diff-classes (2 class 文件)
+jars    : D:\code\otherProjects\18_comparePakage\verify_exe\wartest-export\diff-jars (0 jar 文件)
+src zip : D:\code\otherProjects\18_comparePakage\verify_exe\wartest-export\decompiled-sources.zip (9 源码，含 8 文本类)
+stats: added=2 deleted=0 modified=8 unchanged=3 | bizChanged=10 jarChanged=0

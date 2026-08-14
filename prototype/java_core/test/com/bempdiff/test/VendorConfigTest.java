@@ -100,4 +100,39 @@ public class VendorConfigTest {
         Asserts.assertEquals("null apiKey -> 空串", "", s.apiKey());
         Asserts.assertEquals("null model -> 空串", "", s.model());
     }
+
+    public void testLoadAll_corruptFileReturnsEmpty() throws Exception {
+        Path dir = Files.createTempDirectory("bd-vendor-test");
+        Path file = dir.resolve("ai-vendor-config.properties");
+        // 写入非 Properties 格式的垃圾（不含 vendors= 键），loadAll 应解析为不含任何厂商的空 Map，且不抛异常
+        java.nio.file.Files.writeString(file, "this-is-corrupted-config-data-not-valid-properties-at-all");
+        AiVendorConfigStore store = new AiVendorConfigStore(file);
+        Map<String, AiVendorConfigStore.Snapshot> loaded = store.loadAll();
+        Asserts.assertTrue("损坏/无 vendors 键的文件应返回空 Map（不抛异常）", loaded.isEmpty());
+    }
+
+    public void testPersistKey_trueThenFalse_removesApiKey() throws Exception {
+        Path dir = Files.createTempDirectory("bd-vendor-test");
+        Path file = dir.resolve("ai-vendor-config.properties");
+        AiVendorConfigStore store = new AiVendorConfigStore(file);
+
+        java.util.Map<String, AiVendorConfigStore.Snapshot> map = new java.util.LinkedHashMap<>();
+        map.put("openai", new AiVendorConfigStore.Snapshot(
+                "https://api.openai.com/v1", "sk-secret", "gpt-4o-mini"));
+        // 先 persistKey=true 落盘 Key
+        store.saveAll(map, true);
+        Asserts.assertEquals("true 时 Key 落盘", "sk-secret", store.loadAll().get("openai").apiKey());
+        // 再 persistKey=false 保存（用户关闭「记住 Key」）→ 落盘 Key 必须被移除
+        store.saveAll(map, false);
+        Asserts.assertEquals("false 时 Key 应从落盘移除", "", store.loadAll().get("openai").apiKey());
+    }
+
+    public void testSnapshot_trimsWhitespace() throws Exception {
+        // baseUrl/model 首尾空白应被裁剪（F5 归一化）；apiKey 不裁剪以免误改凭证
+        AiVendorConfigStore.Snapshot s = new AiVendorConfigStore.Snapshot(
+                "  https://api.openai.com/v1  ", "sk-keep-spaces ", "  gpt-4o-mini ");
+        Asserts.assertEquals("baseUrl 首尾空白裁剪", "https://api.openai.com/v1", s.baseUrl());
+        Asserts.assertEquals("model 首尾空白裁剪", "gpt-4o-mini", s.model());
+        Asserts.assertEquals("apiKey 不裁剪（保留凭证原样）", "sk-keep-spaces ", s.apiKey());
+    }
 }

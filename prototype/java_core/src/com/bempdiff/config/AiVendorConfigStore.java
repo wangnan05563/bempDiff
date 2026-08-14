@@ -42,14 +42,21 @@ public final class AiVendorConfigStore {
     /** 单个厂商的连接三元组快照。 */
     public record Snapshot(String baseUrl, String apiKey, String model) {
         public Snapshot {
-            baseUrl = nn(baseUrl);
+            // baseUrl/model 裁剪首尾空白：用户误粘贴的空格会破坏 URL 拼接(endsWith("/"))与模型识别。
+            // apiKey 不裁剪，避免误改凭证内容。
+            baseUrl = norm(baseUrl);
             apiKey = nn(apiKey);
-            model = nn(model);
+            model = norm(model);
         }
     }
 
     private static String nn(String s) {
         return s == null ? "" : s;
+    }
+
+    /** 连接地址/模型名归一化：去空（null→""）并裁剪首尾空白。 */
+    private static String norm(String s) {
+        return s == null ? "" : s.trim();
     }
 
     private final Path file;
@@ -81,7 +88,11 @@ public final class AiVendorConfigStore {
     }
 
     /**
-     * 覆盖写入全部厂商快照。
+     * 合并写入全部厂商快照（先读既有落盘，再用入参覆盖同名厂商）。
+     * <p>采用「合并」而非「覆盖整个文件」：若调用方仅传入部分厂商（例如只含当前激活厂商），
+     * 既有落盘中的其它厂商配置不会被静默抹掉，避免数据丢失。当前调用方（ConfigDialog）均传入
+     * 完整内存快照，因此合并结果与全量覆盖等价；合并仅作为防御性契约。
+     *
      * @param persistKey 是否连 apiKey 一起持久化（对应「记住 API Key」开关）。
      *                    为 false 时每个厂商的 apiKey 均不落盘（仅内存态）。
      */
@@ -91,16 +102,19 @@ public final class AiVendorConfigStore {
         } catch (IOException e) {
             LOG.log(Level.WARNING, "创建厂商配置目录失败", e);
         }
+        // 合并既有落盘数据，防止部分 map 误删其它厂商配置
+        Map<String, Snapshot> merged = new LinkedHashMap<>(loadAll());
+        merged.putAll(map);
         Properties p = new Properties();
         StringBuilder sb = new StringBuilder();
         boolean first = true;
-        for (String key : map.keySet()) {
+        for (String key : merged.keySet()) {
             if (!first) sb.append(',');
             sb.append(key);
             first = false;
         }
         p.setProperty("vendors", sb.toString());
-        for (Map.Entry<String, Snapshot> e : map.entrySet()) {
+        for (Map.Entry<String, Snapshot> e : merged.entrySet()) {
             String k = e.getKey();
             Snapshot s = e.getValue();
             p.setProperty(k + ".baseUrl", s.baseUrl());

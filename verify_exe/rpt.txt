@@ -1,0 +1,3 @@
+== REPORT ==
+out: D:\code\otherProjects\18_comparePakage\verify_exe\wartest-report.md
+stats: added=2 deleted=0 modified=8 unchanged=3 | bizChanged=10 jarChanged=0  decompiled=1  text=8
