@@ -50,3 +50,9 @@ out_test_ui/
 # jar/war 测试垃圾目录（已清，防复发：fixtures 压测夹具 / dist_input 构建中间产物）
 prototype/fixtures/
 prototype/dist_input/
+
+# ---------- npm 本地缓存 (2026-08-16) ----------
+# 切勿用 `npm install --cache /d/code/...`（Git Bash POSIX 路径）传给 Windows 原生 npm，
+# 会被归一化成 D:\d\... 误生成目录。构建脚本走默认全局缓存，不依赖项目本地缓存。
+.npmcache*
+prototype/webui/.npmcache*

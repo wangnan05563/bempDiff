@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   BempDiff 桌面应用（路径 B：Tauri 2.x + 内嵌 Java 后端 sidecar）一键打包脚本。
 
@@ -130,6 +130,8 @@ if (-not $SkipFrontend) {
   Write-Step "构建前端 (vite build)"
   Push-Location $Webui
   try {
+    # 约束：npm 走默认全局缓存；切勿手动传 `--cache /d/code/...` 之类 POSIX 路径，
+    # Windows 原生 npm 会把前导 /d/ 归一化为 D:\d\... 误生成异常目录。
     & npm run build 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "npm run build 失败" }
   } finally { Pop-Location }
@@ -154,7 +156,8 @@ $IconsDir = Join-Path $Proto 'src-tauri' 'icons'
 if (-not (Test-Path (Join-Path $IconsDir 'icon.ico')) -and (Test-Path $Logo)) {
   Push-Location $Proto
   try {
-    & npm install 2>&1 | ForEach-Object { Write-Host $_ }
+    # 约束：显式锁定 npm 全局缓存目录，禁止 --cache 指向项目本地（避免误生成 D:\d\...）
+    & npm install --cache "$env:LOCALAPPDATA\npm-cache" 2>&1 | ForEach-Object { Write-Host $_ }
     & npm run tauri -- icon $Logo 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { Write-Warning "图标生成失败（可手动 `npm run tauri icon $Logo`）" }
   } finally { Pop-Location }
@@ -167,7 +170,8 @@ if (-not $SkipCargo) {
   Write-Step "cargo tauri build（NSIS 安装包）"
   Push-Location $Proto
   try {
-    & npm install 2>&1 | ForEach-Object { Write-Host $_ }
+    # 约束：显式锁定 npm 全局缓存目录，禁止 --cache 指向项目本地（避免误生成 D:\d\...）
+    & npm install --cache "$env:LOCALAPPDATA\npm-cache" 2>&1 | ForEach-Object { Write-Host $_ }
     & npm run tauri -- build --bundles nsis 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "tauri build 失败" }
   } finally { Pop-Location }
