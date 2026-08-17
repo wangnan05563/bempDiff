@@ -71,14 +71,17 @@ function doCompare() {
 </script>
 
 <template>
-  <div class="bg-body-tertiary border-bottom px-2 py-1 d-flex flex-wrap align-items-end gap-2">
-    <div class="form-check form-check-inline me-1">
-      <input class="form-check-input" type="radio" id="t-pkg" value="package" v-model="leftType" title="以单个 war/jar 包作为输入（默认）">
-      <label class="form-check-label" for="t-pkg" title="以单个 war/jar 包作为输入（默认）">包</label>
-    </div>
-    <div class="form-check form-check-inline me-2">
-      <input class="form-check-input" type="radio" id="t-folder" value="folder" v-model="leftType" title="以解压后的目录作为输入，对比目录结构的差异">
-      <label class="form-check-label" for="t-folder" title="以解压后的目录作为输入，对比目录结构的差异">目录</label>
+  <div class="bg-body-tertiary border-bottom px-2 py-1 d-flex flex-wrap align-items-center gap-2">
+    <!-- 输入类型切换：图标 btn-group 分段控件 -->
+    <div class="btn-group btn-group-sm" role="group" aria-label="输入类型">
+      <button type="button" class="btn" :class="leftType === 'package' ? 'btn-primary' : 'btn-outline-secondary'"
+              @click="leftType = 'package'" title="以单个 war/jar 包作为输入（默认）">
+        <i class="bi bi-file-earmark-zip"></i>
+      </button>
+      <button type="button" class="btn" :class="leftType === 'folder' ? 'btn-primary' : 'btn-outline-secondary'"
+              @click="leftType = 'folder'" title="以解压后的目录作为输入，对比目录结构的差异">
+        <i class="bi bi-folder"></i>
+      </button>
     </div>
 
     <div class="input-group input-group-sm" style="max-width:240px">
@@ -92,18 +95,18 @@ function doCompare() {
       <button class="btn btn-outline-secondary" @click="browse('new')" :title="leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）'"><i class="bi bi-folder2-open"></i></button>
     </div>
 
-    <button class="btn btn-primary btn-sm" @click="doCompare" title="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）"><i class="bi bi-arrow-left-right"></i> 开始比对</button>
+    <button class="btn btn-primary btn-sm" @click="doCompare" title="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）"><i class="bi bi-arrow-left-right"></i></button>
 
     <div class="ms-auto d-flex gap-2">
       <button class="btn btn-outline-secondary btn-sm" @click="onOpenReport" :disabled="!state.reportMd" title="查看最近一次生成的差异/AI 分析报告">
-        <i class="bi bi-filetype-md"></i> 查看报告
+        <i class="bi bi-filetype-md"></i>
       </button>
       <button class="btn btn-outline-secondary btn-sm" @click="onOpenAi" :disabled="!state.job" title="调用 AI 流式分析本次比对差异，实时逐字展示结论与思考过程">
-        <i class="bi bi-cpu"></i> AI 分析
+        <i class="bi bi-cpu"></i>
       </button>
       <div class="position-relative">
         <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job" title="导出差异报告或差异资产">
-          <i class="bi bi-file-earmark-arrow-down"></i> 导出
+          <i class="bi bi-file-earmark-arrow-down"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end show py-1" v-if="showExport"
             style="position:absolute;right:0;top:100%;z-index:1000">
@@ -116,7 +119,7 @@ function doCompare() {
               :title="isDark ? '切换浅色' : '切换深色'">
         <i class="bi" :class="isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
       </button>
-      <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i> 设置</button>
+      <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
     </div>
   </div>
 </template>
