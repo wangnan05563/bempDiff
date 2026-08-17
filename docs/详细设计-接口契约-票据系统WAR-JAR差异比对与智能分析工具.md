@@ -2,7 +2,7 @@
 
 > 版本：v1.0（设计基线）
 > 关联文档：需求规格说明书 v1.1、开发任务清单 WBS、prototype 参考原型（Python）
-> 说明：本文档将已通过真实包验证的 prototype 原型，转化为 Java 量产版的**可编码接口契约**。原型代码（prototype/diff_engine.py、decompile.py、e2e_real.py）是本文档的事实来源，凡有出入以原型行为为准。
+> 说明：本文档将已通过真实包验证的 prototype 原型，转化为 Java 量产版的**可编码接口契约**。原型代码（bempdiff/diff_engine.py、decompile.py、e2e_real.py）是本文档的事实来源，凡有出入以原型行为为准。
 
 ---
 
@@ -458,7 +458,7 @@ static boolean subtreeHasDiff(FolderEntry e);
 
 ## 8. 已知缺陷与待办（来自原型验证）
 
-1. **[已修复] print_tree 层级标签 bug**：普通 jar 比对时 class 条目真实 layer=L1，但旧 `print_tree` 按路径重推会误判 L0。已改为从 `entries` 取真实 layer（prototype/diff_engine.py）。量产版 `view` 层同样以 `LogicalEntry.layer` 为准，不复算。
+1. **[已修复] print_tree 层级标签 bug**：普通 jar 比对时 class 条目真实 layer=L1，但旧 `print_tree` 按路径重推会误判 L0。已改为从 `entries` 取真实 layer（bempdiff/diff_engine.py）。量产版 `view` 层同样以 `LogicalEntry.layer` 为准，不复算。
 2. **真实 war 双版本 diff 脚本**：待产品部下发第二个版本 war 时，可直接用 `diff_engine.compare(old.war, new.war) + --decompile` 跑通；原型已具备能力，仅缺第二个真实版本包。
 3. **反编译 GBK 容错**：见 §5.3，Java 侧务必实现，否则中文票据系统的 class 必踩。
 4. **本地模型零外发验证**：AC9 硬门槛，需抓包回归（ollama 模式下确无外发请求）。

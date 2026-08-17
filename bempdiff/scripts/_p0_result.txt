@@ -1,0 +1,6 @@
+﻿# BempDiff 单测结果 (2026-08-17 12:14:28)
+frontend (algo)  : PASS  (node test_p0_frontend.mjs)
+frontend (bridge) : PASS  (node test_desktop_picker.mjs)
+frontend (tabs)   : PASS  (node test_tab_mode.mjs)
+backend (rules)   : PASS  (javac/java test_diff_rules.java)
+overall           : ALL PASS

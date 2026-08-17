@@ -1,0 +1,53 @@
+{
+  "name": "bempdiff",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BempDiff 桌面应用根（Electron 桌面壳 + Web 前端 + Java 后端 sidecar）",
+  "scripts": {
+    "dev": "cd webui && npm run dev",
+    "build": "cd webui && npm run build",
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.bempdiff.app",
+    "productName": "BempDiff",
+    "copyright": "Copyright © 2026 BempDiff",
+    "directories": {
+      "app": "dev-shell",
+      "output": "../dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist_input",
+        "to": "bempdiff/dist_input"
+      },
+      {
+        "from": "webui/dist",
+        "to": "bempdiff/webui/dist"
+      },
+      {
+        "from": "bempdiff-logo.png",
+        "to": "bempdiff-logo.png"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "bempdiff-logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "BempDiff-${version}-setup.${ext}"
+    }
+  }
+}

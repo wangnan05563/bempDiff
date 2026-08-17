@@ -37,8 +37,10 @@ tmp/
 .vscode/
 
 # Large binary files (JDK toolchain, dist exe)
-prototype/toolchain/
-prototype/dist_exe/
+bempdiff/toolchain/
+bempdiff/dist_exe/
+# BempDiff Tauri 桌面壳 cargo 构建产物（由 scripts/build_tauri_app.ps1 生成，CARGO_TARGET_DIR 已项目作用域重定向至此）
+bempdiff/src-tauri/target/
 
 # ---------- 清理技能生成规则 (2026-08-11) ----------
 # 编译中间产物目录（javac 可再生）
@@ -48,11 +50,15 @@ out_test_ui/
 # JMeter 压测结果（jtl 为结果日志，可重跑生成）
 **/*.jtl
 # jar/war 测试垃圾目录（已清，防复发：fixtures 压测夹具 / dist_input 构建中间产物）
-prototype/fixtures/
-prototype/dist_input/
+bempdiff/fixtures/
+bempdiff/dist_input/
 
 # ---------- npm 本地缓存 (2026-08-16) ----------
 # 切勿用 `npm install --cache /d/code/...`（Git Bash POSIX 路径）传给 Windows 原生 npm，
 # 会被归一化成 D:\d\... 误生成目录。构建脚本走默认全局缓存，不依赖项目本地缓存。
 .npmcache*
-prototype/webui/.npmcache*
+bempdiff/webui/.npmcache*
+
+# ---------- Electron 桌面壳依赖 (2026-08-17) ----------
+# dev-shell 的 npm install 产物，体积大且可重装，不纳入版本控制（仅改忽略规则，不删文件）
+bempdiff/dev-shell/node_modules/

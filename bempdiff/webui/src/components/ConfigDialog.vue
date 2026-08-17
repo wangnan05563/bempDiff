@@ -1,0 +1,260 @@
+<script setup>
+import { computed, reactive, ref, watch } from 'vue'
+import { state, saveConfig, testConnection } from '../store'
+import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
+
+const props = defineProps({ visible: { type: Boolean, default: false } })
+const emit = defineEmits(['close'])
+
+// 厂商预设：value=落到后端的 provider 代码（openai/ollama/qwen/...），label=展示名。
+// 与 java_core LlmPreset.builtinPresets() 保持一致（前端只发 code，不发明文厂商名）。
+const PRESETS = [
+  { key: 'openai',   label: 'OpenAI (GPT)',        baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', local: false },
+  { key: 'azure',    label: 'Azure OpenAI',        baseUrl: 'https://<resource>.openai.azure.com', model: 'gpt-4o', local: false },
+  { key: 'ollama',   label: 'Ollama（本地/私有化，推荐）', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', local: true },
+  { key: 'deepseek', label: 'DeepSeek',            baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', local: false },
+  { key: 'qwen',     label: '通义千问 (阿里云百炼)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', local: false },
+  { key: 'glm',      label: '智谱 GLM',            baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus', local: false },
+  { key: 'moonshot', label: 'Moonshot (Kimi)',     baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k', local: false },
+  { key: 'doubao',   label: '豆包 (火山方舟)',      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-4.0-241128', local: false },
+  { key: 'custom',   label: '自定义 OpenAI 兼容',   baseUrl: '', model: '', local: false }
+]
+
+const cfgTab = ref('ai')
+const form = reactive({})
+const showKey = ref(false)
+const testing = ref(false)
+
+watch(() => props.visible, (v) => {
+  if (v) Object.assign(form, JSON.parse(JSON.stringify(state.config || {})))
+})
+
+function close() { emit('close') }
+
+// 切换厂商时，若该字段仍是上一预设的默认值或为空，则自动填充新预设的 baseUrl/model。
+function onProviderChange() {
+  const p = PRESETS.find(x => x.key === form.aiProvider)
+  if (!p || p.key === 'custom') return
+  const isDefaultOrEmpty = !form.aiBaseUrl || form.aiBaseUrl === prevBaseUrl
+  if (isDefaultOrEmpty) {
+    form.aiBaseUrl = p.baseUrl
+    form.aiModel = p.model
+    prevBaseUrl = p.baseUrl
+  }
+}
+let prevBaseUrl = ''
+
+const canPick = computed(() => isElectron() || isTauri())
+const pickTitle = computed(() => canPick.value
+  ? '选择本地文件夹作为项目级上下文目录'
+  : '仅在桌面壳（Electron/Tauri）中可用，浏览器模式请手动输入服务器本机绝对路径')
+
+async function pickContextDir() {
+  const p = await pickPath({ directory: true })
+  if (p) form.projectContextDir = p
+}
+
+async function onTest() {
+  testing.value = true
+  await testConnection({
+    provider: form.aiProvider, baseUrl: form.aiBaseUrl, apiKey: form.aiApiKey,
+    model: form.aiModel, httpProxy: form.httpProxy, httpsProxy: form.httpsProxy,
+    blockPrivateEndpoints: !!form.blockPrivateEndpoints
+  })
+  testing.value = false
+}
+
+// 保存：仅持久化配置，不关闭窗口（用户可能要切换到别的 Tab 继续填其他信息）。
+// 关闭窗口由 footer 的「关闭」按钮负责（emit close）。store.saveConfig 已弹「配置已保存」toast。
+function onSave() {
+  const out = JSON.parse(JSON.stringify(form))
+  if (out.topK !== undefined && out.topK !== null && out.topK !== '') out.topK = Number(out.topK)
+  if (out.stageBTopK !== undefined && out.stageBTopK !== null && out.stageBTopK !== '') out.stageBTopK = Number(out.stageBTopK)
+  if (out.costGateWarnTokens !== undefined && out.costGateWarnTokens !== null && out.costGateWarnTokens !== '') out.costGateWarnTokens = Number(out.costGateWarnTokens)
+  saveConfig(out)
+}
+</script>
+
+<template>
+  <div class="modal-backdrop" v-if="visible" @click.self="close">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header py-2 px-4">
+          <h6 class="modal-title mb-0"><i class="bi bi-sliders"></i> 配置中心
+            <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">所有配置均在界面完成，无需改文件</small>
+          </h6>
+          <button type="button" class="btn-close" @click="close"></button>
+        </div>
+
+        <div class="alert alert-warning d-flex gap-2 align-items-start mb-2 py-2" role="alert" style="font-size:.8rem">
+          <i class="bi bi-shield-lock fs-6"></i>
+          <div>金融合规：默认优先使用本地/私有化模型；选择公网模型时仅发送脱敏后的 diff 摘要，原始源码不出机。默认不记住 API Key（落盘关闭）。</div>
+        </div>
+
+        <div class="modal-body">
+          <ul class="nav nav-tabs mb-3">
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ai'}" @click="cfgTab='ai'">AI 服务</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='parse'}" @click="cfgTab='parse'">解析与导出</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='filter'}" @click="cfgTab='filter'">差异树过滤</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ui'}" @click="cfgTab='ui'">界面与高级</button></li>
+          </ul>
+
+          <!-- AI 服务 -->
+          <div v-show="cfgTab==='ai'">
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="选择 LLM 服务厂商；切换时会自动填充默认 Base URL 与模型名称">模型厂商</label>
+              <div class="col-sm-9">
+                <select class="form-select form-select-sm" v-model="form.aiProvider" @change="onProviderChange" title="选择 LLM 服务厂商；切换时会自动填充默认 Base URL 与模型名称">
+                  <option v-for="p in PRESETS" :key="p.key" :value="p.key">{{ p.label }}</option>
+                </select>
+                <div class="form-text mb-0" style="font-size:.72rem" v-if="PRESETS.find(x=>x.key===form.aiProvider)?.local">
+                  本地模型：默认无需 API Key，且 blockPrivateEndpoints 应关闭以允许访问回环地址。
+                </div>
+              </div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="OpenAI 兼容格式的聊天补全接口地址，例如 https://api.openai.com/v1">Base URL</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.aiBaseUrl" title="OpenAI 兼容格式的聊天补全接口地址，例如 https://api.openai.com/v1"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="模型服务提供的访问密钥；本地/私有化模型通常可留空">API Key</label>
+              <div class="col-sm-9 input-group input-group-sm">
+                <input class="form-control" :type="showKey ? 'text' : 'password'" v-model="form.aiApiKey" placeholder="本地模型可留空" title="模型服务提供的访问密钥；本地/私有化模型通常可留空">
+                <button class="btn btn-outline-secondary" type="button" @click="showKey = !showKey" title="显示/隐藏 API Key">
+                  <i class="bi" :class="showKey ? 'bi-eye-slash' : 'bi-eye'"></i>
+                </button>
+                <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" title="用当前配置测试与模型服务的连通性">
+                  <i class="bi bi-plug"></i> {{ testing ? '测试中…' : '连接测试' }}
+                </button>
+              </div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus">模型名称</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.aiModel" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="访问公网模型时经过的 HTTP 代理，格式如 http://proxy.example.com:8080">HTTP 代理</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.httpProxy" placeholder="企业网访问公网模型时使用" title="访问公网模型时经过的 HTTP 代理，格式如 http://proxy.example.com:8080"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="访问公网模型时经过的 HTTPS 代理；留空则复用 HTTP 代理">HTTPS 代理</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.httpsProxy" placeholder="可选" title="访问公网模型时经过的 HTTPS 代理；留空则复用 HTTP 代理"></div>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" id="cfgBlock" v-model="form.blockPrivateEndpoints" title="勾选后禁止访问 127.0.0.1、10.x.x.x 等私网地址，防止服务端请求伪造">
+              <label class="form-check-label" for="cfgBlock" title="勾选后禁止访问 127.0.0.1、10.x.x.x 等私网地址，防止服务端请求伪造">严格 SSRF：拒绝回环/私网地址</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" id="cfgAiEnabled" v-model="form.aiEnabled" title="开启后比对完成可自动生成 AI 风险/影响评估报告">
+              <label class="form-check-label" for="cfgAiEnabled" title="开启后比对完成可自动生成 AI 风险/影响评估报告">启用 AI 分析</label>
+            </div>
+          </div>
+
+          <!-- 解析与导出 -->
+          <div v-show="cfgTab==='parse'">
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="命中此前缀的类会被标记为内部业务类，并在差异树中按业务码展开">内部包前缀</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.internalPrefixes" placeholder="命中则按 L1 业务码展开 class" title="命中此前缀的类会被标记为内部业务类，并在差异树中按业务码展开"></div>
+            </div>
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgExpand" v-model="form.expandAll" title="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类">
+              <label class="form-check-label" for="cfgExpand" title="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类">展开全部（含三方 class）</label>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="差异树概览层默认展开的 TOP 节点数">Top-K（概览展开）</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.topK" title="差异树概览层默认展开的 TOP 节点数"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高">StageB Top-K</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.stageBTopK" title="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单">成本闸门告警 token</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.costGateWarnTokens" title="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="指定外部 CFR 反编译 jar 的绝对路径；留空使用内置 CFR">自定义 CFR jar</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.cfrJar" placeholder="留空则使用内置 CFR" title="指定外部 CFR 反编译 jar 的绝对路径；留空使用内置 CFR"></div>
+            </div>
+            <div class="mb-1 mt-2" style="font-size:.78rem;color:var(--bs-secondary-color)">忽略不重要差异（审计降噪，对标 Beyond Compare）：</div>
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgIgWs" v-model="form.ignoreWhitespace" title="忽略所有空白差异（含缩进/行尾空白），降低纯格式噪声">
+              <label class="form-check-label" for="cfgIgWs" title="忽略所有空白差异（含缩进/行尾空白），降低纯格式噪声">忽略空白</label>
+            </div>
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgIgCmt" v-model="form.ignoreComments" title="剥离整行注释（// # /* */ <!-- --> 及 javadoc 续行），仅用于行匹配，不改显示内容">
+              <label class="form-check-label" for="cfgIgCmt" title="剥离整行注释（// # /* */ <!-- --> 及 javadoc 续行），仅用于行匹配，不改显示内容">忽略整行注释</label>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略，不会使比对崩溃）">忽略正则</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.ignoreRegex" placeholder="如 \d{4}-\d{2}-\d{2}|@Generated 等" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略）"></div>
+            </div>
+            </div>
+          </div>
+
+          <!-- 差异树过滤 -->
+          <div v-show="cfgTab==='filter'">
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="按路径或类名过滤差异树节点">搜索关键字</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.filterSearch" placeholder="按路径/类名过滤差异树" title="按路径或类名过滤差异树节点"></div>
+            </div>
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgRegex" v-model="form.filterRegex" title="开启后搜索关键字按正则表达式匹配">
+              <label class="form-check-label" for="cfgRegex" title="开启后搜索关键字按正则表达式匹配">正则匹配</label>
+            </div>
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgAutoAi" v-model="form.autoAiOnCompare" title="勾选后每次比对完成自动调用 AI 生成风险/影响评估报告">
+              <label class="form-check-label" for="cfgAutoAi" title="勾选后每次比对完成自动调用 AI 生成风险/影响评估报告">比对后自动生成 AI 报告</label>
+            </div>
+            <div class="mb-1" style="font-size:.78rem;color:var(--bs-secondary-color)">差异树显示项：</div>
+            <div class="d-flex flex-wrap gap-3">
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsM" v-model="form.filterShowModified" title="在差异树中显示被修改的节点"><label class="form-check-label" for="fsM" title="在差异树中显示被修改的节点">修改</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsA" v-model="form.filterShowAdded" title="在差异树中显示新增的节点"><label class="form-check-label" for="fsA" title="在差异树中显示新增的节点">新增</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsD" v-model="form.filterShowDeleted" title="在差异树中显示删除的节点"><label class="form-check-label" for="fsD" title="在差异树中显示删除的节点">删除</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsU" v-model="form.filterShowUnchanged" title="在差异树中显示未变更的节点；关闭可显著缩短差异树长度"><label class="form-check-label" for="fsU" title="在差异树中显示未变更的节点；关闭可显著缩短差异树长度">未变</label></div>
+            </div>
+            <div class="form-text" style="font-size:.72rem">关闭「未变」可显著缩短差异树长度；以上偏好仅影响前端展示。</div>
+          </div>
+
+          <!-- 界面与高级 -->
+          <div v-show="cfgTab==='ui'">
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgPersist" v-model="form.persistApiKey" title="开启后 API Key 将写入本地配置文件；默认关闭以保证密钥不落盘">
+              <label class="form-check-label" for="cfgPersist" title="开启后 API Key 将写入本地配置文件；默认关闭以保证密钥不落盘">记住 API Key（落盘，默认关闭）</label>
+            </div>
+            <div class="form-check form-check-inline mb-2">
+              <input class="form-check-input" type="checkbox" id="cfgPc" v-model="form.projectContextEnabled" title="开启后比对时会额外加载该目录下的项目源码/文档作为 AI 分析的上下文">
+              <label class="form-check-label" for="cfgPc" title="开启后比对时会额外加载该目录下的项目源码/文档作为 AI 分析的上下文">启用项目级上下文增强</label>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="项目源码/文档目录，用于为 AI 分析提供背景上下文">上下文目录</label>
+              <div class="col-sm-9">
+                <div class="input-group input-group-sm">
+                  <input class="form-control" v-model="form.projectContextDir" placeholder="项目源码/文档目录" title="项目源码/文档目录，用于为 AI 分析提供背景上下文">
+                  <button class="btn btn-outline-secondary" type="button" @click="pickContextDir" :disabled="!canPick" :title="pickTitle">
+                    <i class="bi bi-folder2-open"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer py-2 px-4 d-flex align-items-center gap-2">
+          <span class="text-secondary me-auto" style="font-size:.75rem">保存后窗口保持打开，可继续编辑；填完点「关闭」。</span>
+          <button class="btn btn-outline-secondary btn-sm" @click="close"><i class="bi bi-x-lg"></i> 关闭</button>
+          <button class="btn btn-primary btn-sm" @click="onSave"><i class="bi bi-check2"></i> 保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.4);
+  display: flex; align-items: flex-start; justify-content: center; z-index: 1500; padding-top: 5vh;
+}
+.modal-content { width: 100%; background-color: var(--bs-body-bg); color: var(--bs-body-color); }
+.modal-body { padding: 1rem 1.5rem; }
+</style>

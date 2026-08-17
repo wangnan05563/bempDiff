@@ -1,0 +1,24 @@
+# 临时编译/验证产物（由工具链或验证脚本生成，非源码）
+server_out/
+_verify_classes/
+_srcs.txt
+_verify.py
+_report.md
+_server.log
+_copy_dist.py
+_clean_dist.py
+_postbuild.py
+dist_tmp/
+_regress_cls/
+scripts/__pycache__/
+scripts/_testcls/
+scripts/_p0_result.txt
+
+# Tauri 打包编排脚本的产物（由 scripts/build_tauri_app.ps1 生成，非源码）
+dist_input/
+src-tauri/target/
+src-tauri/gen/
+webui/dist_verify/
+webui/.npmcache2/
+
+# Electron 打包产物已调整到项目根目录 18_comparePakage/dist，忽略规则见根 .gitignore

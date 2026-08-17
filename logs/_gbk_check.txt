@@ -1,0 +1,8 @@
+﻿LINES=257
+LINE1=[@echo off]
+LINE2=[chcp 936 >nul 2>&1]
+HAS_CHCP936=True
+HAS_CHCP65001=False
+HAS_REM_ZH=True
+HAS_SDK_MSG=True
+BYTES=40 65 63

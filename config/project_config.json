@@ -18,7 +18,7 @@
   },
   "modules": {
     "core": {
-      "path": "prototype/java_core/src",
+      "path": "bempdiff/java_core/src",
       "languages": ["java"],
       "frameworks": [],
       "layers": {
@@ -34,26 +34,26 @@
       "exclude": ["demo_export", "demo_export/**", "__pycache__", ".git", "dist", "build"]
     },
     "ui": {
-      "path": "prototype/javafx_ui/src",
-      "languages": ["java"],
-      "frameworks": ["javafx"],
+      "path": "bempdiff/webui/src",
+      "languages": ["ts", "js"],
+      "frameworks": ["vue", "bootstrap"],
       "layers": {
-        "ui": "com/bempdiff/ui"
+        "ui": "src"
       },
-      "exclude": ["__pycache__", ".git", "dist", "build"]
+      "exclude": ["__pycache__", "node_modules", ".git", "dist", "build"]
     }
   },
   "sonar_project_properties": {
     "_description": "对应项目根目录 sonar-project.properties 文件的关键配置",
     "projectKey": "bempdiff",
-    "sources": "prototype/java_core/src,prototype/javafx_ui/src",
-    "java_binaries": "prototype/java_core/out,prototype/javafx_ui/out"
+    "sources": "bempdiff/java_core/src,bempdiff/webui/src",
+    "java_binaries": "bempdiff/java_core/out"
   },
   "verify": {
-    "test_command": "javac -encoding UTF-8 -d nul -cp \"prototype/java_core/out;prototype/javafx_ui/out;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar;prototype/cfr.jar\" -sourcepath prototype/java_core/src;prototype/javafx_ui/src -Xlint:all 2>&1",
+    "test_command": "javac -encoding UTF-8 -d nul -cp \"bempdiff/java_core/out;bempdiff/cfr.jar\" -sourcepath bempdiff/java_core/src -Xlint:all 2>&1",
     "test_commands": {
-      "core_compile": "javac -encoding UTF-8 -d nul -cp \"prototype/java_core/out;prototype/javafx_ui/out;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar;prototype/cfr.jar\" -sourcepath prototype/java_core/src;prototype/javafx_ui/src -Xlint:all 2>&1",
-      "main_verify": "java -cp \"prototype/java_core/out;prototype/javafx_ui/out;prototype/toolchain/javafx-base-21-win.jar;prototype/toolchain/javafx-controls-21-win.jar;prototype/toolchain/javafx-fxml-21-win.jar;prototype/toolchain/javafx-graphics-21-win.jar;prototype/cfr.jar\" com.bempdiff.Main 2>&1"
+      "core_compile": "javac -encoding UTF-8 -d nul -cp \"bempdiff/java_core/out;bempdiff/cfr.jar\" -sourcepath bempdiff/java_core/src -Xlint:all 2>&1",
+      "main_verify": "java -cp \"bempdiff/java_core/out;bempdiff/cfr.jar\" com.bempdiff.Main 2>&1"
     }
   },
   "report": {

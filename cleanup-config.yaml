@@ -9,10 +9,10 @@
 
 workspace:
   root: "."
-  script_dir: "scripts"
+  script_dir: "tooling/scripts"
   docs_dir: "docs"
   logs_dir: "logs"
-  frontend_dir: ""        # 本项目无独立前端目录（Web 原型在 prototype/，但属源码/产物混合，单独处理）
+  frontend_dir: ""        # 本项目无独立前端目录（Web 原型在 bempdiff/，但属源码/产物混合，单独处理）
   frontend_src_dir: "src"
 
 # ---------- 根目录允许清单（KEEP） ----------
@@ -27,7 +27,6 @@ root_allowlist:
     - "README.md"
     - "CHANGELOG.md"
     - "sonar-project.properties"
-    - "core_srcs.txt"
     - ".gitignore"
   allowed_root_scripts: []   # 根目录不允许散落脚本
 
@@ -39,8 +38,8 @@ script_extensions:
   - ".sh"
   - ".vbs"
 script_exclude_dirs:
-  - "scripts/"
-  - "prototype/"      # prototype 下的 .py/.sh/.bat 属原型工具链，保留
+  - "tooling/scripts/"
+  - "bempdiff/"      # prototype 下的 .py/.sh/.bat 属原型工具链，保留
 
 # ---------- 垃圾文件模式（仅本项目确认可安全删除者） ----------
 garbage_patterns:
@@ -53,17 +52,17 @@ garbage_patterns:
   # SonarQube 缓存目录
   cache_dirs:
     - ".scannerwork/"
-  # prototype/ 下递归所有 .class（编译中间产物，与 .java 同源可重生）
+  # bempdiff/ 下递归所有 .class（编译中间产物，与 .java 同源可重生）
   compiled_class_patterns:
-    - "/prototype/**/*.class"
+    - "/bempdiff/**/*.class"
   # 运行时/结果日志（全删，可重跑测试/扫描重生）
   runtime_logs:
-    - "/jmeter.log"
+    - "/tooling/jmeter.log"
     - "/scan-output.log"
     - "/logs/*"            # 仅删 logs/ 内文件，保留目录与本次清理备份日志
-    - "/jmeter/*.log"
-    - "/jmeter/*.jtl"
-    - "/prototype/*.log"
+    - "/tooling/jmeter/*.log"
+    - "/tooling/jmeter/*.jtl"
+    - "/bempdiff/*.log"
 
 # ---------- 二义性文件确认门（依赖 / 资产类） ----------
 # 本项目含大量 jar/war/exe：部分属必要依赖(反编译器/JavaFX/发布包)或测试夹具，
@@ -159,11 +158,11 @@ verification:
   # 本项目为 JavaFX 桌面应用，无 venv；验证改为「关键源/配置/脚本/文档仍存在」
   required_present:
     - "config/"
-    - "scripts/"
+    - "tooling/scripts/"
     - "docs/"
-    - "prototype/ui_prototype.html"
+    - "bempdiff/ui_prototype.html"
     - "sonar-project.properties"
-    - "core_srcs.txt"
+    - "config/core_srcs.txt"
   on_failure:
     - "检查 logs/cleanup-*.log 中的 hash 记录"
     - "被删文件均为可重生编译产物：重新 javac 编译即可恢复"

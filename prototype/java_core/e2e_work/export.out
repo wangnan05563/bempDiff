@@ -1,6 +1,0 @@
-== EXPORT ==
-outDir : D:\code\otherProjects\18_comparePakage\prototype\java_core\e2e_work\export
-classes: D:\code\otherProjects\18_comparePakage\prototype\java_core\e2e_work\export\diff-classes (3 class 文件)
-jars    : D:\code\otherProjects\18_comparePakage\prototype\java_core\e2e_work\export\diff-jars (0 jar 文件)
-src zip : D:\code\otherProjects\18_comparePakage\prototype\java_core\e2e_work\export\decompiled-sources.zip (7 源码，含 6 前端)
-stats: added=1 deleted=1 modified=6 unchanged=0 | bizChanged=8 jarChanged=0

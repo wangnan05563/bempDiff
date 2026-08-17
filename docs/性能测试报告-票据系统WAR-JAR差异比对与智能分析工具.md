@@ -23,9 +23,9 @@
 
 | 组件 | 说明 |
 |---|---|
-| 被测 JDK | zulu21.52.15-ca-jdk21.0.12（`prototype/toolchain`），harness `-Xmx3g` + JFR 录制。 |
+| 被测 JDK | zulu21.52.15-ca-jdk21.0.12（`bempdiff/toolchain`），harness `-Xmx3g` + JFR 录制。 |
 | 压测工具 | Apache JMeter 5.6.3（`D:\code\Jmeter\apache-jmeter-5.6.3`，非 GUI `-n`）。 |
-| 脚本 | `scripts/gen_jmx.py`（生成 13 份 .jmx）、`scripts/analyze_jtl.py`（兼容 XML/CSV JTL，按 label 出 TPS/分位）、`scripts/cfr_sampler.py`（每 10s 采样 `java.exe` 进程数）。 |
+| 脚本 | `tooling/scripts/perf/gen_jmx.py`（生成 13 份 .jmx）、`tooling/scripts/perf/analyze_jtl.py`（兼容 XML/CSV JTL，按 label 出 TPS/分位）、`tooling/scripts/perf/cfr_sampler.py`（每 10s 采样 `java.exe` 进程数）。 |
 | 夹具 | `lib_v1/v2.jar`（345 真实被改类，`expandAll` 触发 L1 候选）；`big200/big500`（合成大包，仅 sha256/解析用）；`small_real`（24 真实类，给 ai/report/export 用）。 |
 | 监控 | JFR（`logs/harness.jfr`）；`cfr_sampler` 量化并发 CFR 子进程数。 |
 | 机器 | Windows；用户基础设施含 SonarQube/Elasticsearch/Jenkins（**8 个 java.exe 基线，不参与测试、绝对不可动**）；其余为被测 harness 与 CFR 子进程。空闲内存 ~27GB，无 OOM。 |
@@ -208,7 +208,7 @@
 
 - **预期收益落地情况**：高并发下线程/进程不再爆炸（全局有界池替代每请求池），延迟可预测、不 OOM、错误率可控；CFR/javap 子进程管道死锁隐患消除。建议后续以 JMeter 高并发档（50/100 并发）复测确认 `WORK_POOL` 背压与超时的端到端稳定性（预期错误率维持 0%、延迟随排队可预测增长而非雪崩）。
 
-> **交付说明（2026-08-10）**：P1-1/P1-2/P1-3 三项优化已随 P0-1 既定「外科手术式 app.jar 重打包」流程落入正式交付物 `prototype/dist_exe/BempDiff/app/app.jar`（已校验：`inProcessCfrAvailable=true`、cfr 类 1362 条、`Main-Class: com.bempdiff.ui.App`、全量单测 45/45）。Harness（test-only 适配层）已同步重编（`prototype/build/harness`）。P1 三项均以单元测试 + 冒烟锁定语义；建议后续以 JMeter 高并发档（50/100 并发 + big200/big500）做一次复测，量化 P1-2 内存峰值下降与 P1-3 背压/超时端到端稳定性。
+> **交付说明（2026-08-10）**：P1-1/P1-2/P1-3 三项优化已随 P0-1 既定「外科手术式 app.jar 重打包」流程落入正式交付物 `bempdiff/dist_exe/BempDiff/app/app.jar`（已校验：`inProcessCfrAvailable=true`、cfr 类 1362 条、`Main-Class: com.bempdiff.ui.App`、全量单测 45/45）。Harness（test-only 适配层）已同步重编（`bempdiff/build/harness`）。P1 三项均以单元测试 + 冒烟锁定语义；建议后续以 JMeter 高并发档（50/100 并发 + big200/big500）做一次复测，量化 P1-2 内存峰值下降与 P1-3 背压/超时端到端稳定性。
 
 ---
 
@@ -226,27 +226,27 @@
 
 ```bash
 # 启动 harness（test-only 适配层）
-JAVA=prototype/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/java.exe
+JAVA=bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/java.exe
 "$JAVA" -Xmx3g -XX:+FlightRecorder -XX:StartFlightRecording=disk=true,filename=logs/harness.jfr,maxsize=400m,settings=default \
-  -cp "prototype/perf-harness/out;prototype/java_core/out;prototype/javafx_ui/out;prototype/cfr.jar;prototype/toolchain/javafx-*-21-win.jar" \
+  -cp "bempdiff/perf-harness/out;bempdiff/java_core/out;bempdiff/javafx_ui/out;bempdiff/cfr.jar;bempdiff/toolchain/javafx-*-21-win.jar" \
   com.bempdiff.perf.Harness 18080
 
 # 运行某计划
-JMETER_HOME/bin/jmeter.bat -n -t jmeter/<plan>.jmx -Jhost=localhost -Jport=18080 -f -l jmeter/results/<plan>.jtl
+JMETER_HOME/bin/jmeter.bat -n -t tooling/jmeter/<plan>.jmx -Jhost=localhost -Jport=18080 -f -l tooling/jmeter/results/<plan>.jtl
 
 # 分析 JTL
-python scripts/analyze_jtl.py jmeter/results/<plan>.jtl
+python tooling/scripts/perf/analyze_jtl.py tooling/jmeter/results/<plan>.jtl
 ```
 
 ### 8.2 产物路径
 
 | 产物 | 路径 |
 |---|---|
-| JMX 计划 | `jmeter/*.jmx`（缩放/并发补丁版 `*_r.jmx`，duration=180） |
-| 结果 JTL | `jmeter/results/*.jtl` |
+| JMX 计划 | `tooling/jmeter/*.jmx`（缩放/并发补丁版 `*_r.jmx`，duration=180） |
+| 结果 JTL | `tooling/jmeter/results/*.jtl` |
 | JFR 录像 | `logs/harness.jfr` |
 | CFR 进程采样 | `logs/cfr_procs.csv` |
-| 适配层源码 | `prototype/perf-harness/src/com/bempdiff/perf/Harness.java` |
+| 适配层源码 | `bempdiff/perf-harness/src/com/bempdiff/perf/Harness.java` |
 
 ### 8.3 后台 sweep 补入状态（已完成）
 
@@ -264,7 +264,7 @@ python scripts/analyze_jtl.py jmeter/results/<plan>.jtl
 
 ### 9.1 复测环境
 
-- **被测端**：`prototype/dist_exe/BempDiff/app/app.jar`（P0-1 进程内 CFR + P0-2 解析闸门 + P1-1/1-2/1-3 全部生效），由 `Harness`（test-only 适配层）在端口 **18080** 暴露 HTTP 端点驱动。
+- **被测端**：`bempdiff/dist_exe/BempDiff/app/app.jar`（P0-1 进程内 CFR + P0-2 解析闸门 + P1-1/1-2/1-3 全部生效），由 `Harness`（test-only 适配层）在端口 **18080** 暴露 HTTP 端点驱动。
 - **JVM**：JDK21（zulu21），`-Xms1g -Xmx2g -XX:+UseG1GC`，开启 `HeapDumpOnOutOfMemoryError`；内存每 2s 经 Windows PSAPI 采样（RSS / 私有工作集）。
 - **压测端**：JMeter 5.6.3（JDK8 `jdk1.8.0_341`），CLI `java -jar ApacheJMeter.jar -n`。
 - **基线对照说明**：`parse_diff_fast` 系列有干净的 **postP02 基线**（08-10 03:51，仅含 P0-1+P0-2，P1 隔离）；其余三计划在复测前仅有 **08-09 原始基线**（P0-1/P0-2/P1 全无），故为"P0-1+P0-2+P1 合并对照"，其中主导改进项已分别标注。
