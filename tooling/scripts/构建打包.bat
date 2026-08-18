@@ -6,7 +6,7 @@ echo ============================================
 echo   BempDiff Build (Electron + Web UI + Java sidecar)
 echo ============================================
 echo Steps: check java artifacts -^> install builder -^> build webui -^> electron-builder [NSIS]
-echo Output: dist\BempDiff-*-setup.exe  (项目根 18_comparePakage\dist)
+echo Output: release\BempDiff-*-setup.exe  (项目根 18_comparePakage\release)
 echo.
 
 REM ---------- 0. Prerequisite: Java backend artifacts ----------
@@ -84,4 +84,4 @@ if errorlevel 1 (
 
 echo.
 echo [DONE] Build complete.
-echo   Installer: dist\BempDiff-*-setup.exe  (项目根 18_comparePakage\dist)
+echo   Installer: release\BempDiff-*-setup.exe  (项目根 18_comparePakage\release)
