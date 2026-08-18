@@ -18,6 +18,7 @@ const thinkingCollapsed = ref(true) // 默认折叠（参考 wiki ThinkingBlock�
 const errorMsg = ref('')
 const controller = ref(null)
 const bodyRef = ref(null)
+const thinkingBodyRef = ref(null)
 
 const hasAnswer = computed(() => answer.value.length > 0)
 
@@ -71,9 +72,19 @@ function stop() {
 
 function close() { stop(); emit('close') }
 
-async function scrollBottom() {
-  await nextTick()
-  if (bodyRef.value) bodyRef.value.scrollTop = bodyRef.value.scrollHeight
+// 自动向下滚动到底：主区域（modal-body）与思考块内部（thinking-body）同步跟随最新内容。
+function scrollBottom() {
+  nextTick(() => {
+    const el = bodyRef.value
+    if (el) el.scrollTop = el.scrollHeight
+    const tb = thinkingBodyRef.value
+    if (tb) tb.scrollTop = tb.scrollHeight
+    // rAF 兜底：流式高频渲染时 nextTick 可能早于浏览器布局完成，再补一次确保到底
+    requestAnimationFrame(() => {
+      if (el) el.scrollTop = el.scrollHeight
+      if (tb) tb.scrollTop = tb.scrollHeight
+    })
+  })
 }
 
 function phaseLabel(p) {
@@ -100,7 +111,7 @@ function toggleThinking() {
           <button type="button" class="btn-close" @click="close"></button>
         </div>
 
-        <div class="modal-body ai-dialog-body">
+        <div ref="bodyRef" class="modal-body ai-dialog-body">
           <div v-if="errorMsg" class="alert alert-danger py-2 mb-3" style="font-size:.82rem">
             <i class="bi bi-exclamation-triangle"></i> {{ errorMsg }}
           </div>
@@ -114,7 +125,7 @@ function toggleThinking() {
               </span>
               <i class="bi thinking-toggle" :class="(thinkingCollapsed && !live) ? 'bi-chevron-right' : 'bi-chevron-down'"></i>
             </div>
-            <div class="thinking-body" v-show="!thinkingCollapsed || live">
+            <div ref="thinkingBodyRef" class="thinking-body" v-show="!thinkingCollapsed || live">
               <div v-for="(s, idx) in thinkingSteps" :key="idx" class="thinking-step">
                 <span class="step-phase" :class="s.phase">{{ phaseLabel(s.phase) }}</span>
                 <span class="step-message">{{ s.message }}</span>
@@ -123,7 +134,7 @@ function toggleThinking() {
           </div>
 
           <!-- 答案流式输出区 -->
-          <div ref="bodyRef" class="ai-answer ai-md">
+          <div class="ai-answer ai-md">
             <div v-if="!hasAnswer && streaming" class="loading-dots">
               <span></span><span></span><span></span> AI 正在生成…
             </div>
