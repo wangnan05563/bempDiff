@@ -1,5 +1,6 @@
 # 临时编译/验证产物（由工具链或验证脚本生成，非源码）
 server_out/
+toolchain/   # 复原的 Zulu21 JDK（下载产物，非源码，~200MB，勿提交）
 _verify_classes/
 _srcs.txt
 _verify.py

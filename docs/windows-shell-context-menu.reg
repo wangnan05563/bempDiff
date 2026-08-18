@@ -1,0 +1,34 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+; BempDiff 右键菜单（"用 BempDiff 对比"）
+; ----------------------------------------------------------------------------
+; 作用：在资源管理器右键文件 / 目录时出现「用 BempDiff 对比」，点击后把该路径
+;       作为参数启动 BempDiff。配合桌面壳的「单实例 + 第二实例转发」机制：
+;         - 第一次右键 → 启动 BempDiff 并设为「左(基准)」
+;         - 第二次右键另一个文件/目录 → 转发给已运行实例，设为「右(目标)」并自动比对
+;      即 Beyond Compare / WinMerge 同款的「先选一个，再选一个对比」体验。
+;
+; 使用：
+;   1. 把下面两处 "C:\\Program Files\\BempDiff\\BempDiff.exe" 改成你机器上的实际安装路径
+;      （注意 reg 里反斜杠必须写成双斜杠 \\）。
+;   2. 双击本 .reg 导入（需要管理员权限写 HKEY_CLASSES_ROOT；若失败可改为写
+;      HKEY_CURRENT_USER\\Software\\Classes\\ 等效路径，免管理员）。
+;   3. 卸载：把本文件另存为 .reg 并把各 @= 值删掉（置空）再导入，或手动删对应注册表项。
+; ============================================================================
+
+; ---- 文件右键 ----
+[HKEY_CLASSES_ROOT\*\shell\BempDiff\command]
+@="\"C:\\Program Files\\BempDiff\\BempDiff.exe\" \"%1\""
+
+[HKEY_CLASSES_ROOT\*\shell\BempDiff]
+"Icon"="\"C:\\Program Files\\BempDiff\\BempDiff.exe\""
+"MUIVerb"="用 BempDiff 对比"
+
+; ---- 目录右键 ----
+[HKEY_CLASSES_ROOT\Directory\shell\BempDiff\command]
+@="\"C:\\Program Files\\BempDiff\\BempDiff.exe\" \"%1\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\BempDiff]
+"Icon"="\"C:\\Program Files\\BempDiff\\BempDiff.exe\""
+"MUIVerb"="用 BempDiff 对比"

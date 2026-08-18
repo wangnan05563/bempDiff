@@ -21,6 +21,7 @@ Thumbs.db
 
 # Build outputs
 dist/
+release/
 build/
 out/
 
@@ -62,3 +63,17 @@ bempdiff/webui/.npmcache*
 # ---------- Electron 桌面壳依赖 (2026-08-17) ----------
 # dev-shell 的 npm install 产物，体积大且可重装，不纳入版本控制（仅改忽略规则，不删文件）
 bempdiff/dev-shell/node_modules/
+
+# ---------- 扫描/测试临时产物 (2026-08-18) ----------
+# 清理/诊断技能运行期落地的临时报告与日志，非源码、可重跑生成，不纳入版本控制
+.comp_err.txt
+.fix_strategies.json
+.issues.csv
+.remaining_issues.csv
+.scan_log*.txt
+.test_log*.txt
+
+# ---------- vite/vitest 临时配置文件 (2026-08-18) ----------
+# vite 在 dev/build 时生成的临时 config 副本，非源码
+vite.config.js.timestamp-*.mjs
+vitest.config.js.timestamp-*.mjs
