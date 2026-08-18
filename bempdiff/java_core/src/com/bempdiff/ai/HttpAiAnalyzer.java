@@ -5,6 +5,7 @@ import com.bempdiff.config.AiConfig;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.FileClass;
+import com.bempdiff.server.Json;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -21,8 +22,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -340,6 +343,119 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         lastError = "TLS 握手失败（已尝试 " + ladder.length + " 种策略均被拒绝）: " + diag
                 + "建议：填写 HTTPS 代理（如 http://127.0.0.1:7890）或检查防火墙/中间设备设置";
         return false;
+    }
+
+    /** OpenAI 兼容模型列表接口路径（GET {baseUrl}/models）。 */
+    private static final String MODELS_PATH = "models";
+
+    /**
+     * 按 API Base URL + API Key 自动获取可用模型列表（OpenAI 兼容 /models 接口）。
+     * 复用与 testConnection 完全相同的传输层（open 的代理 / SSRF 防护 + TLS 阶梯 + 鉴权头）。
+     * 返回模型 ID 列表；任意策略成功但解析为空、或返回非 2xx 鉴权/端点错误时返回空列表（lastError 含原因）。
+     */
+    public List<String> fetchModels(AiConfig cfg) {
+        return fetchModelsHttp(cfg);
+    }
+
+    private List<String> fetchModelsHttp(AiConfig cfg) {
+        lastError = null;
+        String endpoint = cfg.getBaseUrl().endsWith("/")
+                ? cfg.getBaseUrl() + MODELS_PATH
+                : cfg.getBaseUrl() + "/" + MODELS_PATH;
+        SSLSocketFactory[] ladder = buildTestLadder();
+        StringBuilder diag = new StringBuilder();
+        for (int i = 0; i < ladder.length; i++) {
+            FetchOutcome r = probeFetchStrategy(endpoint, cfg, ladder[i]);
+            if (r.kind == FetchOutcome.Kind.SUCCESS) {
+                List<String> models = parseModels(r.body);
+                if (!models.isEmpty()) return models;
+                // 接口返回成功但未能解析到模型（非标准响应体）：仍按"成功但为空"处理，给出可读提示。
+                lastError = "接口返回成功，但响应格式未包含 data[].id 模型列表（可能非 OpenAI 兼容 /models 格式）";
+                return models;
+            }
+            if (r.kind == FetchOutcome.Kind.AUTH_FAIL) {
+                lastError = r.error;
+                return Collections.emptyList();
+            }
+            // 握手失败 → 继续下一 TLS 策略
+            diag.append("策略").append(i).append(":握手失败; ");
+        }
+        lastError = "TLS 握手失败（已尝试 " + ladder.length + " 种策略均被拒绝）: " + diag
+                + "建议：填写 HTTPS 代理或检查防火墙/中间设备设置";
+        return Collections.emptyList();
+    }
+
+    /** 单次 GET /models 的探测结果（含响应体或错误原因），用于 fetchModels 的 TLS 阶梯。 */
+    private static final class FetchOutcome {
+        enum Kind { SUCCESS, AUTH_FAIL, CONTINUE }
+        final Kind kind;
+        final String body;   // SUCCESS 时非空
+        final String error;  // AUTH_FAIL/CONTINUE 诊断
+        FetchOutcome(Kind kind, String body, String error) {
+            this.kind = kind;
+            this.body = body;
+            this.error = error;
+        }
+    }
+
+    /** 单次 GET /models：成功返回响应体；鉴权/端点错误返回 AUTH_FAIL；TLS 握手失败返回 CONTINUE 触发重试。 */
+    private FetchOutcome probeFetchStrategy(String endpoint, AiConfig cfg, SSLSocketFactory sf) {
+        try {
+            URL u = URI.create(endpoint).toURL();
+            HttpURLConnection c = open(u, cfg, sf);
+            try {
+                c.setRequestMethod("GET");
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(15000);
+                setAuthHeader(c, cfg);
+                int code = c.getResponseCode();
+                if (code >= 200 && code < 300) {
+                    String body = readAll(c.getInputStream());
+                    return new FetchOutcome(FetchOutcome.Kind.SUCCESS, body, null);
+                }
+                if (code == 401) return new FetchOutcome(FetchOutcome.Kind.AUTH_FAIL, null, "HTTP 401（API Key 无效或已过期）");
+                if (code == 403) return new FetchOutcome(FetchOutcome.Kind.AUTH_FAIL, null, "HTTP 403（访问被拒绝，检查账户权限）");
+                if (code == 404) return new FetchOutcome(FetchOutcome.Kind.AUTH_FAIL, null, "HTTP 404（/models 端点不存在，检查 Base URL，部分厂商模型列表接口路径不同）");
+                return new FetchOutcome(FetchOutcome.Kind.AUTH_FAIL, null, "HTTP " + code + "（服务端返回非成功状态）");
+            } finally {
+                c.disconnect();
+            }
+        } catch (IOException e) {
+            if (isHandshakeFailure(e)) {
+                return new FetchOutcome(FetchOutcome.Kind.CONTINUE, null, null);
+            }
+            String msg = classifyIoError(e.getMessage());
+            lastError = msg;
+            return new FetchOutcome(FetchOutcome.Kind.AUTH_FAIL, null, msg);
+        }
+    }
+
+    /** 从 /models 响应解析模型 ID 列表：优先 data[].id（OpenAI 兼容），兜底 models[].name（Ollama /api/tags 风格）。 */
+    private static List<String> parseModels(String body) {
+        List<String> out = new ArrayList<>();
+        if (body == null || body.isEmpty()) return out;
+        try {
+            Object parsed = Json.parse(body);
+            if (!(parsed instanceof Map)) return out;
+            Map<String, Object> root = (Map<String, Object>) parsed;
+            Object arr = root.get("data");
+            if (!(arr instanceof List)) arr = root.get("models"); // Ollama 兜底
+            if (!(arr instanceof List)) return out;
+            for (Object item : (List<?>) arr) {
+                if (item instanceof Map) {
+                    Map<?, ?> m = (Map<?, ?>) item;
+                    Object id = m.get("id");
+                    if (id == null) id = m.get("name"); // Ollama 用 name
+                    if (id != null) {
+                        String s = String.valueOf(id);
+                        if (!s.isEmpty() && !out.contains(s)) out.add(s);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "解析模型列表失败", e);
+        }
+        return out;
     }
 
     /**

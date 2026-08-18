@@ -154,7 +154,7 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
 
 <style scoped>
 .ai-console { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
-  border-top: 1px solid var(--bs-border-color); margin-top: .5rem; padding: .5rem .75rem .5rem; }
+  padding: .75rem .75rem .5rem; }
 .console-head { font-size: .8rem; font-weight: 600; color: var(--bs-secondary-color); display: flex; align-items: center; }
 .console-new { margin: .4rem 0; }
 .console-empty { font-size: .8rem; padding: .5rem 0; }

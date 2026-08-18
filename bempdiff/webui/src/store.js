@@ -32,6 +32,7 @@ export const state = reactive({
   analyzing: false,        // 后台 AI 报告生成中，不弹全屏遮罩
   reporting: false,        // 生成报告锁：防止自动报告（比对后）与手动报告并发重叠
   aiPanelCollapsed: false, // 智能分析栏收起状态（与 DiffView 文件栏一键显隐联动，避免遮挡对比窗口）
+  aiPanelTab: 'file',      // 智能分析栏内容子视图：file/global/break/audit/console（控制台为独立 tab，独占内容区高度）
   aiClassify: {},          // 智能分类结果：key -> { risk(HIGH/MEDIUM/LOW), category, reason }（A1+B2）
   classifying: false,      // 智能分类进行中
   aiEstimate: null,        // 成本闸门：AI token 预估缓存 { report, analyze, classify, threshold }
@@ -52,7 +53,9 @@ export const state = reactive({
   // 归档展开：复合键(outer!/inner) -> { loading, error, children:[{key,status,fileClass,size,name,expandable}] }
   archiveChildren: {},
   // 当前已展开的归档复合键集合（DiffTree 用于渲染子节点 + 旋转图标）
-  expandedArchives: {}
+  expandedArchives: {},
+  // AI 模型列表（按 API Base URL + Key 自动获取），供配置中心「模型名称」字段下拉/补全
+  aiModels: []
 })
 
 let toastTimer = null
@@ -465,6 +468,7 @@ export function startAiAnalysis(category = 'risk', prompt = '') {
   const t = state.aiTasks[state.aiTasks.length - 1] // 取响应式代理引用，后续 mutation 都走它
   state.aiActiveTaskId = id
   state.aiPanelCollapsed = false // 展开智能分析栏以露出控制台
+  state.aiPanelTab = 'console'    // 自动切到「控制台」tab，确保用户即时看到流式输出
   ensureAiBudget('analyze').then((ok) => {
     if (!ok) {
       t.status = 'error'
@@ -577,6 +581,29 @@ export async function testConnection(payload) {
   } catch (e) {
     toast('danger', '连接测试失败：' + e.message)
     return false
+  }
+}
+
+/**
+ * 按 API Base URL + Key 自动获取可用模型列表（后端 /api/ai/models）。
+ * payload: { provider, baseUrl, apiKey, httpProxy?, httpsProxy?, blockPrivateEndpoints? }
+ * 成功时把模型 ID 列表写入 state.aiModels 供配置中心「模型名称」字段下拉/补全，返回该列表；
+ * 失败/为空时弹告警并返回空数组（不抛，调用方按返回值处理）。
+ */
+export async function fetchModels(payload) {
+  try {
+    const r = await api.fetchModels(payload)
+    if (r && r.ok && Array.isArray(r.models) && r.models.length) {
+      state.aiModels = r.models
+      toast('success', `已获取 ${r.models.length} 个可用模型`)
+      return r.models
+    }
+    const msg = (r && r.lastError) ? r.lastError : '未获取到模型列表'
+    toast('warning', '获取模型列表失败：' + msg)
+    return []
+  } catch (e) {
+    toast('danger', '获取模型列表失败：' + e.message)
+    return []
   }
 }
 

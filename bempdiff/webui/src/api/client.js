@@ -63,6 +63,8 @@ export const api = {
   putConfig(cfg) { return req('PUT', '/api/config', cfg) },
   // body: { provider, baseUrl, apiKey, model, httpProxy?, httpsProxy? }
   testAi(payload) { return req('POST', '/api/ai/test', payload) },
+  // -> { ok, models: string[], lastError, message } 按 API Base URL + Key 自动拉取可用模型
+  fetchModels(payload) { return req('POST', '/api/ai/models', payload) },
   /**
    * AI 分析流式端点（SSE）。消费 /api/job/{id}/ai-analyze 的 event:/data: 流，
    * 分发 onThinking/onAnswer/onDone/onError。返回一个 AbortController 供「停止」调用。

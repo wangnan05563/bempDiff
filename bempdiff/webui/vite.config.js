@@ -22,6 +22,9 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
-    emptyOutDir: true
+    // 本机回收站不可用 → WorkBuddy safe-delete 钩子 fail-closed：
+    // vite 默认清空 dist 会调用 trash 操作并中断构建。故关闭自动清空，
+    // 改为直接覆盖新哈希（旧哈希残留但无害，dist 为 gitignored 临时产物）。
+    emptyOutDir: false
   }
 })

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { state, saveConfig, testConnection } from '../store'
+import { state, saveConfig, testConnection, fetchModels } from '../store'
 import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
 
 const props = defineProps({ visible: { type: Boolean, default: false } })
@@ -58,6 +58,18 @@ const pickTitle = computed(() => canPick.value
 async function pickContextDir() {
   const p = await pickPath({ directory: true })
   if (p) form.projectContextDir = p
+}
+
+// 按当前 API Base URL + Key 拉取可用模型列表，写入 state.aiModels 供下方 datalist 补全。
+const fetchingModels = ref(false)
+async function onFetchModels() {
+  fetchingModels.value = true
+  await fetchModels({
+    provider: form.aiProvider, baseUrl: form.aiBaseUrl, apiKey: form.aiApiKey,
+    httpProxy: form.httpProxy, httpsProxy: form.httpsProxy,
+    blockPrivateEndpoints: !!form.blockPrivateEndpoints
+  })
+  fetchingModels.value = false
 }
 
 async function onTest() {
@@ -135,8 +147,19 @@ function onSave() {
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus">模型名称</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.aiModel" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus；可点「获取模型列表」自动拉取">模型名称</label>
+              <div class="col-sm-9">
+                <div class="input-group input-group-sm">
+                  <input class="form-control" list="aiModelList" v-model="form.aiModel" placeholder="可输入或点右侧按钮拉取" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus；可点「获取模型列表」自动拉取">
+                  <datalist id="aiModelList">
+                    <option v-for="m in state.aiModels" :key="m" :value="m"></option>
+                  </datalist>
+                  <button class="btn btn-outline-secondary" type="button" :disabled="fetchingModels" @click="onFetchModels" title="按当前 API Base URL + Key 自动获取可用模型列表">
+                    <i class="bi" :class="fetchingModels ? 'bi-arrow-repeat' : 'bi-list-ul'"></i> {{ fetchingModels ? '获取中…' : '获取模型列表' }}
+                  </button>
+                </div>
+                <div class="form-text mb-0" style="font-size:.72rem" v-if="state.aiModels.length">已拉取 {{ state.aiModels.length }} 个可用模型，可在输入框中下拉选择。</div>
+              </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="访问公网模型时经过的 HTTP 代理，格式如 http://proxy.example.com:8080">HTTP 代理</label>

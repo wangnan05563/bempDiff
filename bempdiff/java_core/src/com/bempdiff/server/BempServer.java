@@ -103,6 +103,7 @@ public final class BempServer {
         server.createContext("/api/entry", this::handleEntry);
         server.createContext("/api/config", this::handleConfig);
         server.createContext("/api/ai/test", this::handleAiTest);
+        server.createContext("/api/ai/models", this::handleAiModels);
         server.createContext("/", this::handleStatic);
         // 关键：默认 HttpServer 用单线程串行处理所有请求——一次长比对会阻塞全部 API/静态资源。
         // 改为每个请求一个虚拟线程，比对任务再下沉到 workers 执行器，UI 才能边比对边轮询进度。
@@ -862,6 +863,41 @@ public final class BempServer {
         }
     }
 
+    // ---------------- AI 模型列表自动获取 ----------------
+
+    /**
+     * 根据 API Base URL + API Key 自动获取可用模型列表（OpenAI 兼容 /models 接口）。
+     * 请求体可携带 provider/baseUrl/apiKey/httpProxy/httpsProxy/blockPrivateEndpoints 临时覆盖，
+     * 缺省时回退服务端已保存配置（与 handleAiTest 同一读取逻辑）。返回 {ok, models[], lastError, message}。
+     */
+    private void handleAiModels(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals(M_OPTIONS)) {
+            sendJson(ex, 204, new LinkedHashMap<>());
+            return;
+        }
+        try {
+            AiConfig aiCfg = readAiTestConfig(ex);
+            HttpAiAnalyzer analyzer = new HttpAiAnalyzer(aiCfg);
+            List<String> models = analyzer.fetchModels(aiCfg);
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("ok", !models.isEmpty());
+            resp.put("models", models);
+            resp.put("lastError", analyzer.getLastError());
+            resp.put(KEY_MESSAGE, models.isEmpty()
+                    ? (analyzer.getLastError() != null ? analyzer.getLastError() : "未获取到模型列表")
+                    : "已获取 " + models.size() + " 个可用模型");
+            sendJson(ex, 200, resp);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "获取模型列表异常", e);
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("ok", false);
+            resp.put("models", new ArrayList<>());
+            resp.put("lastError", e.getMessage());
+            resp.put(KEY_MESSAGE, "获取模型列表异常: " + e.getMessage());
+            sendJson(ex, 200, resp);
+        }
+    }
+
     private AiConfig readAiTestConfig(HttpExchange ex) throws IOException {
         AiConfig aiCfg = config.toAiConfig();
         aiCfg.setEnabled(true);
@@ -908,6 +944,7 @@ public final class BempServer {
                 + "<li><code>GET /api/entry/decompile?jobId=&amp;key=</code> 单文件反编译</li>"
                 + "<li><code>GET/PUT /api/config</code> 配置</li>"
                 + "<li><code>POST /api/ai/test</code> AI 连接测试</li>"
+                + "<li><code>POST /api/ai/models</code> 自动获取模型列表</li>"
                 + "<li><code>POST /api/job/{id}/report</code> 生成 Markdown 报告</li>"
                 + "<li><code>POST /api/job/{id}/export</code> 导出差异资产 zip</li>"
                 + "</ul><p>前端 SPA 构建后放置到 webroot 目录即可被本服务托管。</p></body></html>";

@@ -1,10 +1,15 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { state, activeTab, generateReport, setAiPanelCollapsed, applyAiPanelResponsive } from '../store'
 import { renderMarkdown, extractSection } from '../lib/markdown'
 import AiConsole from './AiConsole.vue'
 
-const tab = ref('file')
+// 内容子视图 tab（单文件/全局汇总/破坏性/审计/控制台）提升到共享 state.aiPanelTab，
+// 以便「新建分析」时 store 能自动切到控制台 tab 让用户即时看到流式输出。
+const tab = computed({
+  get: () => state.aiPanelTab,
+  set: (v) => { state.aiPanelTab = v }
+})
 
 // 智能分析栏收起状态改由共享 state.aiPanelCollapsed 驱动（与 DiffView 文件栏一键显隐联动）。
 // 挂载即按「显式偏好 > 视口宽度」应用一次响应式避让；之后视口变化也跟随避让，避免窄屏挤占对比窗口。
@@ -74,9 +79,11 @@ function onGenerateReport() {
       <li class="nav-item"><button class="nav-link py-1" :class="{active: tab==='global'}" @click="tab='global'">全局汇总</button></li>
       <li class="nav-item"><button class="nav-link py-1" :class="{active: tab==='break'}" @click="tab='break'">破坏性</button></li>
       <li class="nav-item"><button class="nav-link py-1" :class="{active: tab==='audit'}" @click="tab='audit'">审计</button></li>
+      <li class="nav-item"><button class="nav-link py-1" :class="{active: tab==='console'}" @click="tab='console'">控制台</button></li>
     </ul>
 
-    <div class="ai-body">
+    <!-- 信息面板四个子视图：仅在未选中「控制台」时显示，以便控制台独占整块内容区高度 -->
+    <div class="ai-body" v-show="tab!=='console'">
       <!-- 单文件 -->
       <div v-show="tab==='file'">
         <div v-if="node" class="ai-card">
@@ -138,8 +145,8 @@ function onGenerateReport() {
       </div>
     </div>
 
-    <!-- AI 分析控制台：替代原阻塞模态，实时流式输出 + 并行任务 tab + 中断/预览 -->
-    <AiConsole />
+    <!-- AI 分析控制台：与原四个子视图互斥，选中「控制台」tab 时独占整块内容区，获得最大展示空间 -->
+    <AiConsole v-show="tab==='console'" />
     </template>
   </div>
 </template>
