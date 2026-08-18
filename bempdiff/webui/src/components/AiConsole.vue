@@ -54,7 +54,7 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
 <template>
   <div class="ai-console">
     <div class="console-head">
-      <i class="bi bi-terminal"></i><span class="ms-1">AI 分析控制台</span>
+      <i class="bi bi-terminal"></i><span class="ms-1">AI 分析</span>
       <span v-if="runningCount" class="badge text-bg-primary ms-2">{{ runningCount }} 进行中</span>
     </div>
 

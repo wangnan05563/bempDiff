@@ -145,8 +145,18 @@ function onGenerateReport() {
       </div>
     </div>
 
-    <!-- AI 分析控制台：与原四个子视图互斥，选中「控制台」tab 时独占整块内容区，获得最大展示空间 -->
+    <!-- AI 分析面板：与原四个子视图互斥，选中「控制台」tab 时独占整块内容区，获得最大展示空间 -->
     <AiConsole v-show="tab==='console'" />
     </template>
   </div>
 </template>
+
+<style scoped>
+/* 5 个内容子视图 tab：窄屏下不换行，改为单行横向滚动，
+ * 既保持 tab 栏整洁，又避免换行挤占控制台纵向高度（布局优化的核心诉求）。 */
+.nav-tabs { flex-wrap: nowrap; overflow-x: auto; }
+.nav-tabs .nav-link { white-space: nowrap; flex-shrink: 0; padding-left: .55rem; padding-right: .55rem; }
+/* 细滚动条，保持视觉干净 */
+.nav-tabs::-webkit-scrollbar { height: 4px; }
+.nav-tabs::-webkit-scrollbar-thumb { background: var(--bs-border-color); border-radius: 2px; }
+</style>
