@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { state, init } from './store'
+import { state, init, closeReportPreview } from './store'
 import ToolBar from './components/ToolBar.vue'
 import DiffTree from './components/DiffTree.vue'
 import DiffView from './components/DiffView.vue'
@@ -9,11 +9,10 @@ import StatusBar from './components/StatusBar.vue'
 import ConfigDialog from './components/ConfigDialog.vue'
 import CompareOverlay from './components/CompareOverlay.vue'
 import ReportPreview from './components/ReportPreview.vue'
-import AiAnalysisDialog from './components/AiAnalysisDialog.vue'
+import CostGateDialog from './components/CostGateDialog.vue'
 
 const showConfig = ref(false)
 const showReport = ref(false)
-const showAi = ref(false)
 onMounted(() => init())
 
 const toastClass = computed(() => {
@@ -27,7 +26,7 @@ const toastClass = computed(() => {
 </script>
 
 <template>
-  <ToolBar :on-open-config="() => (showConfig = true)" :on-open-report="() => (showReport = true)" :on-open-ai="() => (showAi = true)" />
+  <ToolBar :on-open-config="() => (showConfig = true)" :on-open-report="() => (showReport = true)" />
 
   <!-- 专注模式：隐藏左右栏，中间 diff 占满视野（由 state.focusMode 控制） -->
   <div class="app-main" :class="{ 'focus-mode': state.focusMode }">
@@ -39,8 +38,9 @@ const toastClass = computed(() => {
   <StatusBar />
 
   <ConfigDialog :visible="showConfig" @close="showConfig = false" />
-  <ReportPreview :visible="showReport" @close="showReport = false" />
-  <AiAnalysisDialog :visible="showAi" :job-id="state.job ? state.job.jobId : ''" @close="showAi = false" />
+  <!-- 报告预览：既能看全局 reportMd，也能看 AI 控制台里某次任务的预览报告（:md 优先） -->
+  <ReportPreview :visible="showReport || state.previewOpen" :md="state.previewOpen ? state.previewMd : null" @close="showReport = false; closeReportPreview()" />
+  <CostGateDialog />
   <CompareOverlay />
 
   <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index:3000">

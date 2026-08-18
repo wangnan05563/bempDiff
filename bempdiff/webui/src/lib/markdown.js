@@ -8,6 +8,8 @@ function escapeHtml(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')   // 补齐引号转义，防止链接 URL 经 " 逃逸出 href 属性（XSS）
+    .replace(/'/g, '&#39;')
 }
 
 // 行内格式（输入已转义）。

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, shallowRef, nextTick, onMounted, onUnmounted, onUpdated, watch } from 'vue'
 import { state, activeTab, closeTab, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL } from '../store'
 import { inlineDiff } from '../lib/diff_inline'
 import { foldContext } from '../lib/diff_fold'
@@ -12,8 +12,14 @@ const STATUS_CLS = {
   UNCHANGED: 'text-bg-secondary'
 }
 
-const wrap = ref(true) // true=换行（默认，完整展示长行）；false=不换行（横向滚动，BCompare 风格）
+// ---------- 性能相关常量 ----------
+const EST_ROW_H = 21          // 行高估算值（真实高度由 measureVisible 回填）
+const OVERSCAN = 12           // 视口上下额外渲染行数（滚动缓冲）
+const CHUNK = 5000            // 差异解析分块行数（避免大文件一次性解析卡 UI）
+const PARSE_SYNC_LIMIT = 20000 // 小于此行数一次性同步解析（免分块闪烁）
+const OVERSIZED_LINES = 60000  // 差异行数超此阈值 → 降级「简洁视图」（关行内高亮 + 默认折叠未变）
 
+const wrap = ref(true) // true=换行（默认，完整展示长行）；false=不换行（横向滚动，BCompare 风格）
 // 行内差异高亮粒度：'line'=整行（关闭行内高亮）| 'word'=词级 | 'char'=字符级
 const granularity = ref('char')
 // 粒度图标按钮（无文字，悬浮提示当前粒度，点击循环切换）
@@ -33,6 +39,9 @@ function cycleGranularity() {
 const collapse = ref(false)
 const foldWin = 3
 
+// ---------- 超大文件降级：简洁视图 ----------
+const forceFull = ref(false) // 用户在超大文件时手动「展开完整差异」（开启行内高亮 + 展开未变）
+
 const tabs = computed(() => state.tabs)
 const at = computed(() => activeTab())
 const node = computed(() => at.value ? at.value.node : null)
@@ -50,90 +59,228 @@ function tabTitle(t) {
 function fullKey(t) { return (t.node && t.node.key) || t.key }
 function statusDot(s) { return (STATUS_META[s] || STATUS_META.UNCHANGED).dot }
 
-// 把后端返回的 unified diffText 解析成左右对齐的行（含行号）。
-// 单滚动容器 + 每行 4 列网格 => 左右天然同步滚动且逐行对齐（add/del 空白侧自动等高）。
-const rows = computed(() => {
-  const d = dec.value
-  if (!d || !d.diffText) return []
+// ======================================================================
+// 分块异步解析 unified diffText → 基础行（含原始下标 _i，供行内差异缓存与定位）
+// parseGen：每次切换文件自增，在途分块循环检测到 gen 变化即中止（切换取消机制）。
+// ======================================================================
+const rawText = computed(() => (dec.value && dec.value.diffText) ? dec.value.diffText : '')
+const parseGen = ref(0)
+const parseStatus = ref('idle') // idle | parsing | done
+const rows = shallowRef([])     // 基础解析行（无折叠、无行内高亮），_i = 原始下标
+const totalStats = ref({ added: 0, removed: 0, unchanged: 0, total: 0 })
+
+function isMeta(raw) {
+  return raw.startsWith('@@') || raw.startsWith('\\ No newline') ||
+         raw.startsWith('--- ') || raw.startsWith('+++ ')
+}
+function pushRow(out, raw, counters, idx) {
+  if (isMeta(raw)) return
+  counters.total++
+  if (raw.startsWith('-')) { counters.leftNo++; counters.removed++; out.push({ type: 'del', _i: idx, left: '' + counters.leftNo, leftText: raw.slice(1), right: '', rightText: '' }) }
+  else if (raw.startsWith('+')) { counters.rightNo++; counters.added++; out.push({ type: 'add', _i: idx, left: '', leftText: '', right: '' + counters.rightNo, rightText: raw.slice(1) }) }
+  else if (raw.startsWith(' ')) { counters.leftNo++; counters.rightNo++; counters.unchanged++; out.push({ type: 'ctx', _i: idx, left: '' + counters.leftNo, leftText: raw.slice(1), right: '' + counters.rightNo, rightText: raw.slice(1) }) }
+  else { counters.unchanged++; out.push({ type: 'ctx', _i: idx, left: '', leftText: raw, right: '', rightText: raw }) }
+}
+const idle = (typeof window !== 'undefined' && window.requestIdleCallback)
+  ? (cb) => window.requestIdleCallback(cb, { timeout: 200 })
+  : (cb) => setTimeout(cb, 0)
+
+function startParse(text) {
+  const gen = ++parseGen.value
+  inlineCache.clear()
+  rows.value = []
+  totalStats.value = { added: 0, removed: 0, unchanged: 0, total: 0 }
+  if (!text) { parseStatus.value = 'done'; return }
+  const lines = text.split('\n')
+  const total = lines.length
+  if (total <= PARSE_SYNC_LIMIT) {
+    const c = { leftNo: 0, rightNo: 0, added: 0, removed: 0, unchanged: 0, total: 0 }
+    const out = []
+    for (const raw of lines) pushRow(out, raw, c, out.length)
+    rows.value = out
+    totalStats.value = c
+    parseStatus.value = 'done'
+    return
+  }
+  parseStatus.value = 'parsing'
+  const c = { leftNo: 0, rightNo: 0, added: 0, removed: 0, unchanged: 0, total: 0 }
+  const acc = []
+  let idx = 0
+  const step = () => {
+    if (gen !== parseGen.value) return // 已切换到别的文件 → 中止在途分块
+    const end = Math.min(idx + CHUNK, total)
+    for (; idx < end; idx++) pushRow(acc, lines[idx], c, rows.value.length + acc.length)
+    if (acc.length) { rows.value = rows.value.concat(acc.splice(0)) }
+    if (idx < total) idle(step)
+    else { totalStats.value = c; parseStatus.value = 'done' }
+  }
+  step()
+}
+
+// 折叠未变（collapse）后用于渲染的行集合；fold 行无 _i。
+const foldedRows = computed(() => {
+  if (!rows.value.length) return []
+  return foldContext(rows.value, collapse.value, foldWin)
+})
+
+// 差异行（add/del）快速定位序列；i = 原始下标 _i。
+const diffRows = computed(() => {
+  const rs = rows.value
   const out = []
-  let leftNo = 0, rightNo = 0
-  for (const raw of d.diffText.split('\n')) {
-    if (raw.startsWith('@@') || raw.startsWith('\\ No newline') ||
-        raw.startsWith('--- ') || raw.startsWith('+++ ')) continue
-    if (raw.startsWith('-')) {
-      leftNo++
-      out.push({ type: 'del', left: '' + leftNo, leftText: raw.slice(1), right: '', rightText: '' })
-    } else if (raw.startsWith('+')) {
-      rightNo++
-      out.push({ type: 'add', left: '', leftText: '', right: '' + rightNo, rightText: raw.slice(1) })
-    } else if (raw.startsWith(' ')) {
-      leftNo++; rightNo++
-      out.push({ type: 'ctx', left: '' + leftNo, leftText: raw.slice(1), right: '' + rightNo, rightText: raw.slice(1) })
-    } else {
-      out.push({ type: 'ctx', left: '', leftText: raw, right: '', rightText: raw })
-    }
+  for (let i = 0; i < rs.length; i++) {
+    if (rs[i].type === 'add' || rs[i].type === 'del') out.push({ r: rs[i], i })
   }
   return out
 })
+const diffCount = computed(() => diffRows.value.length)
 
-// 行内差异高亮：把相邻 del/add 行配对，按当前粒度做词/字符级 LCS。
-// 每个 row 产出 {left:[{m,kind,s}], right:[...]}，m=true 表示需 <mark> 高亮。
-const inlineMap = computed(() => {
+// ======================================================================
+// 行内差异：仅对「可见行」惰性计算并缓存（不在全量行上跑 LCS，避免大文件卡顿）。
+// inlineCache 为非响应式 Map；inlineOn 变化（粒度/超大/展开）时清空。
+// ======================================================================
+const inlineCache = new Map()
+const oversized = computed(() => rows.value.length > OVERSIZED_LINES)
+const inlineOn = computed(() => granularity.value !== 'line' && (!oversized.value || forceFull.value))
+function plainSegs(text) { return [{ m: false, kind: '', s: text || '' }] }
+function getInline(ri) {
   const rs = rows.value
-  const res = rs.map(r => ({
-    left: [{ m: false, kind: '', s: r.leftText || '' }],
-    right: [{ m: false, kind: '', s: r.rightText || '' }]
-  }))
-  if (granularity.value === 'line') return res
-  let i = 0
-  while (i < rs.length) {
-    if (rs[i].type === 'del') {
-      let j = i; while (j < rs.length && rs[j].type === 'del') j++
-      let k = j; while (k < rs.length && rs[k].type === 'add') k++
-      const dels = rs.slice(i, j), adds = rs.slice(j, k)
-      const n = Math.max(dels.length, adds.length)
-      for (let t = 0; t < n; t++) {
-        const d = dels[t], a = adds[t]
-        if (d && a) {
-          const segs = inlineDiff(d.leftText || '', a.rightText || '', granularity.value)
-          const di = rs.indexOf(d), ai = rs.indexOf(a)
-          res[di].left = segs.filter(s => s.t !== 'add').map(s => ({ m: s.t === 'del', kind: 'del', s: s.s }))
-          res[ai].right = segs.filter(s => s.t !== 'del').map(s => ({ m: s.t === 'add', kind: 'add', s: s.s }))
-        }
-      }
-      i = k
-    } else if (rs[i].type === 'add') {
-      let j = i; while (j < rs.length && rs[j].type === 'add') j++
-      i = j
-    } else { i++ }
+  const r = rs[ri]
+  if (!r) return { left: [{ m: false, s: '' }], right: [{ m: false, s: '' }] }
+  if (!inlineOn.value) return { left: plainSegs(r.leftText), right: plainSegs(r.rightText) }
+  if (inlineCache.has(ri)) return inlineCache.get(ri)
+  computeBlock(ri)
+  return inlineCache.get(ri) || { left: plainSegs(r.leftText), right: plainSegs(r.rightText) }
+}
+// 计算 del/add 配对块的左右行内片段，按原始下标缓存两侧。
+function computeBlock(ri) {
+  const rs = rows.value
+  const t0 = rs[ri].type
+  let di, dj, aj, ak
+  if (t0 === 'del') {
+    di = ri; while (di - 1 >= 0 && rs[di - 1].type === 'del') di--
+    dj = ri; while (dj < rs.length && rs[dj].type === 'del') dj++
+    aj = dj; ak = dj; while (ak < rs.length && rs[ak].type === 'add') ak++
+  } else {
+    aj = ri; while (aj - 1 >= 0 && rs[aj - 1].type === 'add') aj--
+    ak = ri; while (ak < rs.length && rs[ak].type === 'add') ak++
+    dj = aj; di = dj; while (di - 1 >= 0 && rs[di - 1].type === 'del') di--
+  }
+  const n = Math.max(dj - di, ak - aj)
+  for (let t = 0; t < n; t++) {
+    const dI = di + t, aI = aj + t
+    const d = dI < dj ? rs[dI] : null
+    const a = aI < ak ? rs[aI] : null
+    let l, r
+    if (d && a) {
+      const segs = inlineDiff(d.leftText || '', a.rightText || '', granularity.value)
+      l = segs.filter(s => s.t !== 'add').map(s => ({ m: s.t === 'del', kind: 'del', s: s.s }))
+      r = segs.filter(s => s.t !== 'del').map(s => ({ m: s.t === 'add', kind: 'add', s: s.s }))
+    } else if (d) { l = plainSegs(d.leftText); r = plainSegs('') }
+    else { l = plainSegs(''); r = plainSegs(a.rightText) }
+    if (dI < dj) inlineCache.set(dI, { left: l, right: plainSegs('') })
+    if (aI < ak) inlineCache.set(aI, { left: plainSegs(''), right: r })
+  }
+}
+watch([granularity, oversized, forceFull, rawText], () => inlineCache.clear())
+
+// ======================================================================
+// 虚拟滚动：前缀和 offsets + 二分定位可见区间 + 动态行高回填
+// ======================================================================
+const scrollTop = ref(0)
+const viewportH = ref(600)
+const diffAreaRef = ref(null) // 换行模式滚动层
+const leftPaneRef = ref(null)
+const rightPaneRef = ref(null)
+const rowEls = new Map()      // abs(折叠行下标) -> DOM 元素，供实测行高
+
+const offsets = computed(() => {
+  const hs = heights.value
+  const n = foldedRows.value.length
+  const arr = new Array(n + 1)
+  arr[0] = 0
+  for (let i = 1; i <= n; i++) arr[i] = arr[i - 1] + (hs[i - 1] || EST_ROW_H)
+  return arr
+})
+const totalHeight = computed(() => offsets.value[foldedRows.value.length] || 0)
+
+function findStart(y) {
+  const o = offsets.value
+  let lo = 0, hi = o.length - 1, ans = 0
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (o[mid] <= y) { ans = mid; lo = mid + 1 } else hi = mid - 1 }
+  return ans
+}
+function findEnd(y) {
+  const o = offsets.value
+  let lo = 0, hi = o.length - 1, ans = o.length - 1
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (o[mid] < y) lo = mid + 1; else { ans = mid; hi = mid - 1 } }
+  return ans
+}
+const startIndex = computed(() => Math.max(0, findStart(scrollTop.value) - OVERSCAN))
+const endIndex = computed(() => Math.min(foldedRows.value.length, findEnd(scrollTop.value + viewportH.value) + OVERSCAN))
+
+// 仅渲染可见区间内的行；行内差异按可见行惰性计算（getInline 内部命中缓存）。
+const visibleRows = computed(() => {
+  const fr = foldedRows.value
+  const res = []
+  const s = startIndex.value, e = endIndex.value
+  for (let i = s; i < e; i++) {
+    const x = fr[i]
+    if (x.type === 'fold') { res.push({ type: 'fold', count: x.count, ri: -1, abs: i }); continue }
+    const ri = x._i
+    const segs = getInline(ri)
+    res.push({
+      type: x.type, ri, abs: i,
+      left: x.left, leftText: x.leftText,
+      right: x.right, rightText: x.rightText,
+      leftSegs: segs.left, rightSegs: segs.right
+    })
   }
   return res
 })
 
-// 显示行：折叠未变（collapse）后在变化行内嵌行内高亮片段。
-// 每项携带原始索引 ri（= rows 中的下标），供「上一处/下一处」导航按 data-ri 定位。
-const displayRows = computed(() => {
-  const indexed = rows.value.map((r, i) => ({ ...r, _i: i }))
-  const folded = collapse.value ? foldContext(indexed, true, foldWin) : indexed
-  return folded.map(x => {
-    if (x.type === 'fold') return { type: 'fold', count: x.count, ri: -1 }
-    const m = inlineMap.value[x._i]
-    return {
-      type: x.type, ri: x._i,
-      left: x.left, leftText: x.leftText,
-      right: x.right, rightText: x.rightText,
-      leftSegs: m.left, rightSegs: m.right
-    }
-  })
-})
+const heights = ref([])
+// 折叠行集合变化（分块解析推进 / 折叠切换）时，保留已测得的高度、新增行用估算值。
+watch(foldedRows, (fr) => {
+  const h = heights.value.slice(0, fr.length)
+  while (h.length < fr.length) h.push(EST_ROW_H)
+  heights.value = h
+}, { flush: 'sync' })
 
-// 中键关闭 tab；左键点 tab 文字切激活，点 x 关闭。
-function onTabClick(key) { state.activeKey = key }
-function onTabClose(e, key) { e.stopPropagation(); closeTab(key) }
-function onTabMouseDown(e, key) {
-  // 中键关闭
-  if (e.button === 1) { e.preventDefault(); closeTab(key) }
+function setRowRef(abs, el) {
+  if (el) rowEls.set(abs, el)
+  else rowEls.delete(abs)
 }
+function measureVisible() {
+  const hs = heights.value.slice()
+  let changed = false
+  rowEls.forEach((el, abs) => {
+    const h = el.offsetHeight
+    if (h > 0 && Math.abs((hs[abs] || EST_ROW_H) - h) > 0.5) { hs[abs] = h; changed = true }
+  })
+  if (changed) heights.value = hs
+}
+
+// 滚动：更新 scrollTop / viewportH（wrap 单容器；nowrap 双栏共用同一 scrollTop）
+function onDiffScroll(e) {
+  const el = e.target
+  scrollTop.value = el.scrollTop
+  viewportH.value = el.clientHeight
+}
+let paneSyncing = false
+function onPaneScroll(side) {
+  if (paneSyncing) return
+  const src = side === 'left' ? leftPaneRef.value : rightPaneRef.value
+  const dst = side === 'left' ? rightPaneRef.value : leftPaneRef.value
+  if (!src || !dst) return
+  scrollTop.value = src.scrollTop
+  viewportH.value = src.clientHeight
+  paneSyncing = true
+  dst.scrollTop = src.scrollTop
+  requestAnimationFrame(() => { paneSyncing = false })
+}
+
+// 超大文件：默认折叠未变（简洁视图）；用户可在横幅手动展开完整差异。
+watch(oversized, (v) => { if (v) collapse.value = true })
 
 // tab 标题里塞不下时省略号显示
 function titleShort(k, max = 60) {
@@ -152,46 +299,27 @@ function onKey(e) {
   if ((e.ctrlKey || e.altKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     const tag = (e.target && e.target.tagName) || ''
     if (tag === 'INPUT' || tag === 'TEXTAREA') return // 输入框内不拦截，避免影响输入
-    if (!diffRows.value.length) return // 无差异可跳时不拦截原按键（不再无条件 preventDefault）
+    if (!diffRows.value.length) return // 无差异可跳时不拦截原按键
     e.preventDefault()
     if (e.key === 'ArrowUp') gotoPrev()
     else gotoNext()
   }
 }
-onMounted(() => window.addEventListener('keydown', onKey))
-onUnmounted(() => {
-  window.removeEventListener('keydown', onKey)
-  if (flashTimer) { clearTimeout(flashTimer); flashTimer = null } // 卸载时清理跳转高亮定时器，避免孤儿回调
-})
+
+// 中键关闭 tab；左键点 tab 文字切激活，点 x 关闭。
+function onTabClick(key) { state.activeKey = key }
+function onTabClose(e, key) { e.stopPropagation(); closeTab(key) }
+function onTabMouseDown(e, key) {
+  if (e.button === 1) { e.preventDefault(); closeTab(key) } // 中键关闭
+}
 
 // ---------- 差异行快速定位（上一处 / 下一处） ----------
-// 仅 add / del 行算「差异行」；ctx 上下文行跳过。
-// curIdx 指向 diffRows 中当前高亮的差异行；-1 表示尚未定位（下一处从首个开始）。
-const diffRows = computed(() => rows.value.map((r, i) => ({ r, i })).filter(x => x.r.type === 'add' || x.r.type === 'del'))
-const diffCount = computed(() => diffRows.value.length)
 const curIdx = ref(-1)
 const currentRowIdx = computed(() => (curIdx.value >= 0 && curIdx.value < diffRows.value.length) ? diffRows.value[curIdx.value].i : -1)
-const diffAreaRef = ref(null) // 换行模式（单容器）滚动层
-// 不换行模式：左右分栏滚动层 + 同步滚动（纵向逐行对齐、横向同步左右滑动）
-const leftPaneRef = ref(null)
-const rightPaneRef = ref(null)
-let paneSyncing = false
-function onPaneScroll(side) {
-  if (paneSyncing) return
-  const src = side === 'left' ? leftPaneRef.value : rightPaneRef.value
-  const dst = side === 'left' ? rightPaneRef.value : leftPaneRef.value
-  if (!src || !dst) return
-  paneSyncing = true
-  // 纵向：保证左右两侧逐行对齐；横向：两侧底部滚动条同步左右滑动
-  dst.scrollTop = src.scrollTop
-  dst.scrollLeft = src.scrollLeft
-  requestAnimationFrame(() => { paneSyncing = false })
-}
-const flashRi = ref(-1) // 当前需要 flash 高亮的行索引；动画结束后复位为 -1 以便重复触发
+const flashRi = ref(-1) // 当前需要 flash 高亮的行原始下标；动画结束后复位
 let flashTimer = null
 
-// 切换激活文件（activeKey 变化：切 tab / 关 tab / 重新比对）时重置差异行导航状态，
-// 避免计数器越界（如旧文件定位第 7 处、新文件只有 3 处显示 7/3）与「当前行」残留高亮。
+// 切换激活文件时重置差异行导航状态，避免计数器越界与残留高亮。
 watch(() => (at.value && at.value.key), () => {
   curIdx.value = -1
   flashRi.value = -1
@@ -206,30 +334,20 @@ function locate(idx) {
   flashRi.value = ri
   if (flashTimer) clearTimeout(flashTimer)
   flashTimer = setTimeout(() => { flashRi.value = -1 }, 900)
-  // 等 DOM 更新后把目标行滚动进可视区
   nextTick(() => {
-    const ri = diffRows.value[clamped].i
-    const sel = `.row[data-ri="${ri}"], .prow[data-ri="${ri}"]`
-    if (wrap.value) {
-      // 换行模式：单容器滚动
-      const el = diffAreaRef.value
-      const target = el && el.querySelector(sel)
-      if (!target) return
-      const cRect = el.getBoundingClientRect()
-      const tRect = target.getBoundingClientRect()
-      const delta = (tRect.top - cRect.top) - (el.clientHeight / 2) + (tRect.height / 2)
-      el.scrollTo({ top: Math.max(0, el.scrollTop + delta), behavior: 'smooth' })
-    } else {
-      // 不换行模式：左右分栏，两侧同步滚动（纵向对齐 + 横向同步）
-      ;[leftPaneRef.value, rightPaneRef.value].forEach(pane => {
-        if (!pane) return
-        const target = pane.querySelector(sel)
-        if (!target) return
-        const cRect = pane.getBoundingClientRect()
-        const tRect = target.getBoundingClientRect()
-        const delta = (tRect.top - cRect.top) - (pane.clientHeight / 2) + (tRect.height / 2)
-        pane.scrollTo({ top: Math.max(0, pane.scrollTop + delta), behavior: 'smooth' })
-      })
+    const di = foldedRows.value.findIndex(x => x._i === ri)
+    if (di < 0) {
+      // 目标行被折叠收起：展开未变后再定位
+      if (collapse.value) { collapse.value = false; nextTick(() => locate(idx)); return }
+      return
+    }
+    const top = offsets.value[di] || 0
+    const h = heights.value[di] || EST_ROW_H
+    const target = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+    if (!target) return
+    target.scrollTo({ top: Math.max(0, top - viewportH.value / 2 + h / 2), behavior: 'smooth' })
+    if (!wrap.value && leftPaneRef.value && rightPaneRef.value) {
+      rightPaneRef.value.scrollTop = leftPaneRef.value.scrollTop
     }
   })
 }
@@ -241,15 +359,49 @@ function gotoNext() {
   if (!diffRows.value.length) return
   locate(curIdx.value < 0 ? 0 : (curIdx.value + 1) % diffRows.value.length)
 }
+
+// 进入新文件：重置滚动位置 + 重新解析 + 清空导航状态
+watch(rawText, (t) => {
+  scrollTop.value = 0
+  curIdx.value = -1
+  flashRi.value = -1
+  if (flashTimer) { clearTimeout(flashTimer); flashTimer = null }
+  startParse(t || '')
+})
+
+// ---------- 尺寸观察：容器尺寸变化（换行重排/缩放）时重置估算高度触发复测 ----------
+let ro = null
+function setupObserver() {
+  if (ro) { ro.disconnect(); ro = null }
+  const el = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+  if (!el) return
+  viewportH.value = el.clientHeight || viewportH.value
+  ro = new ResizeObserver(() => {
+    const c = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+    if (c) viewportH.value = c.clientHeight
+    // 宽度变化会改变行高 → 重置为估算，下一次 onUpdated 实测回填
+    heights.value = new Array(foldedRows.value.length).fill(EST_ROW_H)
+  })
+  ro.observe(el)
+}
+watch(wrap, () => { nextTick(setupObserver) })
+
+onMounted(() => {
+  window.addEventListener('keydown', onKey)
+  nextTick(setupObserver)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKey)
+  if (flashTimer) { clearTimeout(flashTimer); flashTimer = null }
+  if (ro) { ro.disconnect(); ro = null }
+})
+onUpdated(() => measureVisible())
 </script>
 
 <template>
   <div class="col-center">
     <!--
       tab 栏：始终渲染，避免 0/1 tab 时这层"忽隐忽现"导致用户找不到。
-      - 0 tab：占位提示「未打开任何对比 · 从左侧差异树选择文件」
-      - ≥1 tab：每个 tab 显示状态色点 + 文件末段 + busy spinner + 关闭 x
-      视觉锚点：背景 --bs-tertiary-bg 与下方 filebar 的 --bs-body-bg 形成层次，下方 2px 边框明确分层。
     -->
     <div class="dvt-tabbar">
       <span class="dvt-count">
@@ -282,8 +434,9 @@ function gotoNext() {
 
     <div class="filebar">
       <i class="bi bi-file-earmark-code"></i>
-      <span class="path">{{ node ? titleShort(node.key, 80) : '未选择文件' }}</span>
+      <span class="path">{{ node ? titleShort(node.key, 80) : (activeTab ? titleShort(activeTab.key, 80) : '未选择文件') }}</span>
       <span v-if="node" class="badge" :class="STATUS_CLS[node.status]">{{ STATUS_LABEL[node.status] }}</span>
+      <span v-else-if="activeTab" class="badge text-bg-light border" :title="'内部条目（归档内文件）'">ARCHIVE-INNER</span>
       <span class="badge text-bg-light border" v-if="node">{{ node.fileClass }}</span>
       <span class="ms-auto text-secondary me-2" style="font-size:.75rem" title="当前文件使用的反编译引擎（默认 CFR）">
         反编译引擎：{{ dec ? dec.engine : '—' }}
@@ -326,23 +479,35 @@ function gotoNext() {
       </div>
     </div>
 
-    <div class="diff-area" v-if="node && dec && dec.ok">
+    <!-- 主体：反编译完成且差异解析完成 → 虚拟滚动渲染 -->
+    <div class="diff-area" v-if="(node || dec) && dec.ok && parseStatus === 'done'">
+      <!-- 超大文件降级横幅：简洁视图提示 + 手动展开完整差异 -->
+      <div class="oversized-banner" v-if="oversized && !forceFull">
+        <i class="bi bi-speedometer2"></i>
+        <span>大文件已降级为简洁视图：共 <b>{{ rows.length.toLocaleString() }}</b> 行差异
+          （<span class="text-success">+{{ totalStats.added.toLocaleString() }}</span> /
+           <span class="text-danger">-{{ totalStats.removed.toLocaleString() }}</span> /
+           {{ totalStats.unchanged.toLocaleString() }} 未变），已关闭行内高亮并默认折叠未变更以保障流畅。</span>
+        <button class="btn btn-sm btn-outline-primary py-0 px-2 ms-2" @click="forceFull = true; collapse = false">展开完整差异（可能卡顿）</button>
+      </div>
+
       <!-- 换行模式：单容器 4 列网格（整行背景 + 逐行对齐，长行自动换行） -->
-      <div class="diff-scroll" ref="diffAreaRef" v-if="wrap">
-        <div class="diff-grid">
-          <div v-for="(r, i) in displayRows" :key="r.ri >= 0 ? 'r' + r.ri : 'f' + i"
-               class="row" :class="[r.type === 'fold' ? 'fold' : r.type, { current: r.ri === currentRowIdx, flash: r.ri === flashRi }]"
-               :data-ri="r.ri">
-            <template v-if="r.type === 'fold'">
+      <div class="diff-scroll" ref="diffAreaRef" v-if="wrap" @scroll="onDiffScroll">
+        <div class="diff-grid" :style="{ height: totalHeight + 'px' }">
+          <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
+               class="row" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+               :data-ri="v.ri" :ref="el => setRowRef(v.abs, el)"
+               :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
+            <template v-if="v.type === 'fold'">
               <span class="code flex-1 fold-ph" style="grid-column:1/-1" role="button" tabindex="0"
-                    :title="'已折叠 ' + r.count + ' 行未变更内容，点击展开'"
-                    @click="collapse = false" @keydown.enter="collapse = false">⋯ 已折叠 {{ r.count }} 行未变更内容（点击展开）⋯</span>
+                    :title="'已折叠 ' + v.count + ' 行未变更内容，点击展开'"
+                    @click="collapse = false" @keydown.enter="collapse = false">⋯ 已折叠 {{ v.count }} 行未变更内容（点击展开）⋯</span>
             </template>
             <template v-else>
-              <span class="ln">{{ r.left }}</span>
-              <span class="code flex-1"><span v-for="(s, si) in r.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
-              <span class="ln">{{ r.right }}</span>
-              <span class="code flex-1"><span v-for="(s, si) in r.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
+              <span class="ln">{{ v.left }}</span>
+              <span class="code flex-1"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
+              <span class="ln">{{ v.right }}</span>
+              <span class="code flex-1"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
             </template>
           </div>
         </div>
@@ -351,18 +516,19 @@ function gotoNext() {
       <!-- 不换行模式：左右分栏各占一半宽度 + 中间分隔条；两侧底部横向滚动条同步左右滑动 -->
       <div class="diff-split" v-else>
         <div class="diff-pane" ref="leftPaneRef" @scroll="onPaneScroll('left')">
-          <div class="pane-grid">
-            <div v-for="(r, i) in displayRows" :key="r.ri >= 0 ? 'r' + r.ri : 'f' + i"
-                 class="prow" :class="[r.type === 'fold' ? 'fold' : r.type, { current: r.ri === currentRowIdx, flash: r.ri === flashRi }]"
-                 :data-ri="r.ri">
-              <template v-if="r.type === 'fold'">
+          <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
+            <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
+                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+                 :data-ri="v.ri" :ref="el => setRowRef(v.abs, el)"
+                 :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
+              <template v-if="v.type === 'fold'">
                 <span class="code flex-1 fold-ph" style="grid-column:1/-1" role="button" tabindex="0"
-                      :title="'已折叠 ' + r.count + ' 行未变更内容，点击展开'"
-                      @click="collapse = false" @keydown.enter="collapse = false">⋯ 已折叠 {{ r.count }} 行未变更内容（点击展开）⋯</span>
+                      :title="'已折叠 ' + v.count + ' 行未变更内容，点击展开'"
+                      @click="collapse = false" @keydown.enter="collapse = false">⋯ 已折叠 {{ v.count }} 行未变更内容（点击展开）⋯</span>
               </template>
               <template v-else>
-                <span class="ln">{{ r.left }}</span>
-                <span class="code flex-1"><span v-for="(s, si) in r.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
+                <span class="ln">{{ v.left }}</span>
+                <span class="code flex-1"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
               </template>
             </div>
           </div>
@@ -371,18 +537,19 @@ function gotoNext() {
         <div class="diff-splitter" title="左 / 右 文件分栏"></div>
 
         <div class="diff-pane right" ref="rightPaneRef" @scroll="onPaneScroll('right')">
-          <div class="pane-grid">
-            <div v-for="(r, i) in displayRows" :key="r.ri >= 0 ? 'r' + r.ri : 'f' + i"
-                 class="prow" :class="[r.type === 'fold' ? 'fold' : r.type, { current: r.ri === currentRowIdx, flash: r.ri === flashRi }]"
-                 :data-ri="r.ri">
-              <template v-if="r.type === 'fold'">
+          <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
+            <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
+                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+                 :data-ri="v.ri" :ref="el => setRowRef(v.abs, el)"
+                 :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
+              <template v-if="v.type === 'fold'">
                 <span class="code flex-1 fold-ph" style="grid-column:1/-1" role="button" tabindex="0"
-                      :title="'已折叠 ' + r.count + ' 行未变更内容，点击展开'"
-                      @click="collapse = false" @keydown.enter="collapse = false">⋯ 已折叠 {{ r.count }} 行未变更内容（点击展开）⋯</span>
+                      :title="'已折叠 ' + v.count + ' 行未变更内容，点击展开'"
+                      @click="collapse = false" @keydown.enter="collapse = false">⋯ 已折叠 {{ v.count }} 行未变更内容（点击展开）⋯</span>
               </template>
               <template v-else>
-                <span class="ln">{{ r.right }}</span>
-                <span class="code flex-1"><span v-for="(s, si) in r.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
+                <span class="ln">{{ v.right }}</span>
+                <span class="code flex-1"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}">{{ s.s }}</span></span>
               </template>
             </div>
           </div>
@@ -390,18 +557,19 @@ function gotoNext() {
       </div>
     </div>
 
-    <div class="diff-area center-empty" v-else-if="node && busy">
+    <!-- 加载态：反编译中 或 差异解析中 -->
+    <div class="diff-area center-empty" v-else-if="(node || dec) && (busy || (dec && dec.ok && parseStatus !== 'done'))">
       <div class="spinner-border text-secondary" role="status" aria-hidden="true"></div>
-      <div class="mt-2">正在反编译/美化源码…</div>
+      <div class="mt-2">{{ busy ? '正在反编译/美化源码…' : '正在解析差异…' }}</div>
     </div>
 
-    <div class="diff-area center-empty" v-else-if="node && dec && !dec.ok">
+    <div class="diff-area center-empty" v-else-if="(node || dec) && dec && !dec.ok">
       <div class="ico"><i class="bi bi-exclamation-triangle"></i></div>
       <div>该文件无法反编译（引擎：{{ dec.engine }}）</div>
       <div v-if="dec.diffText" class="text-start mt-2" style="white-space:pre-wrap;font-size:.8rem">{{ dec.diffText }}</div>
     </div>
 
-    <div class="diff-area center-empty" v-else-if="node && tabErr">
+    <div class="diff-area center-empty" v-else-if="(node || dec) && tabErr">
       <div class="ico"><i class="bi bi-x-octagon text-danger"></i></div>
       <div>反编译失败：{{ tabErr }}</div>
     </div>
@@ -414,24 +582,22 @@ function gotoNext() {
 </template>
 
 <style scoped>
-/* 外层 diff 区：flex 列，内部滚动容器各自处理溢出，避免整体抖动 */
-.diff-area { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; background: var(--bs-body-bg); overflow: hidden; }
-
-/* 换行模式：单滚动容器 + 4 列网格（逐行对齐，整行背景） */
-.diff-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.diff-grid { display: block; }
-
-/* 不换行模式：左右分栏各占一半宽度 + 中间分隔条 + 同步横向/纵向滚动 */
+.diff-area { overflow: hidden; flex: 1 1 auto; min-height: 0; background: var(--bs-body-bg); display: flex; flex-direction: column; }
+.oversized-banner {
+  flex: 0 0 auto; font-size: .76rem; padding: .35rem .6rem;
+  background: var(--bs-warning-bg-subtle); border-bottom: 1px solid var(--bs-border-color);
+  color: var(--bs-secondary-color); display: flex; align-items: center; flex-wrap: wrap; gap: .3rem;
+}
+.oversized-banner b { color: var(--bs-body-color); }
+.diff-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; position: relative; }
+.diff-grid { position: relative; }
 .diff-split { flex: 1 1 auto; min-height: 0; display: flex; }
-/* 左栏：可横向滚动（底部滚动条），纵向隐藏滚动条但由右栏同步驱动，保证逐行对齐 */
-.diff-pane { flex: 1 1 50%; min-width: 0; overflow-x: auto; overflow-y: hidden; background: var(--bs-body-bg); }
-/* 右栏：横向 + 纵向均可滚动，作为同步主滚动源 */
-.diff-pane.right { overflow-y: auto; }
-.diff-splitter { flex: 0 0 5px; background: var(--bs-border-color); }
-.pane-grid { display: block; width: max-content; min-width: 100%; }
-
-/* 行容器：换行用 .row（4 列），不换行用 .prow（2 列），共享视觉规则 */
+.diff-pane { overflow: auto; flex: 1 1 0; min-width: 0; position: relative; }
+.diff-pane.right { border-left: 1px solid var(--bs-border-color); }
+.diff-splitter { width: 4px; background: var(--bs-tertiary-bg); flex: 0 0 auto; }
+.pane-grid { position: relative; }
 .row, .prow {
+  box-sizing: border-box;
   display: grid;
   gap: 0;
   align-items: stretch;
@@ -449,12 +615,12 @@ function gotoNext() {
 }
 .row .code, .prow .code {
   padding: 0 .6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
   font-family: var(--bs-font-monospace);
   font-size: .82rem;
   line-height: 1.5;
 }
-.row .code { white-space: pre-wrap; word-break: break-word; }
-.prow .code { white-space: pre; } /* 不换行：单行横向滚动 */
 /* 行内词/字符级差异高亮（对标 GitHub inline diff） */
 .code .im-del { background: rgba(220,53,69,.38); border-radius: 2px; }
 .code .im-add { background: rgba(25,135,84,.38); border-radius: 2px; }
@@ -462,7 +628,7 @@ function gotoNext() {
 .row.fold, .prow.fold { background: var(--bs-tertiary-bg); }
 .row.fold .fold-ph, .prow.fold .fold-ph { color: var(--bs-secondary-color); font-style: italic; text-align: center; cursor: pointer; user-select: none; }
 .row.add, .prow.add { background: var(--bs-success-bg-subtle); }
-.row.add .ln:last-of-type { border-left: 1px solid var(--bs-border-color); } /* 换行模式：空侧与新侧分隔线 */
+.row.add .ln:last-of-type { border-left: 1px solid var(--bs-border-color); }
 .row.del, .prow.del { background: var(--bs-danger-bg-subtle); }
 /* 当前定位的差异行：左侧主色条，便于快速辨识 */
 .row.current, .prow.current { box-shadow: inset 3px 0 0 var(--bs-primary); }
@@ -474,11 +640,6 @@ function gotoNext() {
 }
 
 /* ===== tab 栏 ===== */
-/*
- * 关键设计：tabbar 是一层"永远在"的容器（0 tab 时也渲染占位提示），
- * 用 tertiary-bg 与下方 filebar 的 body-bg 形成层次，避免用户看不到
- * 「已打开的对比 tab」这一层；同时 2px 边框 + 最小高度保证视觉锚点。
- */
 .dvt-tabbar {
   display: flex;
   align-items: center;
@@ -504,9 +665,9 @@ function gotoNext() {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  border-bottom: none;        /* Bootstrap nav-tabs 自带下边框，这里去掉避免双线 */
-  margin-bottom: 0;           /* 同上，避免与 .dvt-tabbar 的 border-bottom 叠 */
-  background: transparent;     /* 用父容器 .dvt-tabbar 的背景，避免重复 */
+  border-bottom: none;
+  margin-bottom: 0;
+  background: transparent;
 }
 .dvt-tab { flex: 0 0 auto; max-width: 24rem; }
 .dvt-tab .nav-link {

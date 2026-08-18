@@ -27,9 +27,18 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
 /* ===== 三栏布局 ===== */
 .app-main { flex: 1; min-height: 0; display: flex; }
 .col-tree { width: 300px; flex: none; display: flex; flex-direction: column; border-right: var(--bs-border-color) solid 1px; }
-.col-center { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.col-center { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* 智能分析栏：固定 380px，与中间 diff 用左边框 + 极淡阴影做层次分离（避免"叠加"观感）。
+ * 收起态 44px 极窄，仅留竖排标题与展开入口，把横向空间全部让给对比窗口。 */
 .col-ai { width: 380px; flex: none; display: flex; flex-direction: column; border-left: var(--bs-border-color) solid 1px; transition: width .2s ease; }
+.col-ai:not(.collapsed) { box-shadow: -3px 0 8px rgba(0,0,0,.05); z-index: 1; }
 .col-ai.collapsed { width: 44px; min-width: 44px; background: var(--bs-tertiary-bg); }
+
+/* 响应式避让：视口收窄时分析栏主动让宽，避免挤占对比窗口导致"遮挡"观感。
+ * 与 JS 中 AI_AUTO_COLLAPSE_W=1080 协同——JS 负责自动收起，这里负责收起不全时仍压缩宽度。 */
+@media (max-width: 1280px) { .col-ai:not(.collapsed) { width: 340px; } }
+@media (max-width: 1080px) { .col-ai:not(.collapsed) { width: 300px; } }
+@media (max-width: 860px)  { .col-ai:not(.collapsed) { width: 260px; } }
 .col-ai.collapsed .ai-collapsed-bar {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   padding: .75rem 0; gap: .5rem; cursor: pointer; user-select: none;
@@ -56,11 +65,17 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
 }
 .tree-scroll { overflow: auto; flex: 1; min-height: 0; }
 
+/* ===== 工具栏拖拽即比高亮 ===== */
+.drop-zone { transition: outline-color .12s ease, background-color .12s ease; outline: 2px dashed transparent; outline-offset: -2px; }
+.drop-zone.drop-active { outline-color: var(--bs-primary); background: var(--bs-primary-bg-subtle); }
+
 .legend { display: flex; gap: .6rem; flex-wrap: wrap; font-size: .75rem; color: var(--bs-secondary-color); padding: .4rem .75rem; border-bottom: var(--bs-border-color) solid 1px; }
 .legend i { width: .55rem; height: .55rem; border-radius: 2px; display: inline-block; margin-right: .25rem; vertical-align: middle; }
 
 /* ===== 中部双栏 diff（核心样式见 DiffView.vue 的 scoped 块） ===== */
-.filebar { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; border-bottom: var(--bs-border-color) solid 1px; background: var(--bs-tertiary-bg); font-size: 12px; }
+.filebar { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; border-bottom: var(--bs-border-color) solid 1px; background: var(--bs-tertiary-bg); font-size: 12px; overflow: hidden; min-width: 0; }
+.filebar > * { min-width: 0; flex-shrink: 0; }
+.filebar > .path { flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filebar .path { font-family: var(--bs-font-monospace); }
 
 .center-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--bs-secondary-color); flex-direction: column; gap: .5rem; text-align: center; padding: 2rem; }

@@ -10,8 +10,8 @@ function basename(p) {
 const s = computed(() => state.job && state.job.stats ? state.job.stats : null)
 const versions = computed(() => {
   if (state.job) return `${state.job.oldVersion} → ${state.job.newVersion}`
-  const o = basename(state.compareInputs.oldPath)
-  const n = basename(state.compareInputs.newPath)
+  const o = basename(state.oldPath)
+  const n = basename(state.newPath)
   if (o || n) return `${o || '—'} → ${n || '—'}`
   return '—'
 })

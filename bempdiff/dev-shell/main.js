@@ -185,7 +185,11 @@ async function startBackend() {
   })
   children.push(child)
   appendLog(BACKEND_LOG, '[sidecar] backend started PID', child.pid, '->', urlSafe(classPath))
-  return true
+  // 等后端真正在 PORT 监听后再返回（最多 30s），避免窗口在后端就绪前加载，
+  // 导致首批 API 调用（如「连接测试」）出现 "Failed to fetch"。
+  const ready = await waitPort(PORT, 30000)
+  if (!ready) appendLog(BACKEND_LOG, '[sidecar] WARN: 后端 30s 内未就绪，窗口可能暂时无法访问 API（检查 javaw / dist_input/classes）')
+  return ready
 }
 
 async function startFrontend() {
@@ -300,37 +304,90 @@ ipcMain.handle('bempdiff:pick-path', async (event, opts = {}) => {
   return opts.multiple ? result.filePaths : result.filePaths[0]
 })
 
-app.on('before-quit', stopSidecar)
+// ---------- Shell 集成：单实例锁 + 文件参数（右键菜单 / 命令行 / 拖入） ----------
+// 仅当成功获取单实例锁时才启动；否则说明已有实例运行，把参数转给它后退出。
+let mainWindow = null
+let pendingShellPaths = null
 
-app.whenReady().then(async () => {
-  let initialUrl
-  if (process.env.BEMPDIFF_DEV_URL) {
-    // 指向外部已运行的服务（调试用），不启动本地 sidecar
-    initialUrl = process.env.BEMPDIFF_DEV_URL
-  } else {
-    // 清理旧实例占用的端口，允许干净重启
-    killPort(PORT)
-    killPort(DEV_PORT)
-    await startBackend()
-    const viteStarted = await startFrontend()
-    // 后端启动快，先用它开窗口；若 vite 会启动，则等其就绪后切换到 vite 地址（避免白屏等待）
-    initialUrl = `http://127.0.0.1:${PORT}/`
-    if (viteStarted) {
-      waitPort(DEV_PORT, 60000).then((ok) => {
-        if (ok) {
-          const w = BrowserWindow.getAllWindows()[0]
-          if (w && !w.isDestroyed()) w.loadURL(`http://127.0.0.1:${DEV_PORT}/`)
-        }
-      })
-    }
+// 从启动参数提取真实存在的文件/目录路径，过滤掉 exe 自身、脚本路径与 flag。
+//   - 打包态：argv = [BempDiff.exe, fileA, fileB]
+//   - 开发态：argv = [electron.exe, '.', fileA, fileB]（'.' 是 cwd，需排除）
+function extractPathsFromArgv(argv) {
+  const self = path.resolve('.')
+  const script = path.resolve(__dirname, 'main.js')
+  const paths = []
+  for (const a of argv.slice(1)) {
+    if (!a || typeof a !== 'string' || a.startsWith('-')) continue
+    let rp
+    try { rp = path.resolve(a) } catch (_) { continue }
+    if (rp === self || rp === script) continue
+    if (!fs.existsSync(rp)) continue
+    paths.push(rp)
   }
+  return paths
+}
 
-  createWindow(initialUrl)
+function sendShellCompare(paths) {
+  if (!paths || !paths.length) return
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('bempdiff:shell-compare', paths)
+  } else {
+    pendingShellPaths = paths // 窗口尚未就绪，先排队
+  }
+}
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(initialUrl)
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  // 第二实例（用户在资源管理器右键了第二个文件）：把路径转给已运行实例，并把它提到前台。
+  app.on('second-instance', (event, argv) => {
+    const w = BrowserWindow.getAllWindows()[0]
+    if (w) { if (w.isMinimized()) w.restore(); w.focus() }
+    sendShellCompare(extractPathsFromArgv(argv))
   })
-})
+
+  app.on('before-quit', stopSidecar)
+
+  app.whenReady().then(async () => {
+    let initialUrl
+    if (process.env.BEMPDIFF_DEV_URL) {
+      // 指向外部已运行的服务（调试用），不启动本地 sidecar
+      initialUrl = process.env.BEMPDIFF_DEV_URL
+    } else {
+      // 清理旧实例占用的端口，允许干净重启
+      killPort(PORT)
+      killPort(DEV_PORT)
+      const backendOk = await startBackend()
+      const viteStarted = await startFrontend()
+      // 后端启动快，优先用它开窗口（同源，API 直连）；若后端未就绪（罕见：产物缺失/ javaw 缺失）
+      // 且 vite 在跑，则退回 vite 地址避免白屏（此状态下 API 仍可能不可达，仅保证页面可见）。
+      initialUrl = backendOk
+        ? `http://127.0.0.1:${PORT}/`
+        : (viteStarted ? `http://127.0.0.1:${DEV_PORT}/` : `http://127.0.0.1:${PORT}/`)
+      if (viteStarted && backendOk) {
+        waitPort(DEV_PORT, 60000).then((ok) => {
+          if (ok) {
+            const w = BrowserWindow.getAllWindows()[0]
+            if (w && !w.isDestroyed()) w.loadURL(`http://127.0.0.1:${DEV_PORT}/`)
+          }
+        })
+      }
+    }
+
+    createWindow(initialUrl)
+    mainWindow = BrowserWindow.getAllWindows()[0]
+    // 冲刷排队参数（窗口就绪前收到的 second-instance）
+    if (pendingShellPaths) { sendShellCompare(pendingShellPaths); pendingShellPaths = null }
+    // 首次启动即带文件参数（双击 / 右键第一个文件 / 命令行）：自动开始比对
+    const initPaths = extractPathsFromArgv(process.argv)
+    if (initPaths.length) sendShellCompare(initPaths)
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow(initialUrl)
+    })
+  })
+}
 
 // 开发态：关闭所有窗口即退出（并回收 sidecar）
 app.on('window-all-closed', () => {

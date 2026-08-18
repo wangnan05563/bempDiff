@@ -1,18 +1,20 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { state, activeTab, generateReport } from '../store'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { state, activeTab, generateReport, setAiPanelCollapsed, applyAiPanelResponsive } from '../store'
 import { renderMarkdown, extractSection } from '../lib/markdown'
+import AiConsole from './AiConsole.vue'
 
-const COLLAPSE_KEY = 'bempdiff.analysisCollapsed'
-const collapsed = ref(false)
 const tab = ref('file')
 
-onMounted(() => {
-  const v = localStorage.getItem(COLLAPSE_KEY)
-  if (v !== null) collapsed.value = v === 'true'
-})
-watch(collapsed, v => localStorage.setItem(COLLAPSE_KEY, String(v)))
+// 智能分析栏收起状态改由共享 state.aiPanelCollapsed 驱动（与 DiffView 文件栏一键显隐联动）。
+// 挂载即按「显式偏好 > 视口宽度」应用一次响应式避让；之后视口变化也跟随避让，避免窄屏挤占对比窗口。
+onMounted(() => { applyAiPanelResponsive(); window.addEventListener('resize', applyAiPanelResponsive) })
+onUnmounted(() => window.removeEventListener('resize', applyAiPanelResponsive))
 const STATUS_LABEL = { ADDED: '新增', DELETED: '删除', MODIFIED: '修改', UNCHANGED: '未变' }
+
+// AI 是否启用：集中判定，供「生成报告」标签后缀与点击传参共用，避免 AI 判定逻辑在多处重复（评审 A/D）。
+const aiEnabled = computed(() => !!(state.config && state.config.aiEnabled))
+const aiLabelSuffix = computed(() => aiEnabled.value ? '(AI)' : '')
 
 // node / decompile 都从当前激活的 tab 取；对应「DiffView 顶部 tab 栏选哪一个这里就显示哪一个」。
 const node = computed(() => {
@@ -44,23 +46,29 @@ function fmtSize(b) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
   return (i ? n.toFixed(1) : n) + ' ' + u[i]
 }
+
+// 点击守卫：no-job 提示已下沉到 store.generateReport 内部（统一 InfoPanel / ToolBar / 自动报告入口），
+// 此处仅负责把「是否启用 AI」传入，避免 AI 判定逻辑在多处重复（评审 A/D）。
+function onGenerateReport() {
+  generateReport(aiEnabled.value)
+}
 </script>
 
 <template>
-  <div class="col-ai" :class="{ collapsed }">
-    <div v-if="!collapsed" class="pane-head">
+  <div class="col-ai" :class="{ collapsed: state.aiPanelCollapsed }">
+    <div v-if="!state.aiPanelCollapsed" class="pane-head">
       <i class="bi bi-cpu"></i> 智能分析
       <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0" title="收起智能分析，扩大比对视野"
-              @click="collapsed = true">
+              @click="setAiPanelCollapsed(true)">
         <i class="bi bi-layout-sidebar-inset-reverse"></i>
       </button>
     </div>
-    <div v-else class="ai-collapsed-bar" title="展开智能分析" @click="collapsed = false">
+    <div v-else class="ai-collapsed-bar" title="展开智能分析" @click="setAiPanelCollapsed(false)">
       <i class="bi bi-chevron-left"></i>
       <span class="ai-collapsed-label">智能分析</span>
     </div>
 
-    <template v-if="!collapsed">
+    <template v-if="!state.aiPanelCollapsed">
     <ul class="nav nav-tabs px-2 pt-2">
       <li class="nav-item"><button class="nav-link py-1" :class="{active: tab==='file'}" @click="tab='file'">单文件</button></li>
       <li class="nav-item"><button class="nav-link py-1" :class="{active: tab==='global'}" @click="tab='global'">全局汇总</button></li>
@@ -107,9 +115,9 @@ function fmtSize(b) {
           <p class="text-secondary mb-2" style="font-size:.85rem">
             尚未生成报告。生成后此处自动展示「删除类 / 删除前端资源」等破坏性 API / 行为变更分析。
           </p>
-          <button class="btn btn-sm btn-outline-primary" :disabled="!state.job || state.busy"
-                  @click="generateReport(state.config && state.config.aiEnabled)">
-            <i class="bi bi-filetype-md"></i> 生成报告{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
+          <button class="btn btn-sm btn-outline-primary" :disabled="state.busy || state.reporting"
+                  @click="onGenerateReport">
+            <i class="bi bi-filetype-md"></i> 生成报告{{ aiLabelSuffix }}
           </button>
         </div>
       </div>
@@ -122,13 +130,16 @@ function fmtSize(b) {
           <p class="text-secondary mb-2" style="font-size:.85rem">
             报告生成后，此处展示合规审计结论（比对时间、版本标识、AI 接入情况）。
           </p>
-          <button class="btn btn-sm btn-outline-primary" :disabled="!state.job || state.busy"
-                  @click="generateReport(state.config && state.config.aiEnabled)">
-            <i class="bi bi-filetype-md"></i> 生成报告{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
+          <button class="btn btn-sm btn-outline-primary" :disabled="state.busy || state.reporting"
+                  @click="onGenerateReport">
+            <i class="bi bi-filetype-md"></i> 生成报告{{ aiLabelSuffix }}
           </button>
         </div>
       </div>
     </div>
+
+    <!-- AI 分析控制台：替代原阻塞模态，实时流式输出 + 并行任务 tab + 中断/预览 -->
+    <AiConsole />
     </template>
   </div>
 </template>

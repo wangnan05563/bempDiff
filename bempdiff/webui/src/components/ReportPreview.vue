@@ -4,22 +4,27 @@ import { state, generateReport } from '../store'
 import { renderMarkdown } from '../lib/markdown'
 import { colorizeReport, sevClassFromText } from '../lib/severity'
 
-const props = defineProps({ visible: { type: Boolean, default: false } })
+const props = defineProps({ visible: { type: Boolean, default: false }, md: { type: String, default: null } })
 const emit = defineEmits(['close'])
 
+// 报告正文来源：优先用调用方传入的 md（AI 控制台预览某次任务报告），否则用全局 state.reportMd
+const src = computed(() => props.md || state.reportMd)
+// 报告预览标题：来自任务预览时标注「AI 分析」，全局时沿用原逻辑
+const srcIsTask = computed(() => !!props.md)
+
 // 报告正文：渲染后做 AI 风险严重性着色（sev-* class）
-const html = computed(() => state.reportMd ? colorizeReport(renderMarkdown(state.reportMd)) : '')
+const html = computed(() => src.value ? colorizeReport(renderMarkdown(src.value)) : '')
 
 // 顶部「总体风险结论」汇总条：从报告中抽取 `整体风险：**高**`
 const overallRisk = computed(() => {
-  const m = state.reportMd && state.reportMd.match(/整体风险[：:]\s*\*\*?([^\n*]+?)\*\*?/)
+  const m = src.value && src.value.match(/整体风险[：:]\s*\*\*?([^\n*]+?)\*\*?/)
   return m ? m[1].trim() : null
 })
 const riskCls = computed(() => overallRisk.value ? sevClassFromText(overallRisk.value) : null)
 
 function downloadMd() {
-  if (!state.reportMd) return
-  const blob = new Blob([state.reportMd], { type: 'text/markdown;charset=utf-8' })
+  if (!src.value) return
+  const blob = new Blob([src.value], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -36,7 +41,7 @@ function downloadMd() {
         <div class="modal-header py-2">
           <h6 class="modal-title mb-0"><i class="bi bi-filetype-md"></i> 差异分析报告
             <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">
-              {{ state.reportAi ? '含 AI 智能分析' : '基础报告' }}
+              {{ srcIsTask ? 'AI 分析' : (state.reportAi ? '含 AI 智能分析' : '基础报告') }}
             </small>
           </h6>
           <button type="button" class="btn-close" @click="emit('close')"></button>
@@ -51,7 +56,7 @@ function downloadMd() {
           <div v-else class="text-center text-secondary py-5">
             <div class="ico mb-2"><i class="bi bi-file-earmark-x"></i></div>
             <div>尚未生成报告。</div>
-            <button class="btn btn-sm btn-outline-primary mt-3" :disabled="!state.job || state.busy"
+            <button v-if="!srcIsTask" class="btn btn-sm btn-outline-primary mt-3" :disabled="!state.job || state.busy"
                     @click="generateReport(state.config && state.config.aiEnabled)">
               <i class="bi bi-filetype-md"></i> 生成报告{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
             </button>
@@ -59,10 +64,10 @@ function downloadMd() {
         </div>
 
         <div class="modal-footer py-2">
-          <button class="btn btn-outline-secondary btn-sm" :disabled="!state.reportMd" @click="downloadMd">
+          <button class="btn btn-outline-secondary btn-sm" :disabled="!src" @click="downloadMd">
             <i class="bi bi-download"></i> 下载 .md
           </button>
-          <button class="btn btn-outline-primary btn-sm" :disabled="!state.job || state.busy"
+          <button v-if="!srcIsTask" class="btn btn-outline-primary btn-sm" :disabled="!state.job || state.busy"
                   @click="generateReport(state.config && state.config.aiEnabled)">
             <i class="bi bi-arrow-clockwise"></i> 重新生成{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
           </button>

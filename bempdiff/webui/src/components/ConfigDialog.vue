@@ -25,24 +25,30 @@ const form = reactive({})
 const showKey = ref(false)
 const testing = ref(false)
 
+let prevProviderKey = null
 watch(() => props.visible, (v) => {
-  if (v) Object.assign(form, JSON.parse(JSON.stringify(state.config || {})))
+  if (v) {
+    Object.assign(form, JSON.parse(JSON.stringify(state.config || {})))
+    prevProviderKey = form.aiProvider // 记录当前厂商，供首次切换时判断「是否未改过默认值」
+  }
 })
 
 function close() { emit('close') }
 
-// 切换厂商时，若该字段仍是上一预设的默认值或为空，则自动填充新预设的 baseUrl/model。
+// 切换厂商时，若当前 Base URL 仍等于「上一厂商的预设默认值」或为空（即用户未手动改过），
+// 则自动填充新厂商的 baseUrl/model；用户已自定义则保留其填写（不覆盖）。
+// 用上一厂商的预设 URL 作基准（而非模块级 prevBaseUrl），使「打开后第一次切换」也能正确填充。
 function onProviderChange() {
-  const p = PRESETS.find(x => x.key === form.aiProvider)
-  if (!p || p.key === 'custom') return
-  const isDefaultOrEmpty = !form.aiBaseUrl || form.aiBaseUrl === prevBaseUrl
-  if (isDefaultOrEmpty) {
-    form.aiBaseUrl = p.baseUrl
-    form.aiModel = p.model
-    prevBaseUrl = p.baseUrl
+  const newP = PRESETS.find(x => x.key === form.aiProvider)
+  if (!newP || newP.key === 'custom') { prevProviderKey = form.aiProvider; return }
+  const oldP = PRESETS.find(x => x.key === prevProviderKey)
+  const untouched = !form.aiBaseUrl || (oldP && form.aiBaseUrl === oldP.baseUrl)
+  if (untouched) {
+    form.aiBaseUrl = newP.baseUrl
+    form.aiModel = newP.model
   }
+  prevProviderKey = newP.key
 }
-let prevBaseUrl = ''
 
 const canPick = computed(() => isElectron() || isTauri())
 const pickTitle = computed(() => canPick.value
@@ -188,7 +194,6 @@ function onSave() {
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略，不会使比对崩溃）">忽略正则</label>
               <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.ignoreRegex" placeholder="如 \d{4}-\d{2}-\d{2}|@Generated 等" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略）"></div>
-            </div>
             </div>
           </div>
 

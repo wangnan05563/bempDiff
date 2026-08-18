@@ -15,5 +15,16 @@ contextBridge.exposeInMainWorld('bempdiff', {
    */
   pickPath(opts = {}) {
     return ipcRenderer.invoke('bempdiff:pick-path', opts)
+  },
+  /**
+   * 注册「外部入口传入比对路径」监听（右键菜单 / 命令行参数）。
+   * 主进程在收到文件参数时通过 webContents.send('bempdiff:shell-compare', paths) 推送；
+   * 渲染进程（store.init）据此自动填路径并比对。
+   * @param {(paths: string[]) => void} cb
+   */
+  onShellCompare(cb) {
+    ipcRenderer.on('bempdiff:shell-compare', (_e, paths) => {
+      if (typeof cb === 'function') cb(paths)
+    })
   }
 })
