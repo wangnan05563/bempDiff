@@ -2,6 +2,7 @@ package com.bempdiff.diff;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -57,13 +58,14 @@ public final class FolderEntryFormatter {
 
     /**
      * 行级 diff 拆行（供展示层逐行输出）。
-     * 返回 null 表示无可用内容（null / 空 / 仅尾部空白），调用方据此跳过；
+     * 返回空集合表示无可用内容（null / 空 / 仅尾部空白），调用方据此跳过；
      * 已 {@code stripTrailing()} 去除整块尾部空白并按 {@code \n} 切分。
      */
     public static List<String> lineDiffLines(FolderDiff.FolderEntry e) {
-        if (e.lineDiff == null || e.lineDiff.isEmpty()) return null;
+        // 无可用内容时返回空集合而非 null（S1168），调用方按空列表自然跳过
+        if (e.lineDiff == null || e.lineDiff.isEmpty()) return Collections.emptyList();
         String ld = e.lineDiff.stripTrailing();
-        if (ld.isEmpty()) return null;
+        if (ld.isEmpty()) return Collections.emptyList();
         // 按 \n 或 \r\n 切分，避免 Windows 原生 CRLF 在中间行尾遗留 \r（进入控制台/```diff 块变脏）
         return Arrays.asList(ld.split("\r?\n"));
     }

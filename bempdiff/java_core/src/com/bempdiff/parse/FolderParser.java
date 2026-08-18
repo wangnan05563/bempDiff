@@ -4,11 +4,11 @@ import com.bempdiff.config.ParseConfig;
 import com.bempdiff.model.*;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
@@ -35,7 +35,7 @@ public final class FolderParser {
     /** 单文件读取防御上限（与 PackageParser.HARD_CAP 同源，防超长文件拖垮比对）。 */
     private static final long HARD_CAP = 64L * 1024 * 1024;
 
-    public PackageSnapshot parse(Path dir, ParseConfig cfg) throws IOException {
+    public PackageSnapshot parse(Path dir, ParseConfig cfg) throws IOException { // NOSONAR - cfg 为统一 parse 接口签名保留（文件夹场景暂无层级配置）
         if (dir == null || !Files.isDirectory(dir)) {
             throw new IOException("不是有效目录（无法解析文件夹）: " + dir);
         }
@@ -44,33 +44,38 @@ public final class FolderParser {
 
         try (Stream<Path> walk = Files.walk(root)) {
             for (Path p : (Iterable<Path>) walk::iterator) {
-                if (Files.isSymbolicLink(p)) {
-                    // 跳过符号链接：避免符号链接环导致无限遍历，且链接目标可能越界
-                    LOG.fine("[隔离] 跳过符号链接: " + root.relativize(p));
-                    continue;
-                }
-                if (Files.isDirectory(p)) {
-                    continue; // 目录不入表，结构由文件路径派生
-                }
-                if (!Files.isRegularFile(p)) {
-                    continue;
-                }
-                String key;
-                try {
-                    key = sanitizeKey(root, p);
-                } catch (IOException bad) {
-                    LOG.warning("[隔离] 跳过可疑路径（已拒绝，不影响其余比对）: " + bad.getMessage());
-                    continue;
-                }
-                try {
-                    addFile(p, key, entries);
-                } catch (IOException bad) {
-                    LOG.warning("[隔离] 跳过不可读文件（已拒绝，不影响其余比对）: " + key
-                            + " (" + bad.getMessage() + ")");
-                }
+                ingestPath(root, p, entries);
             }
         }
         return new PackageSnapshot(dir, PackageType.FOLDER, null, entries);
+    }
+
+    /** 处理单个扫描到的路径：仅文件入表；符号链接/目录/不可读均隔离跳过，不影响其余比对。 */
+    private void ingestPath(Path root, Path p, Map<String, LogicalEntry> entries) {
+        if (Files.isSymbolicLink(p)) {
+            // 跳过符号链接：避免符号链接环导致无限遍历，且链接目标可能越界
+            LOG.log(Level.FINE, "[隔离] 跳过符号链接: {0}", root.relativize(p));
+            return;
+        }
+        if (Files.isDirectory(p)) {
+            return; // 目录不入表，结构由文件路径派生
+        }
+        if (!Files.isRegularFile(p)) {
+            return;
+        }
+        String key;
+        try {
+            key = sanitizeKey(root, p);
+        } catch (IOException bad) {
+            LOG.log(Level.WARNING, "[隔离] 跳过可疑路径（已拒绝，不影响其余比对）: {0}", bad.getMessage());
+            return;
+        }
+        try {
+            addFile(p, key, entries);
+        } catch (IOException bad) {
+            LOG.log(Level.WARNING, "[隔离] 跳过不可读文件（已拒绝，不影响其余比对）: {0}（{1}）",
+                    new Object[]{key, bad.getMessage()});
+        }
     }
 
     private void addFile(Path file, String key, Map<String, LogicalEntry> out) throws IOException {
@@ -103,8 +108,7 @@ public final class FolderParser {
         if (e.getSize() > TEXT_DIFF_CAP) return false;
         FileClass fc = e.getFileClass();
         // 二进制/字节码类文件仅做结构级差异识别，不做内容 diff
-        if (fc == FileClass.CLASS || fc == FileClass.JAR || fc == FileClass.STATIC) return false;
-        return true;
+        return fc != FileClass.CLASS && fc != FileClass.JAR && fc != FileClass.STATIC;
     }
 
     /** 读取文件内容为字符串（容错解码：utf-8 → gbk → latin-1 兜底，与 Decompiler.decode 同源）。 */

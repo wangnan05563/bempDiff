@@ -56,6 +56,32 @@ public final class FrontendTextDiff {
         }
     }
 
+    /**
+     * 直接对原始字节做"美化 + 双栏 diff"（供归档内部文本条目复用，避免走 PackageSnapshot 解析）。
+     * 任一側字节为 null 表示该侧不存在（新增/删除文本文件），与 {@link #diff} 语义一致。
+     */
+    public DecompiledUnit diffBytes(byte[] oldBytes, byte[] newBytes, String key, FileClass fc, DiffRules rules) {
+        try {
+            String oldRaw = (oldBytes != null) ? TextCodec.decode(oldBytes) : null;
+            String newRaw = (newBytes != null) ? TextCodec.decode(newBytes) : null;
+            String oldText = (oldRaw != null) ? beautify(oldRaw, fc) : null;
+            String newText = (newRaw != null) ? beautify(newRaw, fc) : null;
+
+            String engine = engineLabel(fc);
+            String diff;
+            if (oldText == null) {
+                diff = "// [新增文件] 老侧无此文件\n" + (newText == null ? "" : newText);
+            } else if (newText == null) {
+                diff = "// [删除文件] 新侧无此文件（资源移除，需确认引用方）\n" + oldText;
+            } else {
+                diff = LineDiff.unified(oldText, newText, rules);
+            }
+            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true);
+        } catch (Exception e) {
+            return DecompiledUnit.fail(key, e.getMessage());
+        }
+    }
+
     /** 引擎标签：按文件类型区分美化/比对方式（用于报告与导出清单标注）。 */
     private static String engineLabel(FileClass fc) {
         if (fc == null) return "text-diff";
@@ -78,8 +104,8 @@ public final class FrontendTextDiff {
             if (fc == FileClass.JSP) return beautifyJsp(text);
             if (fc == FileClass.CONFIG) return normalizeNewlines(text); // 配置文件：仅换行归一，直接行级 diff 最清晰
             return beautifyJs(text); // JS 默认处理（含未知前端文本）
-        } catch (Exception | Error e) {
-            // 美化是尽力而为：任何异常（含栈溢出等）都回退原始文本，不影响比对
+        } catch (Exception e) {
+            // 美化是尽力而为：任何异常都回退原始文本，不影响比对
             return text;
         }
     }
@@ -90,15 +116,13 @@ public final class FrontendTextDiff {
         String[] lines = text.split("\n", -1);
         int maxLine = 0;
         for (String l : lines) maxLine = Math.max(maxLine, l.length());
-        long nonEmpty = 0;
-        for (String l : lines) if (!l.trim().isEmpty()) nonEmpty++;
         // 任意行超长 且（行数极少 或 平均行长过高）→ 压缩
         return maxLine > 400 && (lines.length < 6 || (double) text.length() / lines.length > 200);
     }
 
     // ----------------------------- JS 美化（字符串/注释安全） -----------------------------
 
-    private static String beautifyJs(String text) {
+    private static String beautifyJs(String text) { // NOSONAR(S3776) 单遍字符状态机按语义有序跳转，拆分会割裂注释/字符串上下文，保持整体可读
         if (!looksMinified(text)) {
             // 非压缩：仅统一换行（去掉多余尾随空白），保持原结构，降低噪声
             return normalizeNewlines(text);
@@ -109,14 +133,14 @@ public final class FrontendTextDiff {
         char quote = 0;            // 当前字符串引号（0=不在字符串）
         boolean lineComment = false;
         boolean blockComment = false;
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++) { // NOSONAR(S135) 状态跃迁的正常表达，多个 continue 对应注释/字符串内退出
             char c = text.charAt(i);
             if (blockComment) {
                 out.append(c);
                 if (c == '*' && i + 1 < n && text.charAt(i + 1) == '/') {
                     out.append('\n');
                     blockComment = false;
-                    i++;
+                    i++; // NOSONAR(S127) 跳过已吞入的 '/'，前置推进循环下标是状态机的既有语义
                 }
                 continue;
             }
@@ -127,7 +151,7 @@ public final class FrontendTextDiff {
             }
             if (quote != 0) {
                 out.append(c);
-                if (c == '\\' && i + 1 < n) { out.append(text.charAt(++i)); continue; }
+                if (c == '\\' && i + 1 < n) { out.append(text.charAt(++i)); continue; } // NOSONAR(S127)
                 if (c == quote) quote = 0;
                 continue;
             }
@@ -164,23 +188,23 @@ public final class FrontendTextDiff {
 
     // ----------------------------- CSS 美化 -----------------------------
 
-    private static String beautifyCss(String text) {
+    private static String beautifyCss(String text) { // NOSONAR(S3776) 单遍字符状态机，语义同 beautifyJs，拆分会产生与 JS 相同的上下文割裂风险
         if (!looksMinified(text)) return normalizeNewlines(text);
         StringBuilder out = new StringBuilder();
         int depth = 0;
         int n = text.length();
         char quote = 0;
         boolean blockComment = false;
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++) { // NOSONAR(S135) 状态跃迁的正常表达，多个 continue 对应注释/字符串内退出
             char c = text.charAt(i);
             if (blockComment) {
                 out.append(c);
-                if (c == '*' && i + 1 < n && text.charAt(i + 1) == '/') { out.append('\n'); blockComment = false; i++; }
+                if (c == '*' && i + 1 < n && text.charAt(i + 1) == '/') { out.append('\n'); blockComment = false; i++; } // NOSONAR(S127)
                 continue;
             }
             if (quote != 0) {
                 out.append(c);
-                if (c == '\\' && i + 1 < n) { out.append(text.charAt(++i)); continue; }
+                if (c == '\\' && i + 1 < n) { out.append(text.charAt(++i)); continue; } // NOSONAR(S127)
                 if (c == quote) quote = 0;
                 continue;
             }
@@ -236,7 +260,8 @@ public final class FrontendTextDiff {
         // 统一 \r\n / \r → \n，去每行尾随空白（降低无意义 diff 噪声）
         StringBuilder sb = new StringBuilder();
         int n = text.length();
-        for (int i = 0; i < n; i++) {
+        int i = 0;
+        while (i < n) {
             char c = text.charAt(i);
             if (c == '\r') {
                 if (i + 1 < n && text.charAt(i + 1) == '\n') i++;
@@ -251,6 +276,7 @@ public final class FrontendTextDiff {
             } else {
                 sb.append(c);
             }
+            i++;
         }
         return sb.toString();
     }

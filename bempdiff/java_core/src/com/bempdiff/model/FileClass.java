@@ -18,6 +18,15 @@ public enum FileClass {
     CSS,
     /** 服务端 JSP 页面 / 标签文件（.jsp/.jspx/.tag/.tagx）。需求扩展：纳入内容级逐行 diff。 */
     JSP,
+    /**
+     * 归档压缩包（.zip / .war / .ear / .tar / .tar.gz / .tgz）。
+     * 这类文件是二进制，按字节解码再"美化"会得到一堆乱码并长时间跑 JS 状态机，
+     * 与其在 {@link com.bempdiff.diff.FrontendTextDiff} 上做无效文本 diff，
+     * 不如直接把它们当作"目录"处理：对两个归档做条目清单（name/size/crc）展示，
+     * 差异按行级呈现。这样点击一个 4.5 MB zip 即时返回可见结果，不再卡在反编译 spinner。
+     * {@link com.bempdiff.model.FileClass#JAR} 仍表示库 jar（war 内的 lib jar 等），与 ARCHIVE 平级。
+     */
+    ARCHIVE,
     OTHER;
 
     /** 是否为"前端源码文本"——需要内容 diff 与 AI 分析（区别于图片/字体等二进制 STATIC）。 */
@@ -41,6 +50,7 @@ public enum FileClass {
             case HTML:  return "前端 HTML";
             case CSS:   return "前端 CSS";
             case STATIC:return "静态资源(图片/字体)";
+            case ARCHIVE:return "归档压缩包(zip/war/ear/tar)";
             default:    return "其他";
         }
     }

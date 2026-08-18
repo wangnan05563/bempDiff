@@ -2,6 +2,7 @@ package com.bempdiff.test;
 
 import com.bempdiff.decompile.Decompiler;
 import com.bempdiff.diff.DiffEngine;
+import com.bempdiff.diff.DiffRules;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.model.DecompiledUnit;
@@ -32,8 +33,8 @@ public final class DecompileTest {
 
     static {
         try {
-            UNIFIED_DIFF = Decompiler.class.getDeclaredMethod("unifiedDiff", String.class, String.class);
-            SIMPLE_DIFF = Decompiler.class.getDeclaredMethod("simpleDiff", List.class, List.class);
+            UNIFIED_DIFF = Decompiler.class.getDeclaredMethod("unifiedDiff", String.class, String.class, DiffRules.class);
+            SIMPLE_DIFF = Decompiler.class.getDeclaredMethod("simpleDiff", List.class, List.class, DiffRules.class);
             DECODE = Decompiler.class.getDeclaredMethod("decode", byte[].class);
             for (Method m : new Method[]{UNIFIED_DIFF, SIMPLE_DIFF, DECODE}) m.setAccessible(true);
         } catch (NoSuchMethodException e) {
@@ -44,7 +45,7 @@ public final class DecompileTest {
     public void testSimpleDiff_basic() throws Throwable {
         @SuppressWarnings("unchecked")
         List<String> out = (List<String>) SIMPLE_DIFF.invoke(null,
-                Arrays.asList("1", "2", "3"), Arrays.asList("2", "3", "4"));
+                Arrays.asList("1", "2", "3"), Arrays.asList("2", "3", "4"), DiffRules.DEFAULT);
         Asserts.assertContains("应含删除 1", out.toString(), "- 1");
         Asserts.assertContains("应含新增 4", out.toString(), "+ 4");
         Asserts.assertContains("应含未变 2", out.toString(), "  2");
@@ -52,20 +53,20 @@ public final class DecompileTest {
     }
 
     public void testUnifiedDiff_modified() throws Throwable {
-        String diff = (String) UNIFIED_DIFF.invoke(null, "a\nb\nc", "a\nx\nc");
+        String diff = (String) UNIFIED_DIFF.invoke(null, "a\nb\nc", "a\nx\nc", DiffRules.DEFAULT);
         Asserts.assertContains("应含删除 b", diff, "- b");
         Asserts.assertContains("应含新增 x", diff, "+ x");
         Asserts.assertContains("应含未变 a", diff, "  a");
     }
 
     public void testUnifiedDiff_added() throws Throwable {
-        String diff = (String) UNIFIED_DIFF.invoke(null, null, "p\nq");
+        String diff = (String) UNIFIED_DIFF.invoke(null, null, "p\nq", DiffRules.DEFAULT);
         Asserts.assertContains("新增类应标记", diff, "[新增类]");
         Asserts.assertContains("应含 + p", diff, "+ p");
     }
 
     public void testUnifiedDiff_deleted() throws Throwable {
-        String diff = (String) UNIFIED_DIFF.invoke(null, "m\nn", null);
+        String diff = (String) UNIFIED_DIFF.invoke(null, "m\nn", null, DiffRules.DEFAULT);
         Asserts.assertContains("删除类应标记", diff, "[删除类]");
         Asserts.assertContains("应含 - m", diff, "- m");
     }
@@ -170,6 +171,33 @@ public final class DecompileTest {
         Asserts.assertEquals("第二次应命中缓存(内容相同)", first, second);
         Asserts.assertTrue("第三次应命中缓存(返回同一引用，证明短路径)",
                 first == third);
+    }
+
+    /**
+     * D5 回归（docs/BempDiff_AI优化与竞品分析报告.md P0）：跨 Decompiler 实例、跨会话的磁盘缓存。
+     * 同一份 class 字节被 d1 反编译并异步落盘后，新建的 d2（内存 LRU 为空）再次反编译须命中磁盘缓存，
+     * 表现为 Decompiler.getDiskHits() 增长，且返回内容与此前一致（证明内容寻址磁盘层生效）。
+     * 用内联唯一源码确保磁盘键不被其它用例污染。
+     */
+    public void testDecompile_persistentDiskCache_crossInstance() throws Throwable {
+        Method decompileOne = Decompiler.class.getDeclaredMethod("decompileOne", byte[].class);
+        decompileOne.setAccessible(true);
+
+        String src = "package com.internal;\npublic class PersistX {\n  public int ping(){ return 42; }\n}\n";
+        byte[] classBytes = TestFixtures.compileClass("com.internal.PersistX", src);
+        Decompiler d1 = new Decompiler(null, "java");
+        long before = Decompiler.getDiskHits();
+        String first = (String) decompileOne.invoke(d1, (Object) classBytes);
+        Asserts.assertNotNull("首次反编译结果不应为空", first);
+
+        // 等待异步落盘线程把结果写入磁盘
+        Thread.sleep(600);
+
+        Decompiler d2 = new Decompiler(null, "java"); // 全新实例，内存 LRU 为空
+        String again = (String) decompileOne.invoke(d2, (Object) classBytes);
+        Asserts.assertEquals("跨实例应命中磁盘缓存(内容一致)", first, again);
+        Asserts.assertTrue("应发生至少一次磁盘缓存命中",
+                Decompiler.getDiskHits() > before);
     }
 
     // 仅用于本测试的极简 ParseConfig（避免引入对整个 config 包的耦合）

@@ -40,29 +40,52 @@ public final class LineDiff {
         int n = a.size();
         int m = b.size();
         // 归一化行仅用于匹配（决定两行是否视为相同）
-        List<String> ak = new ArrayList<>(n);
-        List<String> bk = new ArrayList<>(m);
-        for (String s : a) ak.add(rules.normalize(s));
-        for (String s : b) bk.add(rules.normalize(s));
+        List<String> ak = normalizeLines(a, rules);
+        List<String> bk = normalizeLines(b, rules);
+        int[][] dp = computeLCS(ak, bk, n, m);
+        return render(a, b, ak, bk, dp);
+    }
+
+    /** 按忽略规则归一化每一行（返回归一化副本，不影响原始行）。 */
+    private static List<String> normalizeLines(List<String> src, DiffRules rules) {
+        List<String> out = new ArrayList<>(src.size());
+        for (String s : src) out.add(rules.normalize(s));
+        return out;
+    }
+
+    /** 计算 LCS 动态规划表 dp[i][j]（用于回溯差异路径）。 */
+    private static int[][] computeLCS(List<String> ak, List<String> bk, int n, int m) {
         int[][] dp = new int[n + 1][m + 1];
         for (int i = n - 1; i >= 0; i--)
             for (int j = m - 1; j >= 0; j--)
                 dp[i][j] = ak.get(i).equals(bk.get(j)) ? dp[i + 1][j + 1] + 1
                         : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        return dp;
+    }
+
+    /** 依据 LCS 表回溯，生成带 +/-/空格 前缀的合并视图（输出为原始行内容）。 */
+    private static String render(List<String> a, List<String> b,
+                                 List<String> ak, List<String> bk, int[][] dp) {
         StringBuilder sb = new StringBuilder();
-        int i = 0, j = 0;
+        int n = a.size();
+        int m = b.size();
+        int i = 0;
+        int j = 0;
         while (i < n && j < m) {
             if (ak.get(i).equals(bk.get(j))) {
                 sb.append("  ").append(a.get(i)).append("\n"); // 输出原始行
-                i++; j++;
+                i++;
+                j++;
             } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-                sb.append("- ").append(a.get(i++)).append("\n");
+                sb.append("- ").append(a.get(i)).append("\n");
+                i++;
             } else {
-                sb.append("+ ").append(b.get(j++)).append("\n");
+                sb.append("+ ").append(b.get(j)).append("\n");
+                j++;
             }
         }
-        while (i < n) sb.append("- ").append(a.get(i++)).append("\n");
-        while (j < m) sb.append("+ ").append(b.get(j++)).append("\n");
+        while (i < n) { sb.append("- ").append(a.get(i)).append("\n"); i++; }
+        while (j < m) { sb.append("+ ").append(b.get(j)).append("\n"); j++; }
         return sb.toString();
     }
 }

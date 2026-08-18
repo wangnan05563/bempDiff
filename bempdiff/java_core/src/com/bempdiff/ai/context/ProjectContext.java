@@ -22,10 +22,10 @@ public final class ProjectContext {
     private final List<String> conventions; // 包结构/命名约定
     private final String summary;           // 综合架构叙述（供 prompt）
 
-    public ProjectContext(String rootPath, String buildSystem, List<String> modules,
+    public ProjectContext(String rootPath, String buildSystem, List<String> modules, // NOSONAR(S107) - 多参重载为既有公开 API
                           List<String> dependencies, List<String> entryPoints,
                           List<String> configFiles, List<String> techStack,
-                          List<String> conventions, String summary) {
+                          List<String> conventions, String summary) { // NOSONAR - 9 个字段由各字段单独 getter 暴露，重建参数对象反而过度设计
         this.rootPath = rootPath;
         this.buildSystem = buildSystem;
         this.modules = modules;

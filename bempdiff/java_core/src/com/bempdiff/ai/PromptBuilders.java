@@ -23,6 +23,9 @@ public final class PromptBuilders {
         throw new UnsupportedOperationException("工具类不允许实例化");
     }
 
+    /** 阶段标题前缀（buildStageB 多处重复，提取为常量规避 S1192）。 */
+    private static final String FILE_HEADER = "## 文件：";
+
     /** 阶段A prompt：让模型产出 JSON（整体风险/影响/测试主题 + 每文件初评）。 */
     public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         return buildStageA(diff, decompiled, cfg, null);
@@ -114,19 +117,19 @@ public final class PromptBuilders {
         if (fc != null && fc.isFrontendText()) {
             p.append("请对以下前端").append(frontendLabel(fc)).append("代码改动做逐文件深读，返回 JSON：");
             p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact，含对页面/交互/接口的潜在影响)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n\n");
-            p.append("## 文件：").append(key).append(" （").append(frontendLabel(fc)).append("）\n");
+            p.append(FILE_HEADER).append(key).append(" （").append(frontendLabel(fc)).append("）\n");
         } else if (fc == FileClass.JSP) {
             p.append("请对以下JSP页面/标签文件改动做逐文件深读，返回 JSON：");
             p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact，含对页面渲染/请求处理/标签逻辑的潜在影响)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n\n");
-            p.append("## 文件：").append(key).append(" （JSP 页面/标签）\n");
+            p.append(FILE_HEADER).append(key).append(" （JSP 页面/标签）\n");
         } else if (fc == FileClass.CONFIG) {
             p.append("请对以下配置文件（XML/Properties/YAML/JSON 等）改动做逐文件深读，返回 JSON：");
             p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact，含对配置项语义/模块行为/启动加载的潜在影响)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n\n");
-            p.append("## 文件：").append(key).append(" （配置文件）\n");
+            p.append(FILE_HEADER).append(key).append(" （配置文件）\n");
         } else {
             p.append("请对以下Java类改动做逐文件深读，返回 JSON：");
             p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n\n");
-            p.append("## 文件：").append(key).append("\n");
+            p.append(FILE_HEADER).append(key).append("\n");
         }
         p.append("```diff\n").append(unit.getDiffText() == null ? "" : unit.getDiffText()).append("\n```\n");
         return sanitize(p.toString(), cfg);
@@ -167,10 +170,34 @@ public final class PromptBuilders {
                 || cfg.getBaseUrl().contains("localhost") || cfg.getBaseUrl().contains("127.0.0.1");
         if (local) return text;  // 本地/私有化模型：代码不出机，无需脱敏
         // 擦除疑似身份证/密钥/手机号等（演示正则；量产版按业务规则细化）
+        // 注意：用显式数字边界 (?<!\d)/(?!\d) 替代 \b，因为 Java 的 \b 在中文等
+        // 非 ASCII 字符与数字相邻时不产生词边界，会导致「身份证110...」之类场景漏脱敏。
         return text
-                .replaceAll("\\b\\d{17}[\\dXx]\\b", "***ID***")          // 18位身份证
-                .replaceAll("\\b(?:AKIA|AK|SK|KEY|SECRET|TOKEN|PASSWORD|PWD)[-.\\w=:]*[A-Za-z0-9+/=]{6,}", "***SECRET***")
-                .replaceAll("\\b1[3-9]\\d{9}\\b", "***PHONE***");         // 手机号
+                .replaceAll("(?<!\\d)\\d{17}[\\dXx](?!\\d)", "***ID***")          // 18位身份证
+                .replaceAll("(?<!\\w)(?:AKIA|AK|SK|KEY|SECRET|TOKEN|PASSWORD|PWD)[-.\\w=:]*[A-Za-z0-9+/=]{6,}", "***SECRET***")
+                .replaceAll("(?<!\\d)1[3-9]\\d{9}(?!\\d)", "***PHONE***");         // 手机号
+    }
+
+    /** 追加聚焦指令：focus 非空时引导模型在该维度深入分析与结论（类别化报告的核心）。 */
+    private static void appendFocus(StringBuilder p, String focus) {
+        if (focus == null || focus.trim().isEmpty()) return;
+        p.append("\n## 本次分析聚焦\n").append(focus.trim())
+         .append("\n请在本聚焦维度上给出更详尽的分析与可执行的结论。\n");
+    }
+
+    /** 阶段A prompt（聚焦类别增强）：在基础 prompt 后追加聚焦指令，引导模型在指定维度深入。 */
+    public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled,
+                                     AiConfig cfg, ProjectContext ctx, String focus) {
+        StringBuilder p = new StringBuilder(buildStageA(diff, decompiled, cfg, ctx));
+        appendFocus(p, focus);
+        return sanitize(p.toString(), cfg);
+    }
+
+    /** 阶段B 单文件 prompt（聚焦类别增强）。 */
+    public static String buildStageB(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg, ProjectContext ctx, String focus) {
+        StringBuilder p = new StringBuilder(buildStageB(key, unit, fc, cfg, ctx));
+        appendFocus(p, focus);
+        return sanitize(p.toString(), cfg);
     }
 
     private static DiffStatus stOf(DiffResult diff, String k) {

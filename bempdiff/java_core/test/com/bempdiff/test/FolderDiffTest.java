@@ -33,10 +33,10 @@ public final class FolderDiffTest {
         write(left.resolve("a.txt"), "alpha");
         write(right.resolve("b.txt"), "beta");
         FolderDiff.FolderDiffResult r = FolderDiff.compare(left, right, FolderDiff.Options.defaults());
-        Asserts.assertEquals("仅左侧", 1, r.summary.leftOnly);
-        Asserts.assertEquals("仅右侧", 1, r.summary.rightOnly);
-        Asserts.assertEquals("无两侧不同", 0, r.summary.modified);
-        Asserts.assertEquals("无相同", 0, r.summary.same);
+        Asserts.assertEquals("仅左侧", 1, r.summary.getLeftOnly());
+        Asserts.assertEquals("仅右侧", 1, r.summary.getRightOnly());
+        Asserts.assertEquals("无两侧不同", 0, r.summary.getModified());
+        Asserts.assertEquals("无相同", 0, r.summary.getSame());
         Asserts.assertEquals("a.txt 状态", FolderDiff.FolderDiffStatus.LEFT_ONLY, byKey(r, "a.txt").status);
         Asserts.assertEquals("b.txt 状态", FolderDiff.FolderDiffStatus.RIGHT_ONLY, byKey(r, "b.txt").status);
     }
@@ -89,8 +89,8 @@ public final class FolderDiffTest {
         Files.setLastModifiedTime(right.resolve("x/y.txt"), t);
         FolderDiff.FolderDiffResult r = FolderDiff.compare(left, right, FolderDiff.Options.defaults());
         // 目录不比较 mtime（避免随子项变化的冗余双标），故 x 目录与 x/y.txt 均为 SAME -> 共 2 项
-        Asserts.assertEquals("相同计数(含目录)", 2, r.summary.same);
-        Asserts.assertEquals("无两侧不同", 0, r.summary.modified);
+        Asserts.assertEquals("相同计数(含目录)", 2, r.summary.getSame());
+        Asserts.assertEquals("无两侧不同", 0, r.summary.getModified());
         Asserts.assertEquals("y.txt 相同", FolderDiff.FolderDiffStatus.SAME, byKey(r, "x/y.txt").status);
     }
 
@@ -159,10 +159,10 @@ public final class FolderDiffTest {
         long t0 = System.currentTimeMillis();
         FolderDiff.FolderDiffResult r = FolderDiff.compare(left, right, FolderDiff.Options.defaults());
         long ms = System.currentTimeMillis() - t0;
-        Asserts.assertEquals("扫描文件数=801(两侧累加: 400左 + 401右)", 801, r.summary.scannedFiles);
+        Asserts.assertEquals("扫描文件数=801(两侧累加: 400左 + 401右)", 801, r.summary.getScannedFiles());
         // 奇数文件因左右写入时刻 mtime 不同会被标为"仅属性不同"；此处用 contentChanged 精确断言内容改动数
-        Asserts.assertEquals("内容不同=200(偶数行内容改)", 200, r.summary.contentChanged);
-        Asserts.assertEquals("仅右侧=1", 1, r.summary.rightOnly);
+        Asserts.assertEquals("内容不同=200(偶数行内容改)", 200, r.summary.getContentChanged());
+        Asserts.assertEquals("仅右侧=1", 1, r.summary.getRightOnly());
         Asserts.assertTrue("性能: 400+ 文件应在 30s 内完成, 实际=" + ms + "ms", ms < 30_000);
     }
 }

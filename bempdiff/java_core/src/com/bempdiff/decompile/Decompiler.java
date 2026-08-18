@@ -7,9 +7,9 @@ import com.bempdiff.diff.DiffRules;
 
 import org.benf.cfr.reader.api.CfrDriver;
 import org.benf.cfr.reader.api.OutputSinkFactory;
-import org.benf.cfr.reader.api.OutputSinkFactory.Sink;
-import org.benf.cfr.reader.api.OutputSinkFactory.SinkClass;
-import org.benf.cfr.reader.api.OutputSinkFactory.SinkType;
+import org.benf.cfr.reader.api.OutputSinkFactory.Sink; // NOSONAR(S1128) - 用于 getSink 返回类型，CFR 嵌套 API 类型误报未被识别
+import org.benf.cfr.reader.api.OutputSinkFactory.SinkClass; // NOSONAR(S1128) - getSupportedSinks 签名使用
+import org.benf.cfr.reader.api.OutputSinkFactory.SinkType; // NOSONAR(S1128) - getSupportedSinks/getSink 参数使用
 import org.benf.cfr.reader.api.SinkReturns.Decompiled;
 
 import java.io.File;
@@ -17,15 +17,23 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 反编译集成（T07/T08，§5.3 / §5.4）。对应 prototype: decompile.py
@@ -60,6 +68,120 @@ public final class Decompiler {
                 }
             });
 
+    /**
+     * D5 跨会话持久化反编译缓存（2026-08-17，来源 docs/BempDiff_AI优化与竞品分析报告.md P0）。
+     * 在内存 LRU 之上叠加一层内容寻址磁盘缓存：
+     *  - 缓存键即 class 字节的 sha256，跨 Decompiler 实例、跨进程重启天然共享（同一份字节永远命中）。
+     *  - 内存未命中先查磁盘，命中则回填内存 LRU；新反编译结果异步落盘（single-thread 守护执行器，best-effort）。
+     *  - 磁盘软上限 DISK_CACHE_MAX，超限按文件 mtime 升序淘汰最旧条目，避免无限膨胀。
+     *  - version 标记：缓存目录内置 version.txt，版本不符（如 CFR 升级）启动时整体清空，杜绝旧格式残留。
+     *  - 磁盘目录不可用（无写权限等）时静默降级为纯内存，不影响主流程。
+     */
+    private static final int DISK_CACHE_MAX = 4000;
+    private static final int CACHE_VERSION = 1;
+    private static final ExecutorService diskWriter =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "bempdiff-diskcache");
+                t.setDaemon(true);
+                return t;
+            });
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            diskWriter.shutdown();
+            try { diskWriter.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        }));
+    }
+    private static final AtomicLong diskCount = new AtomicLong(0);
+    private static final AtomicLong diskHits = new AtomicLong(0);
+    private static volatile Path diskCacheDir = null; // NOSONAR(S3077) - Path 引用不可变，volatile 保证可见性即可
+
+    private static Path resolveCacheDir() {
+        if (diskCacheDir != null) return diskCacheDir; // 可能为 null（已降级）
+        synchronized (Decompiler.class) {
+            if (diskCacheDir != null) return diskCacheDir;
+            Path base;
+            String local = System.getenv("LOCALAPPDATA");
+            if (local != null && !local.isEmpty()) {
+                base = Paths.get(local, "bempdiff", "decompile-cache");
+            } else {
+                base = Paths.get(System.getProperty("user.home", "."), ".bempdiff", "decompile-cache");
+            }
+            try {
+                Files.createDirectories(base);
+                wipeIfVersionMismatch(base);
+                try (Stream<Path> s = Files.list(base)) {
+                    diskCount.set(s.filter(p -> p.getFileName().toString().endsWith(".dec")).count());
+                }
+            } catch (IOException e) {
+                base = null; // 降级为纯内存
+            }
+            diskCacheDir = base;
+            return base;
+        }
+    }
+
+    private static void wipeIfVersionMismatch(Path dir) {
+        Path vf = dir.resolve("version.txt");
+        try {
+            if (Files.exists(vf)) {
+                String v = new String(Files.readAllBytes(vf), StandardCharsets.UTF_8).trim();
+                if (!String.valueOf(CACHE_VERSION).equals(v)) {
+                    try (Stream<Path> s = Files.list(dir)) {
+                        s.forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) { /* 忽略 */ } });
+                    }
+                }
+            }
+            Files.write(vf, String.valueOf(CACHE_VERSION).getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+            // 版本文件不可写：失去版本保护，但命中仍可用
+        }
+    }
+
+    private static String diskGet(String key) {
+        Path dir = resolveCacheDir();
+        if (dir == null) return null;
+        Path f = dir.resolve(key + ".dec");
+        if (!Files.exists(f)) return null;
+        try {
+            diskHits.incrementAndGet();
+            return new String(Files.readAllBytes(f), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static void diskPutAsync(String key, String value) {
+        Path dir = resolveCacheDir();
+        if (dir == null) return;
+        diskWriter.submit(() -> {
+            Path f = dir.resolve(key + ".dec");
+            try {
+                Files.write(f, value.getBytes(StandardCharsets.UTF_8));
+                long c = diskCount.incrementAndGet();
+                if (c > DISK_CACHE_MAX) evictDisk(dir, DISK_CACHE_MAX * 8 / 10);
+            } catch (IOException ignored) {
+                // 落盘失败：best-effort，忽略
+            }
+        });
+    }
+
+    private static void evictDisk(Path dir, long keepBelow) {
+        try (Stream<Path> s = Files.list(dir)) {
+            List<Path> files = s
+                    .filter(p -> p.getFileName().toString().endsWith(".dec"))
+                    .sorted(Comparator.comparingLong(p -> p.toFile().lastModified()))
+                    .collect(Collectors.toList());
+            long toRemove = files.size() - keepBelow;
+            for (int i = 0; i < toRemove && i < files.size(); i++) {
+                try { Files.deleteIfExists(files.get(i)); diskCount.decrementAndGet(); } // NOSONAR(S1141) - try-with-resources 内嵌删除，不拆分
+                catch (IOException ignored) { /* 忽略 */ }
+            }
+        } catch (IOException ignored) { /* 忽略目录枚举失败 */ }
+    }
+
+    /** 磁盘缓存命中计数（自 JVM 启动），供状态栏/日志诊断，可选调用。 */
+    public static long getDiskHits() { return diskHits.get(); }
+
     public Decompiler(Path cfrJar, String javaBin) {
         this.cfrJar = cfrJar;
         this.javaBin = javaBin;
@@ -68,7 +190,7 @@ public final class Decompiler {
             Class.forName("org.benf.cfr.reader.api.CfrDriver", false,
                     Decompiler.class.getClassLoader());
             avail = true;
-        } catch (Throwable t) {
+        } catch (Exception | LinkageError t) {
             avail = false;
         }
         this.inProcessCfrAvailable = avail;
@@ -78,9 +200,16 @@ public final class Decompiler {
      *  P1-1：sha256(bytes) 命中缓存则直接返回，否则 CFR 并写入缓存。 */
     private String decompileOne(byte[] classBytes) throws IOException {
         String cacheKey = sha256Hex(classBytes);
+        // 1) 内存 LRU 命中
         String cached = decompileCache.get(cacheKey);
         if (cached != null) {
             return cached;
+        }
+        // 2) 跨会话磁盘命中（内容寻址）→ 回填内存 LRU
+        String diskCached = diskGet(cacheKey);
+        if (diskCached != null) {
+            decompileCache.put(cacheKey, diskCached);
+            return diskCached;
         }
 
         File tmp = File.createTempFile("bempdiff-cls-", ".class");
@@ -104,6 +233,7 @@ public final class Decompiler {
                 result = javap(tmp);
             }
             decompileCache.put(cacheKey, result);
+            diskPutAsync(cacheKey, result); // 3) 异步落盘，跨会话命中（D5）
             return result;
         } finally {
             Files.delete(tmp.toPath());
@@ -129,13 +259,7 @@ public final class Decompiler {
             @Override
             public Sink<Decompiled> getSink(SinkType sinkType, SinkClass sinkClass) {
                 if (sinkType == SinkType.JAVA && sinkClass == SinkClass.DECOMPILED) {
-                    return new Sink<Decompiled>() {
-                        @Override
-                        public void write(Decompiled d) {
-                            // DECOMPILED 槽投递 SinkReturns.Decompiled（非 String），取 getJava() 得源码
-                            sb.append(d.getJava());
-                        }
-                    };
+                    return d -> sb.append(d.getJava()); // DECOMPILED 槽投递 SinkReturns.Decompiled（非 String），取 getJava() 得源码
                 }
                 return null;
             }
@@ -230,7 +354,14 @@ public final class Decompiler {
             String diff = unifiedDiff(oldSrc, newSrc, rules);
             boolean degraded = (oldSrc != null && oldSrc.startsWith("// [降级]"))
                     || (newSrc != null && newSrc.startsWith("// [降级]"));
-            String engine = degraded ? JAVAP : (inProcessCfrAvailable ? "cfr(in-process)" : "cfr");
+            String engine;
+            if (degraded) {
+                engine = JAVAP;
+            } else if (inProcessCfrAvailable) {
+                engine = "cfr(in-process)";
+            } else {
+                engine = "cfr";
+            }
             return new DecompiledUnit(key, oldSrc, newSrc, diff, engine, "", true);
         } catch (IOException e) {
             return DecompiledUnit.fail(key, e.getMessage());
@@ -252,14 +383,9 @@ public final class Decompiler {
             return j.substring(0, j.length() - "java.exe".length()) + "javap.exe";
         }
         if (j != null && j.endsWith("java")) {
-            return j.substring(0, j.length() - 4) + "javap";
+            return j.substring(0, j.length() - 4) + JAVAP;
         }
-        return "javap"; // 兜底：依赖 PATH
-    }
-
-    /** 生成统一格式 diff 文本（默认规则，等价于旧行为）。 */
-    private static String unifiedDiff(String oldSrc, String newSrc) {
-        return unifiedDiff(oldSrc, newSrc, DiffRules.DEFAULT);
+        return JAVAP; // 兜底：依赖 PATH
     }
 
     /** 生成统一格式 diff 文本（P0-②：带忽略规则）。 */
@@ -281,13 +407,8 @@ public final class Decompiler {
         return Arrays.asList(s.split("\n", -1));
     }
 
-    /** 轻量行级 diff（LCS），输出带 +/- 前缀的合并视图（默认规则）。 */
-    private static List<String> simpleDiff(List<String> a, List<String> b) {
-        return simpleDiff(a, b, DiffRules.DEFAULT);
-    }
-
     /** 轻量行级 diff（LCS），带忽略规则：归一化行用于匹配，输出仍为原始行（P0-②）。 */
-    private static List<String> simpleDiff(List<String> a, List<String> b, DiffRules rules) {
+    private static List<String> simpleDiff(List<String> a, List<String> b, DiffRules rules) { // NOSONAR(S3776) - LCS 算法递推，分支源于必要监控
         int n = a.size();
         int m = b.size();
         List<String> ak = new ArrayList<>(n);

@@ -54,6 +54,26 @@ public interface AiAnalyzer {
         return stageB(candidates, cfg);
     }
 
+    /** 构建阶段A prompt（聚焦类别增强）：focus 非空时追加聚焦指令，引导模型在该维度深入。 */
+    default String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
+        return buildStageAPrompt(diff, decompiled, cfg, ctx);
+    }
+
+    /** 构建阶段B 单文件 prompt（聚焦类别增强）。 */
+    default String buildStageBPrompt(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg, ProjectContext ctx, String focus) {
+        return buildStageBPrompt(key, unit, fc, cfg, ctx);
+    }
+
+    /** 阶段A（聚焦类别增强）。 */
+    default StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
+        return stageA(diff, decompiled, cfg, ctx);
+    }
+
+    /** 阶段B（聚焦类别增强）。 */
+    default List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx, String focus) {
+        return stageB(candidates, cfg, ctx);
+    }
+
     /** 连接测试（设置弹窗「测试」按钮，FR9.4）。 */
     boolean testConnection(AiConfig cfg);
 

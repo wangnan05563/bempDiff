@@ -30,13 +30,17 @@ import java.util.Map;
  */
 public final class MarkdownReport {
 
+    private static final String DIFF_OPEN = "```diff\n";
+    private static final String DIFF_CLOSE = "\n```\n\n";
+    private static final String BESIDES = "> 另有 ";
+
     private final int topK;
 
     public MarkdownReport(int topK) {
         this.topK = topK;
     }
 
-    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                           DiffResult r, DiffStats stats,
                           Map<String, DecompiledUnit> decompiled,
                           Map<String, DecompiledUnit> text) {
@@ -44,7 +48,7 @@ public final class MarkdownReport {
     }
 
     /** 渲染（含差异依赖 JAR 内部源码对比章节）。libJar 为 null 时跳过该章节。 */
-    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                           DiffResult r, DiffStats stats,
                           Map<String, DecompiledUnit> decompiled,
                           Map<String, DecompiledUnit> text, LibJarDiff.Result libJar) {
@@ -65,7 +69,8 @@ public final class MarkdownReport {
      * 渲染（含 AI 智能分析章节与项目级上下文增强）。无 AI 数据时 summary/fileAnalyses 传 null，
      * 未启用上下文增强时 ctx 传 null —— 均向后兼容原 6 参 render。
      */
-    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    // NOSONAR: 多参重载为既有公开 API，签名不可变更（见任务约束）。
+    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                           DiffResult r, DiffStats stats,
                           Map<String, DecompiledUnit> decompiled,
                           Map<String, DecompiledUnit> text,
@@ -75,7 +80,8 @@ public final class MarkdownReport {
     }
 
     /** 渲染（含差异依赖 JAR 内部源码对比章节 + AI 智能分析章节）。libJar 为 null 时跳过 JAR 章节。 */
-    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    // NOSONAR: 多参重载为既有公开 API，签名不可变更（见任务约束）。
+    public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                           DiffResult r, DiffStats stats,
                           Map<String, DecompiledUnit> decompiled,
                           Map<String, DecompiledUnit> text,
@@ -95,67 +101,96 @@ public final class MarkdownReport {
         return sb.toString();
     }
 
-    /** 追加 AI 智能分析章节：项目级上下文摘要 + 阶段A 概览（含上下文影响）+ 阶段B 逐文件（含上下文影响）。 */
+    /** 追加 AI 智能分析章节：项目级上下文摘要 + 阶段A 概览 + 阶段B 逐文件。 */
     private void appendAiSection(StringBuilder sb, StageASummary summary,
                                  List<FileAnalysis> fileAnalyses, ProjectContext ctx) {
         sb.append("## 七、AI 智能分析（两阶段 / 项目级上下文增强）\n");
-        if (ctx != null && !ctx.isEmpty()) {
-            sb.append("### 项目级上下文（分析依据）\n");
-            sb.append("- 构建系统：").append(nullToNA(ctx.getBuildSystem())).append("\n");
-            sb.append("- 模块：").append(join(ctx.getModules())).append("\n");
-            sb.append("- 核心依赖：").append(join(ctx.getDependencies())).append("\n");
-            sb.append("- 配置文件：").append(join(ctx.getConfigFiles())).append("\n");
-            if (ctx.getSummary() != null && !ctx.getSummary().isEmpty()) {
-                sb.append("- 架构简述：").append(ctx.getSummary()).append("\n");
-            }
-            sb.append("\n");
-        }
-        if (summary != null) {
-            sb.append("### 阶段A 概览\n");
-            sb.append("- 整体风险：**").append(nullToNA(summary.getOverallRisk())).append("**\n");
-            sb.append("- 影响范围：").append(nullToNA(summary.getImpactScope())).append("\n");
-            if (summary.getContextInfluence() != null && !summary.getContextInfluence().isEmpty()) {
-                sb.append("- **项目上下文影响**：").append(summary.getContextInfluence()).append("\n");
-            }
-            if (summary.getTestThemes() != null && !summary.getTestThemes().isEmpty()) {
-                sb.append("- 测试主题：").append(String.join("；", summary.getTestThemes())).append("\n");
-            }
-            if (summary.getFileRisks() != null && !summary.getFileRisks().isEmpty()) {
-                sb.append("- 每文件初评风险：\n");
-                for (FileRisk fr : summary.getFileRisks()) {
-                    sb.append("  - `").append(nullToNA(fr.getKey())).append("`：**")
-                            .append(nullToNA(fr.getRisk())).append("** — ").append(nullToNA(fr.getOneLineReason())).append("\n");
-                }
-            }
-            sb.append("\n");
-        }
-        if (fileAnalyses != null && !fileAnalyses.isEmpty()) {
-            sb.append("### 阶段B 逐文件深读\n");
-            for (FileAnalysis fa : fileAnalyses) {
-                sb.append("#### ").append(nullToNA(fa.getKey())).append("\n");
-                sb.append("- 风险：**").append(nullToNA(fa.getRisk())).append("**\n");
-                sb.append("- 意图：").append(nullToNA(fa.getIntent())).append("\n");
-                sb.append("- 影响：").append(nullToNA(fa.getImpact())).append("\n");
-                if (fa.getContextInfluence() != null && !fa.getContextInfluence().isEmpty()) {
-                    sb.append("- **项目上下文影响**：").append(fa.getContextInfluence()).append("\n");
-                }
-                if (fa.getTestPoints() != null && !fa.getTestPoints().isEmpty()) {
-                    sb.append("- 测试要点：\n");
-                    for (String tp : fa.getTestPoints()) {
-                        sb.append("  - ").append(tp).append("\n");
-                    }
-                }
-                sb.append("\n");
-            }
-        }
+        appendAiContext(sb, ctx);
+        appendStageASummary(sb, summary);
+        appendStageB(sb, fileAnalyses);
         if ((ctx == null || ctx.isEmpty()) && summary == null) {
             sb.append("- 未启用 AI 分析 / 项目级上下文增强。\n");
         }
         sb.append("\n");
     }
 
+    private void appendAiContext(StringBuilder sb, ProjectContext ctx) {
+        if (ctx == null || ctx.isEmpty()) {
+            return;
+        }
+        sb.append("### 项目级上下文（分析依据）\n");
+        sb.append("- 构建系统：").append(nullToNA(ctx.getBuildSystem())).append("\n");
+        sb.append("- 模块：").append(join(ctx.getModules())).append("\n");
+        sb.append("- 核心依赖：").append(join(ctx.getDependencies())).append("\n");
+        sb.append("- 配置文件：").append(join(ctx.getConfigFiles())).append("\n");
+        if (!isEmpty(ctx.getSummary())) {
+            sb.append("- 架构简述：").append(ctx.getSummary()).append("\n");
+        }
+        sb.append("\n");
+    }
+
+    private void appendStageASummary(StringBuilder sb, StageASummary summary) {
+        if (summary == null) {
+            return;
+        }
+        sb.append("### 阶段A 概览\n");
+        sb.append("- 整体风险：**").append(nullToNA(summary.getOverallRisk())).append("**\n");
+        sb.append("- 影响范围：").append(nullToNA(summary.getImpactScope())).append("\n");
+        if (!isEmpty(summary.getContextInfluence())) {
+            sb.append("- **项目上下文影响**：").append(summary.getContextInfluence()).append("\n");
+        }
+        if (!isEmptyList(summary.getTestThemes())) {
+            sb.append("- 测试主题：").append(String.join("；", summary.getTestThemes())).append("\n");
+        }
+        if (!isEmptyList(summary.getFileRisks())) {
+            sb.append("- 每文件初评风险：\n");
+            for (FileRisk fr : summary.getFileRisks()) {
+                sb.append("  - `").append(nullToNA(fr.getKey())).append("`：**")
+                        .append(nullToNA(fr.getRisk())).append("** — ").append(nullToNA(fr.getOneLineReason())).append("\n");
+            }
+        }
+        sb.append("\n");
+    }
+
+    private void appendStageB(StringBuilder sb, List<FileAnalysis> fileAnalyses) {
+        if (isEmptyList(fileAnalyses)) {
+            return;
+        }
+        sb.append("### 阶段B 逐文件深读\n");
+        for (FileAnalysis fa : fileAnalyses) {
+            appendFileAnalysis(sb, fa);
+        }
+    }
+
+    private void appendFileAnalysis(StringBuilder sb, FileAnalysis fa) {
+        sb.append("#### ").append(nullToNA(fa.getKey())).append("\n");
+        sb.append("- 风险：**").append(nullToNA(fa.getRisk())).append("**\n");
+        sb.append("- 意图：").append(nullToNA(fa.getIntent())).append("\n");
+        sb.append("- 影响：").append(nullToNA(fa.getImpact())).append("\n");
+        if (!isEmpty(fa.getContextInfluence())) {
+            sb.append("- **项目上下文影响**：").append(fa.getContextInfluence()).append("\n");
+        }
+        if (!isEmptyList(fa.getTestPoints())) {
+            sb.append("- 测试要点：\n");
+            for (String tp : fa.getTestPoints()) {
+                sb.append("  - ").append(tp).append("\n");
+            }
+        }
+        sb.append("\n");
+    }
+
+    private static boolean isEmpty(String s) {
+        return s == null || s.isEmpty();
+    }
+
+    private static boolean isEmptyList(List<?> l) {
+        return l == null || l.isEmpty();
+    }
+
     private static String join(List<String> l) {
-        if (l == null || l.isEmpty()) return "（无）";
+        if (isEmptyList(l)) {
+            return "（无）";
+        }
         return String.join("、", l);
     }
 
@@ -200,12 +235,12 @@ public final class MarkdownReport {
                 sb.append("- 反编译失败：").append(u.getError()).append("\n\n");
             } else {
                 sb.append("- 反编译引擎：").append(u.getEngine()).append("\n");
-                sb.append("```diff\n").append(u.getDiffText() == null ? "" : u.getDiffText()).append("\n```\n\n");
+                sb.append(DIFF_OPEN).append(u.getDiffText() == null ? "" : u.getDiffText()).append(DIFF_CLOSE);
                 shown++;
             }
         }
         if (decompiled.size() > topK) {
-            sb.append("> 另有 ").append(decompiled.size() - topK).append(" 个修改类未展开（Top-K 限制）。\n\n");
+            sb.append(BESIDES).append(decompiled.size() - topK).append(" 个修改类未展开（Top-K 限制）。\n\n");
         }
     }
 
@@ -227,54 +262,75 @@ public final class MarkdownReport {
           .append(libJar.totalAdded).append(" · 删除 ").append(libJar.totalRemoved)
           .append(" · 修改 ").append(libJar.totalModified).append(" · 未变 ")
           .append(libJar.totalUnchanged).append("。\n\n");
-
         for (LibJarDiff.DiffJarInfo jar : libJar.jars) {
-            if (jar.failed) {
-                sb.append("### ").append(jar.jarKey).append("  [分析失败]\n");
-                sb.append("- ⚠️ 该 JAR 读取/枚举失败，已跳过（不影响其余 JAR 与报告其余章节）：")
-                  .append(jar.error == null ? "未知错误" : jar.error).append("\n\n");
-                continue;
-            }
-            sb.append("### ").append(jar.jarKey).append("  [")
-              .append(statusLabel(jar.jarStatus)).append("]\n");
-            sb.append("- 内部 class：新增 **").append(jar.added).append("** · 删除 **").append(jar.removed)
-              .append("** · 修改 **").append(jar.modified).append("** · 未变 ").append(jar.unchanged).append("\n\n");
+            renderJarDetail(sb, jar);
+        }
+    }
 
-            int shown = 0;
-            for (LibJarDiff.LibClassUnit u : jar.classes) {
-                DecompiledUnit du = u.unit;
-                if (du == null || !du.isOk()) {
-                    // 未反编译（Top-K 之外）或反编译失败：仅状态标注，不展开源码
-                    if (du != null && !du.isOk()) {
-                        sb.append("- `").append(u.innerClass).append("` [").append(statusLabel(u.status))
-                          .append("] 反编译失败：").append(du.getError()).append("\n");
-                    }
-                    continue;
-                }
-                if (shown >= topK) {
-                    continue;
-                }
-                sb.append("#### ").append(u.innerClass).append("  [").append(statusLabel(u.status)).append("]\n");
-                sb.append("- 反编译引擎：").append(du.getEngine()).append("\n");
-                sb.append("```diff\n").append(du.getDiffText() == null ? "" : du.getDiffText()).append("\n```\n\n");
-                shown++;
+    /** 渲染单个差异 JAR 的详情：标题、内部 class 状态统计与逐 class 的源码对比。 */
+    private void renderJarDetail(StringBuilder sb, LibJarDiff.DiffJarInfo jar) {
+        if (jar.failed) {
+            sb.append("### ").append(jar.jarKey).append("  [分析失败]\n");
+            sb.append("- ⚠️ 该 JAR 读取/枚举失败，已跳过（不影响其余 JAR 与报告其余章节）：")
+              .append(jar.error == null ? "未知错误" : jar.error).append("\n\n");
+            return;
+        }
+        sb.append("### ").append(jar.jarKey).append("  [")
+          .append(statusLabel(jar.jarStatus)).append("]\n");
+        sb.append("- 内部 class：新增 **").append(jar.added).append("** · 删除 **").append(jar.removed)
+          .append("** · 修改 **").append(jar.modified).append("** · 未变 ").append(jar.unchanged).append("\n\n");
+        int shown = 0;
+        for (LibJarDiff.LibClassUnit u : jar.classes) {
+            shown = renderOneLibClass(sb, u, shown);
+        }
+        appendJarClassSummary(sb, jar);
+    }
+
+    /** 渲染单个 lib 内部 class 的对比条目，返回最新已展开条数（用于 Top-K 截断）。 */
+    private int renderOneLibClass(StringBuilder sb, LibJarDiff.LibClassUnit u, int shown) {
+        DecompiledUnit du = u.unit;
+        if (du == null) {
+            // 未提供反编译单元（Top-K 之外）：仅跳过，不做任何展示。
+            return shown;
+        }
+        if (!du.isOk()) {
+            sb.append("- `").append(u.innerClass).append("` [").append(statusLabel(u.status))
+              .append("] 反编译失败：").append(du.getError()).append("\n");
+            return shown;
+        }
+        if (shown >= topK) {
+            return shown;
+        }
+        sb.append("#### ").append(u.innerClass).append("  [").append(statusLabel(u.status)).append("]\n");
+        sb.append("- 反编译引擎：").append(du.getEngine()).append("\n");
+        sb.append(DIFF_OPEN).append(du.getDiffText() == null ? "" : du.getDiffText()).append(DIFF_CLOSE);
+        return shown + 1;
+    }
+
+    /** 收尾计数拆分：未变更 / 反编译失败 / 超出全局 Top-K 三类，避免把未变更误归为 Top-K 限制。 */
+    private static void appendJarClassSummary(StringBuilder sb, LibJarDiff.DiffJarInfo jar) {
+        long unchanged = 0;
+        long failedUnits = 0;
+        long decompiledCount = 0;
+        for (LibJarDiff.LibClassUnit u : jar.classes) {
+            if (u.status == DiffStatus.UNCHANGED) {
+                unchanged++;
             }
-            // 收尾计数拆分：未变更 / 反编译失败 / 超出全局 Top-K 三类，避免把未变更误归为 Top-K 限制
-            long unchanged = 0, failedUnits = 0, decompiledCount = 0;
-            for (LibJarDiff.LibClassUnit u : jar.classes) {
-                if (u.status == DiffStatus.UNCHANGED) unchanged++;
-                if (u.unit != null && !u.unit.isOk()) failedUnits++;
-                if (u.unit != null && u.unit.isOk()) decompiledCount++;
+            if (u.unit != null && !u.unit.isOk()) {
+                failedUnits++;
             }
-            long beyondTopK = jar.classes.size() - unchanged - failedUnits - decompiledCount;
-            List<String> parts = new java.util.ArrayList<>();
-            if (beyondTopK > 0) parts.add(beyondTopK + " 个超出全局 Top-K 未展开源码");
-            if (unchanged > 0) parts.add(unchanged + " 个未变更（已折叠，无需反编译）");
-            if (failedUnits > 0) parts.add(failedUnits + " 个反编译失败");
-            if (!parts.isEmpty()) {
-                sb.append("> 另有 ").append(String.join(" · ", parts)).append("；")
-                  .append("可在 GUI 双击该 JAR 查看全部内部 class 的逐项反编译对比。\n\n");
+            if (u.unit != null && u.unit.isOk()) {
+                decompiledCount++;
             }
+        }
+        long beyondTopK = jar.classes.size() - unchanged - failedUnits - decompiledCount;
+        List<String> parts = new java.util.ArrayList<>();
+        if (beyondTopK > 0) parts.add(beyondTopK + " 个超出全局 Top-K 未展开源码");
+        if (unchanged > 0) parts.add(unchanged + " 个未变更（已折叠，无需反编译）");
+        if (failedUnits > 0) parts.add(failedUnits + " 个反编译失败");
+        if (!parts.isEmpty()) {
+            sb.append(BESIDES).append(String.join(" · ", parts)).append("；")
+              .append("可在 GUI 双击该 JAR 查看全部内部 class 的逐项反编译对比。\n\n");
         }
     }
 
@@ -282,7 +338,9 @@ public final class MarkdownReport {
     private static long countJarStatus(LibJarDiff.Result libJar, DiffStatus st) {
         long c = 0;
         for (LibJarDiff.DiffJarInfo jar : libJar.jars) {
-            if (jar.jarStatus == st) c++;
+            if (jar.jarStatus == st) {
+                c++;
+            }
         }
         return c;
     }
@@ -305,13 +363,19 @@ public final class MarkdownReport {
         for (DiffStatus st : order) {
             for (String k : r.get(st)) {
                 LogicalEntry e = oldSnap.getEntries().get(k);
-                if (e == null) e = newSnap.getEntries().get(k);
+                if (e == null) {
+                    e = newSnap.getEntries().get(k);
+                }
                 FileClass fc = (e != null) ? e.getFileClass() : FileClass.OTHER;
                 String cat = fc.categoryLabel();
                 long[] c = counts.computeIfAbsent(cat, x -> new long[3]);
-                if (st == DiffStatus.ADDED) c[0]++;
-                else if (st == DiffStatus.DELETED) c[1]++;
-                else c[2]++;
+                if (st == DiffStatus.ADDED) {
+                    c[0]++;
+                } else if (st == DiffStatus.DELETED) {
+                    c[1]++;
+                } else {
+                    c[2]++;
+                }
             }
         }
         sb.append("### 按文件类型分布\n");
@@ -329,12 +393,14 @@ public final class MarkdownReport {
           .append("** | **").append(totalModified).append("** |\n\n");
     }
 
-    /** 文本类文件内容差异（配置文件 XML/Properties、JSP、前端 JS/HTML/CSS）：压缩/单行资源已
-     *  美化或换行归一后做内容级逐行 diff，使改动可读（FR4.4 增强 + 本需求扩展）。 */
+    /**
+     * 文本类文件内容差异（配置文件 XML/Properties、JSP、前端 JS/HTML/CSS）：压缩/单行资源已
+     * 美化或换行归一后做内容级逐行 diff，使改动可读（FR4.4 增强 + 本需求扩展）。
+     */
     private void renderTextDiff(StringBuilder sb, Map<String, DecompiledUnit> text) {
         sb.append("## 四、文本类文件内容差异（Top-").append(topK)
           .append(" 修改/新增/删除 配置文件/JSP/JS/HTML/CSS）\n");
-        if (text == null || text.isEmpty()) {
+        if (isEmptyMap(text)) {
             sb.append("- 无文本类文件（配置文件/JSP/前端源码）变动。\n\n");
             return;
         }
@@ -351,13 +417,17 @@ public final class MarkdownReport {
                 sb.append("- 读取/美化失败：").append(u.getError()).append("\n\n");
             } else {
                 sb.append("- 处理引擎：").append(u.getEngine()).append("\n");
-                sb.append("```diff\n").append(u.getDiffText() == null ? "" : u.getDiffText()).append("\n```\n\n");
+                sb.append(DIFF_OPEN).append(u.getDiffText() == null ? "" : u.getDiffText()).append(DIFF_CLOSE);
                 shown++;
             }
         }
         if (text.size() > topK) {
-            sb.append("> 另有 ").append(text.size() - topK).append(" 个文本类文件未展开（Top-K 限制）。\n\n");
+            sb.append(BESIDES).append(text.size() - topK).append(" 个文本类文件未展开（Top-K 限制）。\n\n");
         }
+    }
+
+    private static boolean isEmptyMap(Map<?, ?> m) {
+        return m == null || m.isEmpty();
     }
 
     private void renderBreakingChanges(StringBuilder sb, DiffResult r) {
@@ -381,7 +451,7 @@ public final class MarkdownReport {
         sb.append("- AI 分析：").append(aiEnabled ? "已接入（含项目级上下文增强）" : "未接入，本报告不含 AI 章节。").append("\n");
     }
 
-    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                             DiffResult r, DiffStats stats,
                             Map<String, DecompiledUnit> decompiled,
                             Map<String, DecompiledUnit> text, Path outFile) throws IOException {
@@ -389,21 +459,19 @@ public final class MarkdownReport {
     }
 
     /** 写报告（含差异依赖 JAR 内部源码对比章节）。 */
-    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    // NOSONAR: 多参重载为既有公开 API，签名不可变更（见任务约束）。
+    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                             DiffResult r, DiffStats stats,
                             Map<String, DecompiledUnit> decompiled,
                             Map<String, DecompiledUnit> text, LibJarDiff.Result libJar,
                             Path outFile) throws IOException {
         String md = render(oldSnap, newSnap, r, stats, decompiled, text, libJar);
-        Path parent = outFile.getParent();
-        if (parent != null) Files.createDirectories(parent);  // 防御：输出目录可能不存在
-        try (Writer w = Files.newBufferedWriter(outFile, StandardCharsets.UTF_8)) {
-            w.write(md);
-        }
+        writeMd(outFile, md);
     }
 
     /** 写报告（含 AI 智能分析章节与项目级上下文增强）。 */
-    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    // NOSONAR: 多参重载为既有公开 API，签名不可变更（见任务约束）。
+    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                             DiffResult r, DiffStats stats,
                             Map<String, DecompiledUnit> decompiled,
                             Map<String, DecompiledUnit> text,
@@ -414,15 +482,23 @@ public final class MarkdownReport {
     }
 
     /** 写报告（含 AI 智能分析章节、项目级上下文增强与差异依赖 JAR 内部源码对比章节）。 */
-    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+    // NOSONAR: 多参重载为既有公开 API，签名不可变更（见任务约束）。
+    public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
                             DiffResult r, DiffStats stats,
                             Map<String, DecompiledUnit> decompiled,
                             Map<String, DecompiledUnit> text,
                             StageASummary summary, List<FileAnalysis> fileAnalyses,
                             ProjectContext ctx, LibJarDiff.Result libJar, Path outFile) throws IOException {
         String md = render(oldSnap, newSnap, r, stats, decompiled, text, summary, fileAnalyses, ctx, libJar);
+        writeMd(outFile, md);
+    }
+
+    /** 将报告串联内容写入目标文件，必要时先创建父目录。 */
+    private static void writeMd(Path outFile, String md) throws IOException {
         Path parent = outFile.getParent();
-        if (parent != null) Files.createDirectories(parent);
+        if (parent != null) {
+            Files.createDirectories(parent); // 防御：输出目录可能不存在
+        }
         try (Writer w = Files.newBufferedWriter(outFile, StandardCharsets.UTF_8)) {
             w.write(md);
         }

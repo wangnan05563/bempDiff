@@ -46,6 +46,9 @@ echo "==> 运行 TestRunner"
   com.bempdiff.test.FolderDiffTest \
   com.bempdiff.test.ProfileTest \
   com.bempdiff.test.VendorConfigTest \
+  com.bempdiff.test.ServerConfigTest \
+  com.bempdiff.test.ArchiveDiffTest \
+  com.bempdiff.test.ArchiveChildrenTest \
   com.bempdiff.test.ProjectContextTest \
   com.bempdiff.test.ContextPromptTest \
   com.bempdiff.test.ContextAiTest

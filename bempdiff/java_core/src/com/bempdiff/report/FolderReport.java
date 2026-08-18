@@ -6,7 +6,6 @@ import com.bempdiff.diff.FolderEntryFormatter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 
 /**
@@ -28,16 +27,16 @@ public final class FolderReport {
         sb.append("## 一、差异汇总\n\n");
         sb.append("| 维度 | 数量 |\n");
         sb.append("|---|---|\n");
-        sb.append("| 仅左侧存在 (LEFT_ONLY) | ").append(r.summary.leftOnly).append(" |\n");
-        sb.append("| 仅右侧存在 (RIGHT_ONLY) | ").append(r.summary.rightOnly).append(" |\n");
-        sb.append("| 两侧不同 (MODIFIED) | ").append(r.summary.modified).append(" |\n");
-        sb.append("| 　├ 内容不同 | ").append(r.summary.contentChanged).append(" |\n");
-        sb.append("| 　└ 仅属性不同 | ").append(r.summary.attrOnlyChanged).append(" |\n");
-        sb.append("| 完全相同 (SAME) | ").append(r.summary.same).append(" |\n");
-        sb.append("| 类型冲突 (TYPE_MISMATCH) | ").append(r.summary.typeMismatch).append(" |\n");
-        sb.append("| 扫描文件 / 目录 | ").append(r.summary.scannedFiles).append(" / ")
-                .append(r.summary.scannedDirs).append(" |\n");
-        sb.append("| 读取错误（已隔离） | ").append(r.summary.errors).append(" |\n\n");
+        sb.append("| 仅左侧存在 (LEFT_ONLY) | ").append(r.summary.getLeftOnly()).append(" |\n");
+        sb.append("| 仅右侧存在 (RIGHT_ONLY) | ").append(r.summary.getRightOnly()).append(" |\n");
+        sb.append("| 两侧不同 (MODIFIED) | ").append(r.summary.getModified()).append(" |\n");
+        sb.append("|   ├ 内容不同 | ").append(r.summary.getContentChanged()).append(" |\n");
+        sb.append("|   └ 仅属性不同 | ").append(r.summary.getAttrOnlyChanged()).append(" |\n");
+        sb.append("| 完全相同 (SAME) | ").append(r.summary.getSame()).append(" |\n");
+        sb.append("| 类型冲突 (TYPE_MISMATCH) | ").append(r.summary.getTypeMismatch()).append(" |\n");
+        sb.append("| 扫描文件 / 目录 | ").append(r.summary.getScannedFiles()).append(" / ")
+                .append(r.summary.getScannedDirs()).append(" |\n");
+        sb.append("| 读取错误（已隔离） | ").append(r.summary.getErrors()).append(" |\n\n");
 
         sb.append("## 二、差异树（展开视图）\n\n");
         sb.append("图例：`[<]` 仅左侧  `[>]` 仅右侧  `[*]` 两侧不同  `[!]` 类型冲突  `[=]` 相同\n\n");

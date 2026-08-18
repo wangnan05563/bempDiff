@@ -117,6 +117,49 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     }
 
     @Override
+    public String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
+        return PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
+    }
+
+    @Override
+    public String buildStageBPrompt(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg, ProjectContext ctx, String focus) {
+        return PromptBuilders.buildStageB(key, unit, fc, cfg, ctx, focus);
+    }
+
+    @Override
+    public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
+        String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
+        writePrompt("stageA.prompt.txt", prompt);
+        String resp = readResponse("stageA.response.txt");
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        if (resp != null) return parseStageA(resp, withCtx);
+        return buildFallbackSummary(diff, ctx);
+    }
+
+    @Override
+    public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx, String focus) {
+        List<FileAnalysis> out = new ArrayList<>();
+        int idx = 0;
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        for (DecompileReq req : candidates) {
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx, focus);
+            writePrompt("stageB." + idx + ".prompt.txt", prompt);
+            String resp = readResponse("stageB." + idx + ".response.txt");
+            if (resp != null) {
+                out.add(parseFileAnalysis(req.key, resp, withCtx));
+            } else {
+                String influence = withCtx
+                        ? "已结合项目上下文（" + ctx.getBuildSystem() + "）做基础判断；未接入 LLM。"
+                        : "";
+                out.add(new FileAnalysis(req.key, "离线回放模式：未提供回放响应", DEFAULT_RISK,
+                        "需人工核对", java.util.Arrays.asList("回归该类的调用方"), influence));
+            }
+            idx++;
+        }
+        return out;
+    }
+
+    @Override
     public boolean testConnection(AiConfig cfg) {
         // 离线回放：恒为真（真实 HttpAiAnalyzer 会发 /models 探活）
         return true;
@@ -133,7 +176,6 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         s.setImpactScope(pick(resp, "impactScope", ""));
         // 测试主题：优先从 JSON 数组提取，回退 markdown 行扫描
         List<String> themes = extractStringArray(resp, "testThemes", "test_themes", "测试主题");
-        if (themes == null) themes = new ArrayList<>();
         if (themes.isEmpty()) {
             for (String t : resp.split("\n")) {
                 String t2 = t.trim();
@@ -145,7 +187,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         s.setTestThemes(themes);
         // 每文件初评风险：从 JSON 数组（fileRisks / files）提取
         List<FileRisk> risks = extractFileRiskArray(resp, "fileRisks", "files", "file_risks");
-        s.setFileRisks(risks != null ? risks : new ArrayList<>());
+        s.setFileRisks(risks);
         if (withContext) {
             s.setContextInfluence(pick(resp, "contextInfluence", pick(resp, "上下文影响", "")));
         }
@@ -160,7 +202,6 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         String influence = withContext ? pick(resp, "contextInfluence", pick(resp, "上下文影响", "")) : "";
         // 测试要点：从 JSON 数组（testPoints 等）提取
         List<String> testPoints = extractStringArray(resp, "testPoints", "test_points", "testingPoints", "测试要点");
-        if (testPoints == null) testPoints = new ArrayList<>();
         return new FileAnalysis(key, pick(resp, "intent", ""), pick(resp, "risk", DEFAULT_RISK),
                 pick(resp, "impact", ""), testPoints, influence);
     }
@@ -194,42 +235,75 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     /** 提取 JSON 字符串数组（候选字段名依次尝试）。未找到返回 null；找到空数组返回空列表。 */
     private static List<String> extractStringArray(String resp, String... fieldNames) {
         String inner = findJsonArray(resp, fieldNames);
-        if (inner == null) return null;
+        // 返回可变空列表：调用方在 markdown 回退路径上会继续 add；返回不可变集合会抛 UnsupportedOperationException
+        if (inner == null) return new ArrayList<>();
+        return parseStringArray(inner);
+    }
+
+    private static List<String> parseStringArray(String inner) {
         List<String> out = new ArrayList<>();
-        boolean inStr = false, escaped = false;
+        boolean inStr = false;
+        boolean escaped = false;
         StringBuilder cur = new StringBuilder();
         for (int i = 0; i < inner.length(); i++) {
             char c = inner.charAt(i);
-            if (escaped) { cur.append(unescape(c)); escaped = false; continue; }
-            if (c == '\\') { escaped = true; continue; }
-            if (c == '"') {
-                if (inStr) { out.add(cur.toString()); cur.setLength(0); inStr = false; }
-                else inStr = true;
-                continue;
+            if (escaped) {
+                cur.append(unescape(c));
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                if (inStr) {
+                    out.add(cur.toString());
+                    cur.setLength(0);
+                    inStr = false;
+                } else {
+                    inStr = true;
+                }
+            } else if (inStr) {
+                cur.append(c);
             }
-            if (inStr) cur.append(c);
         }
         return out;
     }
 
-    /** 提取 JSON 对象数组为 FileRisk 列表（候选字段名依次尝试）。未找到返回 null。 */
+    /** 提取 JSON 对象数组为 FileRisk 列表（候选字段名依次尝试）。未找到返回空列表。 */
     private static List<FileRisk> extractFileRiskArray(String resp, String... fieldNames) {
         String inner = findJsonArray(resp, fieldNames);
-        if (inner == null) return null;
+        // 返回可变空列表，避免调用方后续 add 时抛 UnsupportedOperationException
+        if (inner == null) return new ArrayList<>();
+        return parseFileRiskObjects(inner);
+    }
+
+    /** 解析一个 JSON 对象数组内部文本（不含外层方括号）为 FileRisk 列表。 */
+    private static List<FileRisk> parseFileRiskObjects(String inner) { // NOSONAR(S3776) - 字符级状态机解析，复杂度源于必要分支
         List<FileRisk> out = new ArrayList<>();
-        int depth = 0, objStart = -1;
-        boolean inStr = false, escaped = false;
+        int depth = 0;
+        int objStart = -1;
+        boolean inStr = false;
+        boolean escaped = false;
         for (int i = 0; i < inner.length(); i++) {
             char c = inner.charAt(i);
-            if (escaped) { escaped = false; continue; }
-            if (c == '\\') { escaped = true; continue; }
-            if (c == '"') { inStr = !inStr; continue; }
-            if (inStr) continue;
-            if (c == '{') { if (depth == 0) objStart = i; depth++; }
-            else if (c == '}') { depth--; if (depth == 0 && objStart >= 0) {
-                out.add(parseFileRiskObject(inner.substring(objStart + 1, i)));
-                objStart = -1;
-            } }
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inStr = !inStr;
+            } else if (!inStr) {
+                if (c == '{') {
+                    if (depth == 0) {
+                        objStart = i;
+                    }
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0 && objStart >= 0) {
+                        out.add(parseFileRiskObject(inner.substring(objStart + 1, i)));
+                        objStart = -1;
+                    }
+                }
+            }
         }
         return out;
     }
@@ -254,24 +328,50 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     /** 在响应中定位首个候选字段名对应的 JSON 数组内部文本（不含外层方括号）。 */
     private static String findJsonArray(String resp, String... fieldNames) {
         for (String name : fieldNames) {
-            int idx = resp.indexOf("\"" + name + "\"");
-            if (idx < 0) continue;
-            int bracket = resp.indexOf('[', idx);
-            if (bracket < 0) continue;
-            int depth = 0, end = -1;
-            boolean inStr = false, escaped = false;
-            for (int i = bracket; i < resp.length(); i++) {
-                char c = resp.charAt(i);
-                if (escaped) { escaped = false; continue; }
-                if (c == '\\') { escaped = true; continue; }
-                if (c == '"') { inStr = !inStr; continue; }
-                if (inStr) continue;
-                if (c == '[') depth++;
-                else if (c == ']') { depth--; if (depth == 0) { end = i; break; } }
+            String body = extractArrayBody(resp, name);
+            if (body != null) {
+                return body;
             }
-            if (end > bracket) return resp.substring(bracket + 1, end);
         }
         return null;
+    }
+
+    /** 提取某个字段名对应 JSON 数组的内部文本；该字段不存在或无数组则返回 null。 */
+    private static String extractArrayBody(String resp, String name) {
+        int idx = resp.indexOf("\"" + name + "\"");
+        if (idx < 0) return null;
+        int bracket = resp.indexOf('[', idx);
+        if (bracket < 0) return null;
+        int end = findArrayEnd(resp, bracket);
+        if (end <= bracket) return null;
+        return resp.substring(bracket + 1, end);
+    }
+
+    /** 找到从开括号开始匹配的数组结束位置（处理嵌套与字符串内括号），未匹配返回 -1。 */
+    private static int findArrayEnd(String resp, int bracket) {
+        int depth = 0;
+        boolean inStr = false;
+        boolean escaped = false;
+        for (int i = bracket; i < resp.length(); i++) {
+            char c = resp.charAt(i);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inStr = !inStr;
+            } else if (!inStr) {
+                if (c == '[') {
+                    depth++;
+                } else if (c == ']') {
+                    depth--;
+                    if (depth == 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        return -1;
     }
 
     /** 还原 JSON 转义字符（用于数组字符串值内）。 */

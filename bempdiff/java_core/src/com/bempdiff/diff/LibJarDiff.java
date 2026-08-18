@@ -9,6 +9,7 @@ import com.bempdiff.parse.PackageParser;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -67,7 +68,10 @@ public final class LibJarDiff {
     public static final class DiffJarInfo {
         public final String jarKey;
         public final DiffStatus jarStatus;    // 该 JAR 自身在 war 中的状态
-        public final int added, removed, modified, unchanged;
+        public final int added;
+        public final int removed;
+        public final int modified;
+        public final int unchanged;
         public final List<LibClassUnit> classes; // 全量（含未反编译的，unit 为 null）
         /** 该 JAR 是否因读取/枚举失败而被跳过（失败隔离，避免拖垮整份报告）。 */
         public final boolean failed;
@@ -77,7 +81,7 @@ public final class LibJarDiff {
                            List<LibClassUnit> classes) {
             this(jarKey, jarStatus, added, removed, modified, unchanged, classes, false, null);
         }
-        public DiffJarInfo(String jarKey, DiffStatus jarStatus,
+        public DiffJarInfo(String jarKey, DiffStatus jarStatus, // NOSONAR(S107) 不可变数据容器，参数多但无副作用与重载冲突，builder 属过度设计
                            int added, int removed, int modified, int unchanged,
                            List<LibClassUnit> classes, boolean failed, String error) {
             this.jarKey = jarKey;
@@ -101,7 +105,11 @@ public final class LibJarDiff {
     /** 全部差异 JAR 的对比结论 + 汇总计数。 */
     public static final class Result {
         public final List<DiffJarInfo> jars;
-        public final int totalJars, totalAdded, totalRemoved, totalModified, totalUnchanged;
+        public final int totalJars;
+        public final int totalAdded;
+        public final int totalRemoved;
+        public final int totalModified;
+        public final int totalUnchanged;
         public Result(List<DiffJarInfo> jars, int totalJars,
                       int totalAdded, int totalRemoved, int totalModified, int totalUnchanged) {
             this.jars = jars;
@@ -136,7 +144,10 @@ public final class LibJarDiff {
                                  DiffResult r, Decompiler dec, int topK) {
         List<String> jarKeys = identifyDiffJars(r);
         List<DiffJarInfo> jars = new ArrayList<>();
-        int ta = 0, tr = 0, tm = 0, tu = 0;
+        int ta = 0;
+        int tr = 0;
+        int tm = 0;
+        int tu = 0;
         int budget = Math.max(topK, 0);
         for (String jk : jarKeys) {
             DiffJarInfo info = analyzeJar(oldSnap, newSnap, jk, dec, budget);
@@ -155,8 +166,10 @@ public final class LibJarDiff {
     public static DiffJarInfo analyzeJar(PackageSnapshot oldSnap, PackageSnapshot newSnap,
                                          String jarKey, Decompiler dec, int topK) {
         DiffStatus jarStatus = DiffStatus.UNCHANGED;
-        byte[] oldJar, newJar;
-        Map<String, String> oldSha, newSha;
+        byte[] oldJar;
+        byte[] newJar;
+        Map<String, String> oldSha;
+        Map<String, String> newSha;
         try {
             jarStatus = jarStatusOf(oldSnap, newSnap, jarKey);
             oldJar = readJarBytes(oldSnap, jarKey);
@@ -171,6 +184,31 @@ public final class LibJarDiff {
         }
 
         // 逐 class 状态（TreeMap 保证稳定顺序）
+        TreeMap<String, DiffStatus> classStatus = buildClassStatus(oldSha, newSha);
+
+        int added = 0;
+        int removed = 0;
+        int modified = 0;
+        int unchanged = 0;
+        for (DiffStatus st : classStatus.values()) {
+            switch (st) {
+                case ADDED: added++; break;
+                case DELETED: removed++; break;
+                case MODIFIED: modified++; break;
+                default: unchanged++;
+            }
+        }
+
+        // Top-K 反编译（优先级 MODIFIED → ADDED → DELETED；UNCHANGED 跳过）
+        Map<String, DecompiledUnit> decompiled = decompileTopK(topK, classStatus, oldJar, newJar, dec);
+
+        // 组装全量单元（保留排序），已反编译的带 unit，其余 unit=null
+        List<LibClassUnit> units = buildUnits(classStatus, decompiled);
+        return new DiffJarInfo(jarKey, jarStatus, added, removed, modified, unchanged, units, false, null);
+    }
+
+    /** 合并两侧 class hash 表，判定每个内部 class 的状态（TreeMap 稳定顺序）。 */
+    private static TreeMap<String, DiffStatus> buildClassStatus(Map<String, String> oldSha, Map<String, String> newSha) {
         TreeMap<String, DiffStatus> classStatus = new TreeMap<>();
         TreeSet<String> all = new TreeSet<>();
         all.addAll(oldSha.keySet());
@@ -187,23 +225,27 @@ public final class LibJarDiff {
                 classStatus.put(inner, DiffStatus.ADDED);
             }
         }
+        return classStatus;
+    }
 
-        int added = 0, removed = 0, modified = 0, unchanged = 0;
-        for (DiffStatus st : classStatus.values()) {
-            switch (st) {
-                case ADDED: added++; break;
-                case DELETED: removed++; break;
-                case MODIFIED: modified++; break;
-                default: unchanged++;
-            }
-        }
-
-        // Top-K 反编译（优先级 MODIFIED → ADDED → DELETED；UNCHANGED 跳过）
+    /** 按 Top-K 全局限额反编译：优先级 MODIFIED → ADDED → DELETED，UNCHANGED 跳过。 */
+    private static Map<String, DecompiledUnit> decompileTopK(int topK, TreeMap<String, DiffStatus> classStatus,
+                                                             byte[] oldJar, byte[] newJar, Decompiler dec) {
         Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
         for (DiffStatus want : new DiffStatus[]{DiffStatus.MODIFIED, DiffStatus.ADDED, DiffStatus.DELETED}) {
-            for (String inner : classStatus.keySet()) {
-                if (decompiled.size() >= topK) break;
-                if (classStatus.get(inner) != want) continue;
+            decompileByStatus(decompiled, topK, classStatus, want, oldJar, newJar, dec);
+        }
+        return decompiled;
+    }
+
+    /** 按单一级别反编译 (优先级 MODIFIED → ADDED → DELETED)，达到 topK 即止 */
+    private static void decompileByStatus(Map<String, DecompiledUnit> decompiled, int topK,
+                                          TreeMap<String, DiffStatus> classStatus, DiffStatus want,
+                                          byte[] oldJar, byte[] newJar, Decompiler dec) {
+        for (Map.Entry<String, DiffStatus> en : classStatus.entrySet()) {
+            if (decompiled.size() >= topK) break;
+            String inner = en.getKey();
+            if (en.getValue() == want) {
                 boolean needOld = (want == DiffStatus.MODIFIED || want == DiffStatus.DELETED);
                 boolean needNew = (want == DiffStatus.MODIFIED || want == DiffStatus.ADDED);
                 byte[] ob = needOld ? readClassBytesFrom(oldJar, inner) : null;
@@ -211,13 +253,16 @@ public final class LibJarDiff {
                 decompiled.put(inner, dec.decompileBytes(ob, nb, inner));
             }
         }
+    }
 
-        // 组装全量单元（保留排序），已反编译的带 unit，其余 unit=null
+    /** 组装全量单元（保留 classStatus 排序），已反编译的带 unit，其余 unit=null。 */
+    private static List<LibClassUnit> buildUnits(TreeMap<String, DiffStatus> classStatus,
+                                                 Map<String, DecompiledUnit> decompiled) {
         List<LibClassUnit> units = new ArrayList<>(classStatus.size());
-        for (String inner : classStatus.keySet()) {
-            units.add(new LibClassUnit(inner, classStatus.get(inner), decompiled.get(inner)));
+        for (Map.Entry<String, DiffStatus> en : classStatus.entrySet()) {
+            units.add(new LibClassUnit(en.getKey(), en.getValue(), decompiled.get(en.getKey())));
         }
-        return new DiffJarInfo(jarKey, jarStatus, added, removed, modified, unchanged, units, false, null);
+        return units;
     }
 
     /** 懒加载：取某 lib jar 内单个 class 的字节（供 GUI 点击未预反编译的 class 时调用）。 */
@@ -238,13 +283,14 @@ public final class LibJarDiff {
     }
 
     private static byte[] readJarBytes(PackageSnapshot snap, String jarKey) {
-        if (snap == null) return null;
+        // NOSONAR 起点：null 表示“快照/条目缺失”，与“空 jar（0 字节）”语义不同，不能用空数组替代
+        if (snap == null) return null; // NOSONAR(S1168)
         LogicalEntry e = snap.getEntries().get(jarKey);
-        if (e == null) return null;
+        if (e == null) return null; // NOSONAR(S1168)
         try {
             return new PackageParser().readEntryBytes(snap, e);
         } catch (IOException ex) {
-            throw new RuntimeException("读取 lib jar 失败: " + jarKey, ex);
+            throw new UncheckedIOException("读取 lib jar 失败: " + jarKey, ex);
         }
     }
 
@@ -260,34 +306,34 @@ public final class LibJarDiff {
                 Enumeration<? extends ZipEntry> en = zf.entries();
                 while (en.hasMoreElements()) {
                     ZipEntry e = en.nextElement();
-                    if (e.isDirectory()) continue;
                     String n = sanitize(e.getName());
-                    if (!n.endsWith(".class")) continue;
-                    m.put(n, sha256(readAll(zf, e)));
+                    if (!e.isDirectory() && n.endsWith(".class")) {
+                        m.put(n, sha256(readAll(zf, e)));
+                    }
                 }
             }
         } catch (IOException ex) {
-            throw new RuntimeException("枚举 lib jar 内部 class 失败: " + ex.getMessage(), ex);
+            throw new UncheckedIOException("枚举 lib jar 内部 class 失败: " + ex.getMessage(), ex);
         } finally {
             deleteTemp(tmp);
         }
         return m;
     }
 
-    /** 从 jar 字节读取单个 class 的字节；jar 或条目不存在返回 null。 */
+    /** 从 jar 字节读取单个 class 的字节；jar 或条目不存在返回 null（null 表示未找到，与空字节类区分，不能用空数组替代）。 */
     private static byte[] readClassBytesFrom(byte[] jar, String inner) {
-        if (jar == null) return null;
+        if (jar == null) return null; // NOSONAR(S1168)
         File tmp = null;
         try {
             tmp = writeTempJar(jar);
             try (ZipFile zf = new ZipFile(tmp)) {
                 ZipEntry e = zf.getEntry(inner);
-                if (e == null) return null;
+                if (e == null) return null; // NOSONAR(S1168)
                 return readAll(zf, e);
             }
         } catch (IOException ex) {
             LOG.warning("[LibJarDiff] 读取 lib jar 内部 class 失败: " + inner + " (" + ex.getMessage() + ")");
-            return null;
+            return null; // NOSONAR(S1168)
         } finally {
             deleteTemp(tmp);
         }

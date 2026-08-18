@@ -3,7 +3,6 @@ package com.bempdiff.diff;
 import com.bempdiff.parse.PackageParser;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -77,17 +76,26 @@ public final class FolderDiff {
     /** 比对选项。 */
     public static final class Options {
         /** 最大遍历深度；&lt;=0 表示不限制。 */
-        public int maxDepth = -1;
+        private int maxDepth = -1;
         /** 文本文件内容 diff 大小上限（字节）。 */
-        public long textDiffCap = TEXT_DIFF_CAP;
+        private long textDiffCap = TEXT_DIFF_CAP;
         /** 是否对修改的文本文件计算行级 diff（false 时仅标注 MODIFIED）。 */
-        public boolean computeLineDiff = true;
+        private boolean computeLineDiff = true;
         /** 并行度；&lt;=0 使用 CPU 核心数。 */
-        public int parallelism = 0;
+        private int parallelism = 0;
 
         public static Options defaults() {
             return new Options();
         }
+
+        public int getMaxDepth() { return maxDepth; }
+        public void setMaxDepth(int maxDepth) { this.maxDepth = maxDepth; }
+        public long getTextDiffCap() { return textDiffCap; }
+        public void setTextDiffCap(long textDiffCap) { this.textDiffCap = textDiffCap; }
+        public boolean isComputeLineDiff() { return computeLineDiff; }
+        public void setComputeLineDiff(boolean computeLineDiff) { this.computeLineDiff = computeLineDiff; }
+        public int getParallelism() { return parallelism; }
+        public void setParallelism(int parallelism) { this.parallelism = parallelism; }
     }
 
     /** 条目类型。 */
@@ -133,15 +141,15 @@ public final class FolderDiff {
         public final String leftPath;   // 绝对路径；不存在则为 null
         public final String rightPath;
         public final FolderDiffStatus status;
-        public final EnumSet<AttrChange> attrChanges;
+        public final Set<AttrChange> attrChanges;
         public final String lineDiff;   // 文本文件内容 diff（仅 MODIFIED 且内容不同且可文本化时非空）
         public final List<FolderEntry> children;
         public final boolean error;
         public final String errorMsg;
 
-        FolderEntry(String relPath, EntryType type, Long sizeLeft, Long sizeRight, Long mtimeLeft,
+        FolderEntry(String relPath, EntryType type, Long sizeLeft, Long sizeRight, Long mtimeLeft, // NOSONAR(S107) 不可变数据容器，字段只读且无行为，用 builder 属过度设计
                     Long mtimeRight, String hashLeft, String hashRight, String leftPath, String rightPath,
-                    FolderDiffStatus status, EnumSet<AttrChange> attrChanges, String lineDiff,
+                    FolderDiffStatus status, Set<AttrChange> attrChanges, String lineDiff,
                     List<FolderEntry> children, boolean error, String errorMsg) {
             this.relPath = relPath;
             this.type = type;
@@ -176,16 +184,37 @@ public final class FolderDiff {
 
     /** 汇总统计。 */
     public static final class Summary {
-        public int leftOnly;
-        public int rightOnly;
-        public int modified;
-        public int same;
-        public int typeMismatch;
-        public int contentChanged;   // MODIFIED 中内容不同的数量
-        public int attrOnlyChanged;  // MODIFIED 中仅属性不同的数量
-        public int scannedFiles;
-        public int scannedDirs;
-        public int errors;
+        private int leftOnly;
+        private int rightOnly;
+        private int modified;
+        private int same;
+        private int typeMismatch;
+        private int contentChanged;   // MODIFIED 中内容不同的数量
+        private int attrOnlyChanged;  // MODIFIED 中仅属性不同的数量
+        private int scannedFiles;
+        private int scannedDirs;
+        private int errors;
+
+        public int getLeftOnly() { return leftOnly; }
+        public void setLeftOnly(int leftOnly) { this.leftOnly = leftOnly; }
+        public int getRightOnly() { return rightOnly; }
+        public void setRightOnly(int rightOnly) { this.rightOnly = rightOnly; }
+        public int getModified() { return modified; }
+        public void setModified(int modified) { this.modified = modified; }
+        public int getSame() { return same; }
+        public void setSame(int same) { this.same = same; }
+        public int getTypeMismatch() { return typeMismatch; }
+        public void setTypeMismatch(int typeMismatch) { this.typeMismatch = typeMismatch; }
+        public int getContentChanged() { return contentChanged; }
+        public void setContentChanged(int contentChanged) { this.contentChanged = contentChanged; }
+        public int getAttrOnlyChanged() { return attrOnlyChanged; }
+        public void setAttrOnlyChanged(int attrOnlyChanged) { this.attrOnlyChanged = attrOnlyChanged; }
+        public int getScannedFiles() { return scannedFiles; }
+        public void setScannedFiles(int scannedFiles) { this.scannedFiles = scannedFiles; }
+        public int getScannedDirs() { return scannedDirs; }
+        public void setScannedDirs(int scannedDirs) { this.scannedDirs = scannedDirs; }
+        public int getErrors() { return errors; }
+        public void setErrors(int errors) { this.errors = errors; }
 
         @Override
         public String toString() {
@@ -240,9 +269,7 @@ public final class FolderDiff {
         Map<String, SideInfo> rightMap = walk(rRoot, opts);
 
         // 相对路径并集
-        Set<String> keys = new java.util.TreeSet<>();
-        keys.addAll(leftMap.keySet());
-        keys.addAll(rightMap.keySet());
+        Set<String> keys = collectKeys(leftMap, rightMap);
 
         Summary summary = new Summary();
         List<String> errors = new ArrayList<>();
@@ -259,67 +286,94 @@ public final class FolderDiff {
         List<FolderEntry> roots = buildTree(flat);
 
         // 目录/文件计数（含两侧）
-        for (SideInfo s : leftMap.values()) {
-            if (s.exists) { if (s.type == EntryType.DIR) summary.scannedDirs++; else summary.scannedFiles++; }
-        }
-        for (SideInfo s : rightMap.values()) {
-            if (s.exists) { if (s.type == EntryType.DIR) summary.scannedDirs++; else summary.scannedFiles++; }
-        }
+        countSideInfos(leftMap, summary);
+        countSideInfos(rightMap, summary);
         summary.errors = errors.size();
 
         return new FolderDiffResult(roots, flat, summary, errors, lRoot, rRoot);
     }
 
+    /** 求两侧相对路径的并集（稳定字典序）。 */
+    private static Set<String> collectKeys(Map<String, SideInfo> leftMap, Map<String, SideInfo> rightMap) {
+        Set<String> keys = new java.util.TreeSet<>();
+        keys.addAll(leftMap.keySet());
+        keys.addAll(rightMap.keySet());
+        return keys;
+    }
+
+    /** 累加扫描的目录/文件计数（仅存在侧）。 */
+    private static void countSideInfos(Map<String, SideInfo> map, Summary summary) {
+        for (SideInfo s : map.values()) {
+            if (s.exists) {
+                if (s.type == EntryType.DIR) summary.scannedDirs++;
+                else summary.scannedFiles++;
+            }
+        }
+    }
+
     /** 递归遍历目录，返回 relPath → SideInfo。符号链接跳过，单文件错误隔离。 */
     private static Map<String, SideInfo> walk(Path root, Options opts) throws IOException {
-        Map<String, SideInfo> map = new LinkedHashMap<>();
         int depth = opts.maxDepth > 0 ? opts.maxDepth : Integer.MAX_VALUE;
+        List<Path> collected = collectPaths(root, depth);
+        return computeSideInfos(root, collected);
+    }
+
+    /** 遍历收集候选条目（跳过根自身、符号链接、不可读及特殊类型条目；异常隔离）。 */
+    private static List<Path> collectPaths(Path root, int depth) throws IOException {
         List<Path> collected = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(root, depth)) {
             walk.forEach(p -> {
                 if (root.equals(p)) return; // 跳过根自身
-                try {
-                    if (Files.isSymbolicLink(p)) {
-                        LOG.fine("[隔离] 跳过符号链接: " + root.relativize(p));
-                        return;
-                    }
-                    BasicFileAttributes attrs;
-                    try {
-                        attrs = Files.readAttributes(p, BasicFileAttributes.class,
-                                java.nio.file.LinkOption.NOFOLLOW_LINKS);
-                    } catch (IOException ex) {
-                        LOG.warning("[隔离] 跳过不可读条目: " + root.relativize(p) + " (" + ex.getMessage() + ")");
-                        return;
-                    }
-                    if (attrs.isOther()) return; // 跳过套接字/管道等
-                    collected.add(p);
-                } catch (Exception ex) {
-                    LOG.warning("[隔离] 跳过条目: " + p + " (" + ex.getMessage() + ")");
-                }
+                if (isCollectable(root, p)) collected.add(p);
             });
         }
+        return collected;
+    }
 
-        // 并行计算 size/mtime/hash
-        int threads = opts.parallelism > 0 ? opts.parallelism : Runtime.getRuntime().availableProcessors();
+    /** 判定条目是否应纳入采集（跳过符号链接/不可读/非文件非目录）。 */
+    private static boolean isCollectable(Path root, Path p) {
+        try {
+            if (Files.isSymbolicLink(p)) {
+                LOG.log(java.util.logging.Level.FINE, "[隔离] 跳过符号链接: {0}", root.relativize(p));
+                return false;
+            }
+            BasicFileAttributes attrs = readAttrOrNull(p);
+            if (attrs == null) return false; // 已记录
+            return !attrs.isOther(); // 跳过套接字/管道
+        } catch (Exception ex) {
+            LOG.warning("[隔离] 跳过条目: " + p + " (" + ex.getMessage() + ")");
+            return false;
+        }
+    }
+
+    /** 读取属性；不可读时记录并返回 null。 */
+    private static BasicFileAttributes readAttrOrNull(Path p) {
+        try {
+            return Files.readAttributes(p, BasicFileAttributes.class,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException ex) {
+            LOG.warning("[隔离] 跳过不可读条目: " + p + " (" + ex.getMessage() + ")");
+            return null;
+        }
+    }
+
+    /** 并行计算派生 SideInfo（size/mtime/hash），写入同步 map。 */
+    private static Map<String, SideInfo> computeSideInfos(Path root, List<Path> collected) {
+        Map<String, SideInfo> map = new LinkedHashMap<>();
         AtomicInteger errCount = new AtomicInteger(0);
         collected.parallelStream().forEach(p -> {
             try {
-                String rel = root.relativize(p.toAbsolutePath().normalize()).toString().replace('\\', '/');
-                if (rel.isEmpty() || rel.startsWith("/") || rel.contains("..")) return; // 越界防护
-                BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class,
-                        java.nio.file.LinkOption.NOFOLLOW_LINKS);
+                String rel = toRel(root, p);
+                if (rel == null) return; // 越界防护
+                BasicFileAttributes attrs = readAttrOrNull(p);
+                if (attrs == null) {
+                    errCount.incrementAndGet(); // readAttrOrNull 已记录
+                    return;
+                }
                 boolean isDir = attrs.isDirectory();
                 long size = isDir ? 0 : attrs.size();
                 long mtime = attrs.lastModifiedTime().toMillis();
-                String hash = null;
-                if (!isDir && size <= HARD_CAP) {
-                    try {
-                        hash = PackageParser.sha256(p);
-                    } catch (IOException ex) {
-                        errCount.incrementAndGet();
-                        LOG.warning("[隔离] 哈希失败: " + rel + " (" + ex.getMessage() + ")");
-                    }
-                }
+                String hash = hashIfSmall(rel, p, size, isDir, errCount);
                 synchronized (map) {
                     map.put(rel, new SideInfo(true, isDir ? EntryType.DIR : EntryType.FILE,
                             size, mtime, hash, p.toString()));
@@ -332,12 +386,29 @@ public final class FolderDiff {
         return map;
     }
 
+    /** 求相对路径并做越界防护；非法时返回 null（不录入）。 */
+    private static String toRel(Path root, Path p) {
+        String rel = root.relativize(p.toAbsolutePath().normalize()).toString().replace('\\', '/');
+        if (rel.isEmpty() || rel.startsWith("/") || rel.contains("..")) return null;
+        return rel;
+    }
+
+    /** 小文件计算 sha256；目录或超大文件返回 null，哈希失败隔离计数。 */
+    private static String hashIfSmall(String rel, Path p, long size, boolean isDir, AtomicInteger errCount) {
+        if (isDir || size > HARD_CAP) return null;
+        try {
+            return PackageParser.sha256(p);
+        } catch (IOException ex) {
+            errCount.incrementAndGet();
+            LOG.warning("[隔离] 哈希失败: " + rel + " (" + ex.getMessage() + ")");
+            return null;
+        }
+    }
+
     /** 由两侧 SideInfo 构建单条 FolderEntry 并累加汇总。 */
     private static FolderEntry buildEntry(String key, SideInfo l, SideInfo r, Options opts,
                                           Summary summary, List<String> errors) {
-        EntryType type;
-        if (l.exists && r.exists) type = (l.type == r.type) ? l.type : EntryType.FILE;
-        else type = l.exists ? l.type : r.type;
+        EntryType type = resolveType(l, r);
 
         Long szL = l.exists ? l.size : null;
         Long szR = r.exists ? r.size : null;
@@ -346,85 +417,127 @@ public final class FolderDiff {
         String hL = l.exists ? l.hash : null;
         String hR = r.exists ? r.hash : null;
 
-        FolderDiffStatus status;
-        EnumSet<AttrChange> changes = EnumSet.noneOf(AttrChange.class);
-
-        if (!l.exists && !r.exists) {
-            status = FolderDiffStatus.SAME; // 理论上不会出现（并集来自存在侧）
-        } else if (!l.exists) {
-            status = FolderDiffStatus.RIGHT_ONLY;
-            summary.rightOnly++;
-        } else if (!r.exists) {
-            status = FolderDiffStatus.LEFT_ONLY;
-            summary.leftOnly++;
-        } else if (l.type != r.type) {
-            status = FolderDiffStatus.TYPE_MISMATCH;
-            changes.add(AttrChange.TYPE);
-            summary.typeMismatch++;
-        } else if (l.type == EntryType.DIR) {
-            // 目录：是否"不同"取决于子树是否有差异；此处仅标记 SAME，
-            // 子树差异由上层通过 children 体现（树展示时目录节点带汇总标记）。
-            status = FolderDiffStatus.SAME;
-            summary.same++;
-        } else {
-            // 文件：比较 size / mtime / content(hash)
-            boolean sizeEq = java.util.Objects.equals(szL, szR);
-            boolean mtimeEq = java.util.Objects.equals(mtL, mtR);
-            boolean contentEq = java.util.Objects.equals(hL, hR); // 超大文件两侧 hash 均可能为 null -> 视为未知，保守标 MODIFIED
-            if (sizeEq) changes.add(AttrChange.SIZE);
-            if (mtimeEq) changes.add(AttrChange.MTIME);
-            if (contentEq) changes.add(AttrChange.CONTENT);
-
-            // 实际"不同"判定：size 或 mtime 或 content 任一不同
-            boolean sizeDiff = !sizeEq;
-            boolean mtimeDiff = !mtimeEq;
-            boolean contentDiff = !contentEq;
-            if (!sizeDiff && !mtimeDiff && !contentDiff) {
-                status = FolderDiffStatus.SAME;
-                changes.clear(); // 相同项不标记任何属性变更
-                summary.same++;
-            } else {
-                status = FolderDiffStatus.MODIFIED;
-                summary.modified++;
-                if (sizeDiff) changes.add(AttrChange.SIZE); else changes.remove(AttrChange.SIZE);
-                if (mtimeDiff) changes.add(AttrChange.MTIME); else changes.remove(AttrChange.MTIME);
-                if (contentDiff) changes.add(AttrChange.CONTENT); else changes.remove(AttrChange.CONTENT);
-                if (contentDiff) summary.contentChanged++;
-                else summary.attrOnlyChanged++;
-            }
-        }
-
-        // 文本文件行级 diff
-        String lineDiff = null;
-        if (opts.computeLineDiff && status == FolderDiffStatus.MODIFIED
-                && changes.contains(AttrChange.CONTENT) && l.exists && r.exists
-                && l.type == EntryType.FILE && r.type == EntryType.FILE
-                && isTextFile(key) && szL != null && szR != null
-                && szL <= opts.textDiffCap && szR <= opts.textDiffCap) {
-            try {
-                String a = readTextQuietly(l.absPath);
-                String b = readTextQuietly(r.absPath);
-                lineDiff = LineDiff.unified(a, b);
-            } catch (IOException ex) {
-                errors.add("diff:" + key + " -> " + ex.getMessage());
-                LOG.warning("[隔离] 文本 diff 失败: " + key + " (" + ex.getMessage() + ")");
-            }
-        }
+        StatusAndChanges sc = resolveStatus(l, r, szL, szR, mtL, mtR, hL, hR, summary);
+        String lineDiff = computeLineDiff(key, l, r, opts, sc.status, sc.changes, szL, szR, errors);
 
         return new FolderEntry(key, type, szL, szR, mtL, mtR, hL, hR,
                 l.exists ? l.absPath : null, r.exists ? r.absPath : null,
-                status, changes, lineDiff, null, false, null);
+                sc.status, sc.changes, lineDiff, null, false, null);
+    }
+
+    /** 类型判定：两侧均存在且类型一致取之；仅一侧取存在侧；类型冲突归为 FILE。 */
+    private static EntryType resolveType(SideInfo l, SideInfo r) {
+        if (l.exists && r.exists) return (l.type == r.type) ? l.type : EntryType.FILE;
+        return l.exists ? l.type : r.type;
+    }
+
+    /** 判定顶层差异状态（左右缺失/类型冲突/目录；文件交由属性比较）。 */
+    private static StatusAndChanges resolveStatus(SideInfo l, SideInfo r, // NOSONAR(S107) - 渲染参数由上层分别传递，重构参数对象收益低
+                                                  Long szL, Long szR, Long mtL, Long mtR, String hL, String hR,
+                                                  Summary summary) {
+        if (!l.exists && !r.exists) {
+            return StatusAndChanges.of(FolderDiffStatus.SAME); // 理论上不会出现（并集来自存在侧）
+        }
+        if (!l.exists) {
+            summary.rightOnly++;
+            return StatusAndChanges.of(FolderDiffStatus.RIGHT_ONLY);
+        }
+        if (!r.exists) {
+            summary.leftOnly++;
+            return StatusAndChanges.of(FolderDiffStatus.LEFT_ONLY);
+        }
+        if (l.type != r.type) {
+            summary.typeMismatch++;
+            return StatusAndChanges.of(FolderDiffStatus.TYPE_MISMATCH, AttrChange.TYPE);
+        }
+        if (l.type == EntryType.DIR) {
+            // 目录：是否"不同"取决于子树是否有差异；此处仅标记 SAME，
+            // 子树差异由上层通过 children 体现（树展示时目录节点带汇总标记）。
+            summary.same++;
+            return StatusAndChanges.of(FolderDiffStatus.SAME);
+        }
+        return resolveFileStatus(szL, szR, mtL, mtR, hL, hR, summary);
+    }
+
+    /** 文件比较：按 size/mtime/content(hash) 判定 SAME 或 MODIFIED。 */
+    private static StatusAndChanges resolveFileStatus(Long szL, Long szR, Long mtL, Long mtR,
+                                                      String hL, String hR, Summary summary) {
+        boolean sizeEq = java.util.Objects.equals(szL, szR);
+        boolean mtimeEq = java.util.Objects.equals(mtL, mtR);
+        boolean contentEq = java.util.Objects.equals(hL, hR); // 超大文件两侧 hash 均可能为 null -> 视为未知，保守标 MODIFIED
+        if (sizeEq && mtimeEq && contentEq) {
+            summary.same++;
+            return StatusAndChanges.of(FolderDiffStatus.SAME); // 相同项不标记任何属性变更
+        }
+        EnumSet<AttrChange> changes = EnumSet.noneOf(AttrChange.class);
+        if (!sizeEq) changes.add(AttrChange.SIZE);
+        if (!mtimeEq) changes.add(AttrChange.MTIME);
+        if (!contentEq) {
+            changes.add(AttrChange.CONTENT);
+            summary.contentChanged++;
+        } else {
+            summary.attrOnlyChanged++;
+        }
+        summary.modified++;
+        return new StatusAndChanges(FolderDiffStatus.MODIFIED, changes);
+    }
+
+    /** 是否应对该文本文件做行级内容 diff。 */
+    private static boolean shouldComputeLineDiff(String key, SideInfo l, SideInfo r, Options opts, // NOSONAR(S107) - 渲染参数由上层分别传递，重构参数对象收益低
+                                                 FolderDiffStatus status, Set<AttrChange> changes,
+                                                 Long szL, Long szR) {
+        if (!opts.computeLineDiff || status != FolderDiffStatus.MODIFIED) return false;
+        if (!changes.contains(AttrChange.CONTENT)) return false;
+        if (!l.exists || !r.exists) return false;
+        if (l.type != EntryType.FILE || r.type != EntryType.FILE) return false;
+        if (!isTextFile(key)) return false;
+        if (szL == null || szR == null) return false;
+        return szL <= opts.textDiffCap && szR <= opts.textDiffCap;
+    }
+
+    /** 文本文件行级 diff（失败隔离并记录）。 */
+    private static String computeLineDiff(String key, SideInfo l, SideInfo r, Options opts, // NOSONAR(S107) - 渲染参数由上层分别传递，重构参数对象收益低
+                                          FolderDiffStatus status, Set<AttrChange> changes,
+                                          Long szL, Long szR, List<String> errors) {
+        if (!shouldComputeLineDiff(key, l, r, opts, status, changes, szL, szR)) {
+            return null;
+        }
+        try {
+            String a = readTextQuietly(l.absPath);
+            String b = readTextQuietly(r.absPath);
+            return LineDiff.unified(a, b);
+        } catch (IOException ex) {
+            errors.add("diff:" + key + " -> " + ex.getMessage());
+            LOG.warning("[隔离] 文本 diff 失败: " + key + " (" + ex.getMessage() + ")");
+            return null;
+        }
     }
 
     /** 由扁平 map 构建嵌套树（按路径段分组）。 */
     private static List<FolderEntry> buildTree(Map<String, FolderEntry> flat) {
+        Map<String, List<FolderEntry>> childrenIndex = indexByParent(flat);
+        attachChildren(flat, childrenIndex);
+        List<FolderEntry> roots = collectRoots(flat);
+        // 稳定排序：目录在前、再按名称
+        roots.sort(FolderDiff::compareEntries);
+        sortChildren(flat);
+        return roots;
+    }
+
+    /** 按父路径索引全部条目。 */
+    private static Map<String, List<FolderEntry>> indexByParent(Map<String, FolderEntry> flat) {
         Map<String, List<FolderEntry>> childrenIndex = new LinkedHashMap<>();
         for (FolderEntry e : flat.values()) {
             int cut = e.relPath.lastIndexOf('/');
             String parent = cut < 0 ? "" : e.relPath.substring(0, cut);
             childrenIndex.computeIfAbsent(parent, k -> new ArrayList<>()).add(e);
         }
-        // 递归挂载 children（避免目录节点被当作"叶子"——目录节点若有子节点则其 children 非空）
+        return childrenIndex;
+    }
+
+    /** 把每个条目的直接子节点挂到其 children（仅含相邻层级，避免把更深的孙代挂上来）。 */
+    private static void attachChildren(Map<String, FolderEntry> flat,
+                                       Map<String, List<FolderEntry>> childrenIndex) {
         for (FolderEntry e : flat.values()) {
             List<FolderEntry> kids = childrenIndex.get(e.relPath);
             if (kids != null && !kids.isEmpty()) {
@@ -438,16 +551,22 @@ public final class FolderDiff {
                 e.children.addAll(direct);
             }
         }
+    }
+
+    /** 收集顶层条目（relPath 无 '/'）。 */
+    private static List<FolderEntry> collectRoots(Map<String, FolderEntry> flat) {
         List<FolderEntry> roots = new ArrayList<>();
         for (FolderEntry e : flat.values()) {
             if (e.relPath.indexOf('/') < 0) roots.add(e);
         }
-        // 稳定排序：目录在前、再按名称
-        roots.sort((a, b) -> compareEntries(a, b));
+        return roots;
+    }
+
+    /** 逐条对 children 稳定排序（目录在前、再按名称）。 */
+    private static void sortChildren(Map<String, FolderEntry> flat) {
         for (FolderEntry e : flat.values()) {
             if (e.children != null) e.children.sort(FolderDiff::compareEntries);
         }
-        return roots;
     }
 
     private static int compareEntries(FolderEntry a, FolderEntry b) {
@@ -506,5 +625,21 @@ public final class FolderDiff {
         int i = -1;
         while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
         return String.format("%.1f %s", v, (i < 0 ? "B" : u[i]));
+    }
+
+    /** 状态 + 属性变更的中间载体（供 resolveStatus 系列返回）。 */
+    private static final class StatusAndChanges {
+        final FolderDiffStatus status;
+        final Set<AttrChange> changes;
+        StatusAndChanges(FolderDiffStatus status, Set<AttrChange> changes) {
+            this.status = status;
+            this.changes = changes;
+        }
+        static StatusAndChanges of(FolderDiffStatus status) {
+            return new StatusAndChanges(status, EnumSet.noneOf(AttrChange.class));
+        }
+        static StatusAndChanges of(FolderDiffStatus status, AttrChange first) {
+            return new StatusAndChanges(status, EnumSet.of(first));
+        }
     }
 }

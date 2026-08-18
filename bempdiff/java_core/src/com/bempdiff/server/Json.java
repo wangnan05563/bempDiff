@@ -14,6 +14,15 @@ public final class Json {
     private Json() {
     }
 
+    /** JSON 解析/写入异常：替代通用 RuntimeException，便于上游精确捕获与日志定位。 */
+    private static final class JsonParseException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        JsonParseException(String msg) {
+            super(msg);
+        }
+    }
+
     // ---------- 写 ----------
 
     public static String write(Object o) {
@@ -32,28 +41,36 @@ public final class Json {
         } else if (o instanceof Boolean) {
             sb.append(o.toString());
         } else if (o instanceof Map) {
-            sb.append('{');
-            boolean first = true;
-            for (Map.Entry<?, ?> e : ((Map<?, ?>) o).entrySet()) {
-                if (!first) sb.append(',');
-                first = false;
-                writeString(sb, String.valueOf(e.getKey()));
-                sb.append(':');
-                writeValue(sb, e.getValue());
-            }
-            sb.append('}');
+            writeObject(sb, (Map<?, ?>) o);
         } else if (o instanceof Iterable) {
-            sb.append('[');
-            boolean first = true;
-            for (Object v : (Iterable<?>) o) {
-                if (!first) sb.append(',');
-                first = false;
-                writeValue(sb, v);
-            }
-            sb.append(']');
+            writeArray(sb, (Iterable<?>) o);
         } else {
             writeString(sb, String.valueOf(o));
         }
+    }
+
+    private static void writeObject(StringBuilder sb, Map<?, ?> map) {
+        sb.append('{');
+        boolean first = true;
+        for (Map.Entry<?, ?> e : map.entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            writeString(sb, String.valueOf(e.getKey()));
+            sb.append(':');
+            writeValue(sb, e.getValue());
+        }
+        sb.append('}');
+    }
+
+    private static void writeArray(StringBuilder sb, Iterable<?> it) {
+        sb.append('[');
+        boolean first = true;
+        for (Object v : it) {
+            if (!first) sb.append(',');
+            first = false;
+            writeValue(sb, v);
+        }
+        sb.append(']');
     }
 
     private static void writeString(StringBuilder sb, String s) {
@@ -107,7 +124,7 @@ public final class Json {
 
         Object parseValue() {
             skipWs();
-            if (i >= s.length()) throw new RuntimeException("JSON 意外结束");
+            if (i >= s.length()) throw new JsonParseException("JSON 意外结束");
             char c = s.charAt(i);
             if (c == '{') return parseObject();
             if (c == '[') return parseArray();
@@ -128,25 +145,17 @@ public final class Json {
                 i++;
                 return m;
             }
-            while (true) {
+            while (i < s.length() && s.charAt(i) != '}') {
                 skipWs();
                 String key = parseString();
                 skipWs();
-                if (i >= s.length() || s.charAt(i) != ':') throw new RuntimeException("JSON 期望 ':'");
+                if (i >= s.length() || s.charAt(i) != ':') throw new JsonParseException("JSON 期望 ':'");
                 i++;
-                Object val = parseValue();
-                m.put(key, val);
+                m.put(key, parseValue());
                 skipWs();
-                if (i < s.length() && s.charAt(i) == ',') {
-                    i++;
-                    continue;
-                }
-                if (i < s.length() && s.charAt(i) == '}') {
-                    i++;
-                    break;
-                }
-                throw new RuntimeException("JSON 期望 ',' 或 '}'");
+                if (i < s.length() && s.charAt(i) == ',') i++;
             }
+            if (i < s.length() && s.charAt(i) == '}') i++;
             return m;
         }
 
@@ -158,25 +167,17 @@ public final class Json {
                 i++;
                 return a;
             }
-            while (true) {
-                Object val = parseValue();
-                a.add(val);
+            while (i < s.length() && s.charAt(i) != ']') {
+                a.add(parseValue());
                 skipWs();
-                if (i < s.length() && s.charAt(i) == ',') {
-                    i++;
-                    continue;
-                }
-                if (i < s.length() && s.charAt(i) == ']') {
-                    i++;
-                    break;
-                }
-                throw new RuntimeException("JSON 期望 ',' 或 ']'");
+                if (i < s.length() && s.charAt(i) == ',') i++;
             }
+            if (i < s.length() && s.charAt(i) == ']') i++;
             return a;
         }
 
         String parseString() {
-            if (s.charAt(i) != '"') throw new RuntimeException("JSON 期望 '\"'");
+            if (s.charAt(i) != '"') throw new JsonParseException("JSON 期望 '\"'");
             i++;
             StringBuilder sb = new StringBuilder();
             while (i < s.length()) {
@@ -205,7 +206,7 @@ public final class Json {
                     sb.append(c);
                 }
             }
-            throw new RuntimeException("JSON 字符串未闭合");
+            throw new JsonParseException("JSON 字符串未闭合");
         }
 
         Object parseNumber() {
@@ -233,7 +234,7 @@ public final class Json {
                 i += 5;
                 return false;
             }
-            throw new RuntimeException("JSON 期望 true/false");
+            throw new JsonParseException("JSON 期望 true/false");
         }
     }
 

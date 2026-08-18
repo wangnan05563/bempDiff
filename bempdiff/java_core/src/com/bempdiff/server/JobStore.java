@@ -2,12 +2,10 @@ package com.bempdiff.server;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /** 比对任务的内存注册表（单进程内，按 jobId 检索）。 */
 public final class JobStore {
     private final ConcurrentHashMap<String, Job> jobs = new ConcurrentHashMap<>();
-    private final AtomicLong seq = new AtomicLong(System.nanoTime() % 1_000_000);
 
     public Job put(Job job) {
         jobs.put(job.id, job);

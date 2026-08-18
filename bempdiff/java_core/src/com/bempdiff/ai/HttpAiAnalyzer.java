@@ -20,19 +20,15 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
-import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 /**
  * 真实 HTTP AI 分析器（T09/T10/T11，§5.4）。接口与 MockAiAnalyzer 完全一致，可直接替换。
@@ -51,6 +47,8 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     /** 偶发超时/网络抖动的重试次数（共 MAX_RETRIES+1 次尝试），应对慢速/偶发超时的供应商。 */
     private static final int MAX_RETRIES = 2;
     private static final long RETRY_BACKOFF_MS = 1500;
+    /** TLSv1.2 协议名（多处重复，提取为常量规避 S1192）。 */
+    private static final String TLS12 = "TLSv1.2";
 
     /** 最近一次 testConnection 的失败原因（null 表示成功或未调用）。用于 UI 诊断展示。 */
     private volatile String lastError = null;
@@ -85,8 +83,8 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     static {
         // [Layer 1] 系统属性兜底
         String current = System.getProperty("https.protocols");
-        if (current == null || !current.contains("TLSv1.2")) {
-            System.setProperty("https.protocols", "TLSv1.2,TLSv1.3");
+        if (current == null || !current.contains(TLS12)) {
+            System.setProperty("https.protocols", TLS12 + ",TLSv1.3");
         }
         // 启用系统代理
         if (!"true".equalsIgnoreCase(System.getProperty("java.net.useSystemProxies"))) {
@@ -98,18 +96,18 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         if (UNIVERSAL_COMPAT_FACTORY != null) {
             try {
                 HttpsURLConnection.setDefaultSSLSocketFactory(UNIVERSAL_COMPAT_FACTORY);
-                System.out.println("[TLS] 通用兼容 SSLSocketFactory 已设为全局默认");
+                LOG.info("[TLS] 通用兼容 SSLSocketFactory 已设为全局默认");
             } catch (Exception e) {
-                System.err.println("[WARN] 设置默认 SSLSocketFactory 失败: " + e.getMessage());
+                LOG.warning("[WARN] 设置默认 SSLSocketFactory 失败: " + e.getMessage());
             }
         } else {
-            System.err.println("[WARN] 通用兼容工厂创建失败，将使用 JDK 默认 TLS 配置");
+            LOG.warning("[WARN] 通用兼容工厂创建失败，将使用 JDK 默认 TLS 配置");
         }
 
         // [Layer 3] 仅 TLSv1.2 兜底工厂（callChat/testConnection 握手失败降级，对齐原测试 S1）
         TLS12_ONLY_FACTORY = buildTls12OnlyFactory();
         if (TLS12_ONLY_FACTORY != null) {
-            System.out.println("[TLS] 仅 TLSv1.2 兜底工厂已构建");
+            LOG.info("[TLS] 仅 TLSv1.2 兜底工厂已构建");
         }
     }
 
@@ -144,7 +142,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
 
                 /** 对每个新创建的 SSLSocket 强制设置兼容参数。 */
                 private SSLSocket configure(SSLSocket s) {
-                    s.setEnabledProtocols(new String[]{"TLSv1.2", "TLSv1.3"});
+                    s.setEnabledProtocols(new String[]{TLS12, "TLSv1.3"});
                     String[] supported = s.getSupportedCipherSuites();
                     List<String> filtered = new ArrayList<>(supported.length);
                     for (String cs : supported) {
@@ -166,7 +164,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
                 }
             };
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
-            System.err.println("[WARN] 无法创建通用兼容 SSLContext: " + e.getMessage());
+            LOG.warning("[WARN] 无法创建通用兼容 SSLContext: " + e.getMessage());
             return null;
         }
     }
@@ -200,12 +198,12 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
                 public String[] getDefaultCipherSuites() { return base.getDefaultCipherSuites(); }
                 public String[] getSupportedCipherSuites() { return base.getSupportedCipherSuites(); }
                 private SSLSocket configure(SSLSocket s) {
-                    s.setEnabledProtocols(new String[]{"TLSv1.2"});
+                    s.setEnabledProtocols(new String[]{TLS12});
                     return s;
                 }
             };
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
-            System.err.println("[WARN] 无法创建仅 TLSv1.2 工厂: " + e.getMessage());
+            LOG.warning("[WARN] 无法创建仅 TLSv1.2 工厂: " + e.getMessage());
             return null;
         }
     }
@@ -276,6 +274,36 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     }
 
     @Override
+    public String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
+        return PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
+    }
+
+    @Override
+    public String buildStageBPrompt(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg, ProjectContext ctx, String focus) {
+        return PromptBuilders.buildStageB(key, unit, fc, cfg, ctx, focus);
+    }
+
+    @Override
+    public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
+        String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
+        String json = callChat(prompt, 0.2);
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        return MockAiAnalyzer.parseStageAStatic(json, withCtx);
+    }
+
+    @Override
+    public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx, String focus) {
+        List<FileAnalysis> out = new ArrayList<>();
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        for (DecompileReq req : candidates) {
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx, focus);
+            String json = callChat(prompt, 0.1);
+            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, withCtx));
+        }
+        return out;
+    }
+
+    @Override
     public boolean testConnection(AiConfig cfg) {
         return testConnectionHttp(cfg);
     }
@@ -305,36 +333,50 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         SSLSocketFactory[] ladder = buildTestLadder();
         StringBuilder diag = new StringBuilder();
         for (int i = 0; i < ladder.length; i++) {
-            SSLSocketFactory sf = ladder[i];
-            try {
-                int code = doProbe(endpoint, cfg, sf);
-                if (code >= 200 && code < 300) {
-                    lastError = null;
-                    System.out.println("[TLS-测试] 策略" + i + " 成功 (HTTP " + code + ")");
-                    return true;
-                }
-                // HTTP 层错误：区分鉴权/端点，直接返回（不换 TLS 策略，也不误报 TLS）
-                if (code == 401) { lastError = "HTTP 401（API Key 无效或已过期）"; return false; }
-                if (code == 403) { lastError = "HTTP 403（访问被拒绝，检查账户权限）"; return false; }
-                if (code == 404) { lastError = "HTTP 404（端点不存在，检查 Base URL）"; return false; }
-                lastError = "HTTP " + code + "（服务端返回非成功状态）";
-                diag.append("策略").append(i).append(":HTTP ").append(code).append("; ");
-            } catch (IOException e) {
-                boolean hs = isHandshakeFailure(e);
-                diag.append("策略").append(i).append(":").append(e.getMessage()).append("; ");
-                if (!hs) {
-                    // 网络层错误（超时/拒绝/不可达）不换 TLS 策略，给出分类提示
-                    lastError = classifyIoError(e.getMessage());
-                    return false;
-                }
-                // 握手失败 → 继续下一 TLS 策略
-                System.out.println("[TLS-测试] 策略" + i + " 握手失败: " + e.getMessage());
-            }
+            ProbeResult r = probeTestStrategy(endpoint, cfg, ladder[i], i, diag);
+            if (r == ProbeResult.SUCCESS) return true;
+            if (r == ProbeResult.FAILED) return false;
         }
         lastError = "TLS 握手失败（已尝试 " + ladder.length + " 种策略均被拒绝）: " + diag
                 + "建议：填写 HTTPS 代理（如 http://127.0.0.1:7890）或检查防火墙/中间设备设置";
         return false;
     }
+
+    /**
+     * 用单个 TLS 策略发起一次连接探活。返回 true 表示需继续尝试下一策略；false 表示已成功或已确定失败应中止。
+     * 提取自 testConnectionHttp，用于降低其认知复杂度。
+     */
+    private enum ProbeResult { SUCCESS, FAILED, CONTINUE }
+
+    private ProbeResult probeTestStrategy(String endpoint, AiConfig cfg, SSLSocketFactory sf, int i, StringBuilder diag) {
+        try {
+            int code = doProbe(endpoint, cfg, sf);
+            if (code >= 200 && code < 300) {
+                lastError = null;
+                LOG.log(java.util.logging.Level.INFO, "[TLS-测试] 策略{0} 成功 (HTTP {1})", new Object[]{i, code});
+                return ProbeResult.SUCCESS;
+            }
+            // HTTP 层错误：区分鉴权/端点，直接返回（不换 TLS 策略，也不误报 TLS）
+            if (code == 401) { lastError = "HTTP 401（API Key 无效或已过期）"; return ProbeResult.FAILED; }
+            if (code == 403) { lastError = "HTTP 403（访问被拒绝，检查账户权限）"; return ProbeResult.FAILED; }
+            if (code == 404) { lastError = "HTTP 404（端点不存在，检查 Base URL）"; return ProbeResult.FAILED; }
+            lastError = "HTTP " + code + "（服务端返回非成功状态）";
+            diag.append("策略").append(i).append(":HTTP ").append(code).append("; ");
+            return ProbeResult.FAILED;
+        } catch (IOException e) {
+            boolean hs = isHandshakeFailure(e);
+            diag.append("策略").append(i).append(":").append(e.getMessage()).append("; ");
+            if (!hs) {
+                // 网络层错误（超时/拒绝/不可达）不换 TLS 策略，给出分类提示
+                lastError = classifyIoError(e.getMessage());
+                return ProbeResult.FAILED;
+            }
+            // 握手失败 → 继续下一 TLS 策略
+            LOG.log(java.util.logging.Level.INFO, "[TLS-测试] 策略{0} 握手失败: {1}", new Object[]{i, e.getMessage()});
+            return ProbeResult.CONTINUE;
+        }
+    }
+
 
     /** 执行一次 GET 探活，返回 HTTP 响应码；复用 open() 的代理 / SSRF 防护与工厂注入。 */
     private int doProbe(String endpoint, AiConfig cfg, SSLSocketFactory sf) throws IOException {
@@ -393,28 +435,55 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
             sendRequestBody(c, prompt, temperature);
             return handleResponse(c);
         } catch (IOException e) {
-            boolean handshake = isHandshakeFailure(e);
-            if (attempt < MAX_RETRIES) {
-                // 握手失败时逐级降级 TLS 策略：默认(兼容 1.2+1.3) → 仅 TLSv1.2（对齐 testConnection S1）。
-                // 部分中间设备/网关拒绝 TLSv1.3 广告，仅发 1.2 可绕过。
-                SSLSocketFactory nextSf = sf;
-                if (handshake) {
-                    nextSf = (TLS12_ONLY_FACTORY != null) ? TLS12_ONLY_FACTORY
-                            : (UNIVERSAL_COMPAT_FACTORY != null ? UNIVERSAL_COMPAT_FACTORY : sf);
-                }
-                LOG.log(java.util.logging.Level.WARNING,
-                        "[AI] 调用失败（第{0}次尝试，{1}，TLS={2}），{3}秒后重试：{4}",
-                        new Object[]{attempt + 1, e.getClass().getSimpleName(),
-                                nextSf == TLS12_ONLY_FACTORY ? "仅TLSv1.2" : "兼容(1.2+1.3)",
-                                RETRY_BACKOFF_MS / 1000, e.getMessage()});
-                try { Thread.sleep(RETRY_BACKOFF_MS); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-                return callChat(prompt, temperature, nextSf, attempt + 1);
-            }
-            throw new AiCallException("AI 调用失败（已重试 " + attempt + " 次）: " + e.getMessage(), e);
+            return handleCallFailure(prompt, temperature, sf, attempt, e);
         } finally {
             if (c != null) c.disconnect();
         }
     }
+
+    /** callChat 的失败处理：握手失败时降级 TLS 策略并重试，重试耗尽则抛出 AiCallException（用于降低 callChat 认知复杂度）。 */
+    private String handleCallFailure(String prompt, double temperature, SSLSocketFactory sf, int attempt, IOException e) {
+        if (attempt >= MAX_RETRIES) {
+            throw new AiCallException("AI 调用失败（已重试 " + attempt + " 次）: " + e.getMessage(), e);
+        }
+        SSLSocketFactory nextSf = sf;
+        if (isHandshakeFailure(e)) {
+            nextSf = resolveFallbackFactory(sf);
+            LOG.log(java.util.logging.Level.WARNING,
+                    "[AI] 调用失败（第{0}次尝试，{1}，TLS={2}），{3}秒后重试：{4}",
+                    new Object[]{attempt + 1, e.getClass().getSimpleName(),
+                            nextSf == TLS12_ONLY_FACTORY ? "仅TLSv1.2" : "兼容(1.2+1.3)",
+                            RETRY_BACKOFF_MS / 1000, e.getMessage()});
+        } else {
+            LOG.log(java.util.logging.Level.WARNING,
+                    "[AI] 调用失败（第{0}次尝试，{1}），{2}秒后重试：{3}",
+                    new Object[]{attempt + 1, e.getClass().getSimpleName(), // NOSONAR(S2259) - e 为 catch 捕获的非空异常
+                            RETRY_BACKOFF_MS / 1000, e.getMessage()});
+        }
+        sleepBackoff();
+        return callChat(prompt, temperature, nextSf, attempt + 1);
+    }
+
+    /** 握手失败时选择的回退工厂：仅 TLSv1.2 优先，其次通用兼容，最后原工厂。 */
+    private static SSLSocketFactory resolveFallbackFactory(SSLSocketFactory sf) {
+        if (TLS12_ONLY_FACTORY != null) {
+            return TLS12_ONLY_FACTORY;
+        }
+        if (UNIVERSAL_COMPAT_FACTORY != null) {
+            return UNIVERSAL_COMPAT_FACTORY;
+        }
+        return sf;
+    }
+
+    /** 重试前的短暂休眠；被中断时恢复中断标志并继续。 */
+    private static void sleepBackoff() {
+        try {
+            Thread.sleep(RETRY_BACKOFF_MS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
 
     private URL buildChatUrl() throws IOException {
         String endpoint = cfg.getBaseUrl().endsWith("/")
@@ -471,7 +540,6 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
             char ch = resp.charAt(p);
             if (ch == '\\') {
                 p = handleEscapeSequence(sb, resp, p);
-                continue;
             } else if (ch == '"') {
                 done = true;
             } else {
@@ -656,8 +724,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         try {
             guardEndpoint(u, cfg);
         } catch (IllegalArgumentException iae) {
-            // guardEndpoint 对畸形 URL（host 为空）抛 IllegalArgumentException（RuntimeException），
-            // 转成 IOException 以便上层 testConnection / callChat 的 catch(IOException) 统一兜底，给出友好提示
+            // 畸形 URL（host 为空）会被 guardEndpoint 判定为非法参数，这里统一包装为 IOException 交由上层兜底处理
             throw new IOException("URL 非法（疑似畸形 Base URL）: " + iae.getMessage(), iae);
         }
         String host = u.getHost();

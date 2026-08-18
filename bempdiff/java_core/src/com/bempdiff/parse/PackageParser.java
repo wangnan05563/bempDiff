@@ -359,7 +359,7 @@ public final class PackageParser {
         int lastDot = name.lastIndexOf('.');
         String stem = (lastDot > 0) ? name.substring(0, lastDot) : name;
         // 优先匹配末尾的 x.y.z... 版本段（数字.数字.数字... 或带 -SNAPSHOT 等后缀）
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile("[Vv]?([0-9]+(?:\\.[0-9]+)*(?:[-_][A-Za-z0-9]+)?)$");
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("[Vv]?(\\d+(?:\\.\\d+)*+(?:[-_][A-Za-z0-9]+)?)$");
         java.util.regex.Matcher m = p.matcher(stem);
         if (m.find()) {
             return m.group(1);
@@ -402,6 +402,14 @@ public final class PackageParser {
     public static FileClass classify(String name) {
         if (name.endsWith(CLASS_EXT)) return FileClass.CLASS;
         if (name.endsWith(".jar")) return FileClass.JAR;
+        // 顶层归档压缩包：jar/war/ear/tgz 是一类"字节级不可读"的容器，
+        // 不能走 FrontendTextDiff（解码二进制为文本会让 JS 状态机长时间空转），
+        // 单独归到 FileClass.ARCHIVE 并由 ArchiveDiff 做"条目清单"diff。
+        // 注意：.jar 仍归 JAR（库 jar 已有专门链路；war 内的 lib jar 也按此规则）。
+        String lower = name.toLowerCase();
+        if (lower.endsWith(".zip") || lower.endsWith(".war") || lower.endsWith(".ear")
+                || lower.endsWith(".tar") || lower.endsWith(".tar.gz") || lower.endsWith(".tgz"))
+            return FileClass.ARCHIVE;
         // JSP 页面/标签文件：服务端文本，需内容级逐行 diff（必须先于 CONFIG 判定，
         // 否则 .jspx 等 XML 语法变体会被 CONFIG 抢走）。
         if (name.endsWith(".jsp") || name.endsWith(".jspx")
@@ -467,18 +475,6 @@ public final class PackageParser {
         if (n.indexOf(':') >= 0) throw new IOException("拒绝含盘符的条目（疑似绝对路径）: " + raw);
         if (n.contains("..")) throw new IOException("拒绝路径穿越条目（Zip Slip）: " + raw);
         return n;
-    }
-
-    private static String sha256(byte[] data) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] h = md.digest(data);
-            StringBuilder sb = new StringBuilder(h.length * 2);
-            for (byte b : h) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 不可用", e);
-        }
     }
 
     /**

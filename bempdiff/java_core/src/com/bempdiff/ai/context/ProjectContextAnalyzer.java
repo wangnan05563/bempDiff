@@ -28,6 +28,12 @@ public final class ProjectContextAnalyzer {
     public static final int MAX_FILES = 4000;
     public static final int MAX_DEPTH = 12;
     private static final long MAX_READ_BYTES = 2L * 1024 * 1024; // 单文件读取上限 2MB
+    private static final String MVN_FILE = "pom.xml";
+    private static final String MVN = "Maven";
+    private static final String GRADLE = "Gradle";
+    private static final String GRADLE_FILE = "build.gradle";
+    private static final String GRADLE_KTS_FILE = "build.gradle.kts";
+    private static final String PKG_JSON = "package.json";
 
     private ProjectContextAnalyzer() {
         throw new UnsupportedOperationException("工具类不允许实例化");
@@ -46,7 +52,7 @@ public final class ProjectContextAnalyzer {
         List<String> configFiles = findConfigFiles(root, files);
         List<String> techStack = inferTechStack(buildSystem, dependencies);
         List<String> conventions = inferConventions(files);
-        String summary = synthesizeSummary(buildSystem, modules, dependencies, entryPoints, conventions);
+        String summary = synthesizeSummary(buildSystem, modules, entryPoints, conventions);
         return new ProjectContext(root.toString(), buildSystem, modules, dependencies,
                 entryPoints, configFiles, techStack, conventions, summary);
     }
@@ -79,9 +85,9 @@ public final class ProjectContextAnalyzer {
     // ---- 构建系统识别 ----
 
     private static String detectBuildSystem(Path root) {
-        if (exists(root, "pom.xml")) return "Maven";
-        if (exists(root, "build.gradle") || exists(root, "build.gradle.kts")) return "Gradle";
-        if (exists(root, "package.json")) return "npm";
+        if (exists(root, MVN_FILE)) return MVN;
+        if (exists(root, GRADLE_FILE) || exists(root, GRADLE_KTS_FILE)) return GRADLE;
+        if (exists(root, PKG_JSON)) return "npm";
         if (exists(root, "go.mod")) return "Go";
         if (exists(root, "requirements.txt") || exists(root, "pyproject.toml")) return "Python";
         if (exists(root, "Cargo.toml")) return "Rust";
@@ -97,62 +103,81 @@ public final class ProjectContextAnalyzer {
 
     private static List<String> findModules(Path root, String bs) {
         Set<String> mods = new LinkedHashSet<>();
-        if ("Maven".equals(bs)) {
-            String txt = readIfSmall(root.resolve("pom.xml"));
-            if (txt != null) {
-                Matcher m = Pattern.compile("<module>([^<]+)</module>").matcher(txt);
-                while (m.find()) mods.add(m.group(1).trim());
-            }
-        } else if ("Gradle".equals(bs)) {
-            String txt = readIfSmall(root.resolve("settings.gradle"));
-            if (txt == null) txt = readIfSmall(root.resolve("settings.gradle.kts"));
-            if (txt != null) {
-                Matcher m = Pattern.compile("include\\s*\\(?\\s*['\"]([^'\"]+)['\"]")
-                        .matcher(txt);
-                while (m.find()) mods.add(m.group(1).trim().replace(":", "/"));
-            }
+        if (MVN.equals(bs)) {
+            collectMavenModules(root, mods);
+        } else if (GRADLE.equals(bs)) {
+            collectGradleModules(root, mods);
         }
-        // 兜底：含独立构建文件的子目录视为模块
-        if (mods.isEmpty()) {
-            for (String fn : List.of("pom.xml", "build.gradle", "build.gradle.kts", "package.json")) {
-                Path child = root.resolve(fn);
-                if (Files.isRegularFile(child) && child.getParent() != null
-                        && !child.getParent().equals(root)) {
-                    mods.add(root.relativize(child.getParent()).toString().replace('\\', '/'));
-                }
-            }
-        }
+        collectFallbackModules(root, mods);
         return capped(new ArrayList<>(mods), 40);
+    }
+
+    private static void collectMavenModules(Path root, Set<String> mods) {
+        String txt = readIfSmall(root.resolve(MVN_FILE));
+        if (txt == null) return;
+        Matcher m = Pattern.compile("<module>([^<]+)</module>").matcher(txt);
+        while (m.find()) mods.add(m.group(1).trim());
+    }
+
+    private static void collectGradleModules(Path root, Set<String> mods) {
+        String txt = readIfSmall(root.resolve("settings.gradle"));
+        if (txt == null) txt = readIfSmall(root.resolve(GRADLE_KTS_FILE));
+        if (txt == null) return;
+        Matcher m = Pattern.compile("include\\s*\\(?\\s*['\"]([^'\"]+)['\"]")
+                .matcher(txt);
+        while (m.find()) mods.add(m.group(1).trim().replace(":", "/"));
+    }
+
+    /** 兜底：含独立构建文件的子目录视为模块（findModules 未识别到模块时调用）。 */
+    private static void collectFallbackModules(Path root, Set<String> mods) {
+        if (!mods.isEmpty()) return;
+        for (String fn : List.of(MVN_FILE, GRADLE_FILE, GRADLE_KTS_FILE, PKG_JSON)) {
+            Path child = root.resolve(fn);
+            if (Files.isRegularFile(child) && child.getParent() != null
+                    && !child.getParent().equals(root)) {
+                mods.add(root.relativize(child.getParent()).toString().replace('\\', '/'));
+            }
+        }
     }
 
     // ---- 依赖抽取 ----
 
     private static List<String> extractDependencies(Path root, String bs) {
         Set<String> deps = new LinkedHashSet<>();
-        if ("Maven".equals(bs)) {
-            String txt = readIfSmall(root.resolve("pom.xml"));
-            if (txt != null) {
-                Matcher m = Pattern.compile("<artifactId>([^<]+)</artifactId>").matcher(txt);
-                while (m.find()) deps.add(m.group(1).trim());
-            }
-        } else if ("Gradle".equals(bs)) {
-            for (String fn : List.of("build.gradle", "build.gradle.kts")) {
-                String txt = readIfSmall(root.resolve(fn));
-                if (txt == null) continue;
-                Matcher m = Pattern.compile(
-                        "(?:implementation|api|compileOnly|testImplementation|runtimeOnly)\\s*\\(?\\s*['\"]([^'\"]+)['\"]")
-                        .matcher(txt);
-                while (m.find()) deps.add(m.group(1).trim());
-            }
+        if (MVN.equals(bs)) {
+            collectMavenDeps(root, deps);
+        } else if (GRADLE.equals(bs)) {
+            collectGradleDeps(root, deps);
         } else if ("npm".equals(bs)) {
-            String txt = readIfSmall(root.resolve("package.json"));
-            if (txt != null) {
-                Matcher m = Pattern.compile("\"([a-zA-Z0-9@/_\\-.]+)\"\\s*:\\s*\"[^}]\"")
-                        .matcher(txt);
-                while (m.find()) deps.add(m.group(1).trim());
-            }
+            collectNpmDeps(root, deps);
         }
         return capped(new ArrayList<>(deps), 60);
+    }
+
+    private static void collectMavenDeps(Path root, Set<String> deps) {
+        String txt = readIfSmall(root.resolve(MVN_FILE));
+        if (txt == null) return;
+        Matcher m = Pattern.compile("<artifactId>([^<]+)</artifactId>").matcher(txt);
+        while (m.find()) deps.add(m.group(1).trim());
+    }
+
+    private static void collectGradleDeps(Path root, Set<String> deps) {
+        for (String fn : List.of(GRADLE_FILE, GRADLE_KTS_FILE)) {
+            String txt = readIfSmall(root.resolve(fn));
+            if (txt == null) continue;
+            Matcher m = Pattern.compile(
+                    "(?:implementation|api|compileOnly|testImplementation|runtimeOnly)\\s*\\(?\\s*['\"]([^'\"]+)['\"]")
+                    .matcher(txt);
+            while (m.find()) deps.add(m.group(1).trim());
+        }
+    }
+
+    private static void collectNpmDeps(Path root, Set<String> deps) {
+        String txt = readIfSmall(root.resolve(PKG_JSON));
+        if (txt == null) return;
+        Matcher m = Pattern.compile("\"([a-zA-Z0-9@/_\\-.]+)\"\\s*:\\s*\"[^}]\"")
+                .matcher(txt);
+        while (m.find()) deps.add(m.group(1).trim());
     }
 
     // ---- 入口/主类 ----
@@ -222,7 +247,16 @@ public final class ProjectContextAnalyzer {
 
     private static List<String> inferConventions(List<Path> files) {
         Set<String> conv = new LinkedHashSet<>();
-        // 包根：所有 src/main/java 下 Java 源文件所在包目录（文件名之前的目录）的公共前缀
+        List<String[]> pkgDirs = collectPkgDirs(files);
+        if (!pkgDirs.isEmpty()) {
+            conv.add("Java 包根：" + computePackageRoot(pkgDirs));
+        }
+        addNamingConventions(files, conv);
+        return capped(new ArrayList<>(conv), 10);
+    }
+
+    /** 收集所有 src/main/java 下 Java 源文件所在包的目录层级（文件名之前的目录部分）。 */
+    private static List<String[]> collectPkgDirs(List<Path> files) {
         List<String[]> pkgDirs = new ArrayList<>();
         for (Path f : files) {
             String s = f.toString().replace('\\', '/');
@@ -236,31 +270,38 @@ public final class ProjectContextAnalyzer {
                 pkgDirs.add(dir.split("/"));
             }
         }
-        if (!pkgDirs.isEmpty()) {
-            // 计算所有包目录的公共前缀层级（真正的「包根」）
-            String[] first = pkgDirs.get(0);
-            int common = first.length;
-            for (String[] p : pkgDirs) {
-                int lim = Math.min(common, p.length);
-                int i = 0;
-                while (i < lim && p[i].equals(first[i])) i++;
-                common = i;
-            }
-            // 最深包层级（用于判断项目包结构深度）
-            int maxDepth = 0;
-            for (String[] p : pkgDirs) {
-                maxDepth = Math.max(maxDepth, p.length);
-            }
-            StringBuilder rootSb = new StringBuilder();
-            for (int i = 0; i < common; i++) {
-                if (i > 0) rootSb.append('.');
-                rootSb.append(first[i]);
-            }
-            String rootStr = rootSb.length() == 0 ? "(默认包/无层级)" : rootSb.toString();
-            conv.add("Java 包根：" + rootStr + "（公共 " + common + " 级 / 最深 " + maxDepth + " 级）");
+        return pkgDirs;
+    }
+
+    /** 计算所有包目录的公共前缀层级，返回「包根」叙述字符串。 */
+    private static String computePackageRoot(List<String[]> pkgDirs) {
+        String[] first = pkgDirs.get(0);
+        int common = first.length;
+        for (String[] p : pkgDirs) {
+            int lim = Math.min(common, p.length);
+            int i = 0;
+            while (i < lim && p[i].equals(first[i])) i++;
+            common = i;
         }
-        // 命名约定频次
-        long mapper = 0, service = 0, controller = 0;
+        // 最深包层级（用于判断项目包结构深度）
+        int maxDepth = 0;
+        for (String[] p : pkgDirs) {
+            maxDepth = Math.max(maxDepth, p.length);
+        }
+        StringBuilder rootSb = new StringBuilder();
+        for (int i = 0; i < common; i++) {
+            if (i > 0) rootSb.append('.');
+            rootSb.append(first[i]);
+        }
+        String rootStr = rootSb.length() == 0 ? "(默认包/无层级)" : rootSb.toString();
+        return rootStr + "（公共 " + common + " 级 / 最深 " + maxDepth + " 级）";
+    }
+
+    /** 统计命名约定频次并追加约定叙述到 conv。 */
+    private static void addNamingConventions(List<Path> files, Set<String> conv) {
+        long mapper = 0;
+        long service = 0;
+        long controller = 0;
         for (Path f : files) {
             String n = f.getFileName().toString();
             if (n.endsWith("Mapper.java") || n.endsWith("Dao.java")) mapper++;
@@ -270,12 +311,11 @@ public final class ProjectContextAnalyzer {
         if (mapper > 0) conv.add("持久层命名 *Mapper/*Dao（" + mapper + " 个）");
         if (service > 0) conv.add("服务层命名 *Service（" + service + " 个）");
         if (controller > 0) conv.add("接口/控制层命名 *Controller/*Resource（" + controller + " 个）");
-        return capped(new ArrayList<>(conv), 10);
     }
 
     // ---- 架构叙述合成 ----
 
-    private static String synthesizeSummary(String bs, List<String> modules, List<String> deps,
+    private static String synthesizeSummary(String bs, List<String> modules,
                                             List<String> eps, List<String> conv) {
         if ("none".equals(bs) && (modules == null || modules.isEmpty())) {
             return "未识别到标准构建系统，仅基于目录结构推断；架构分层信息有限，请谨慎参考。";

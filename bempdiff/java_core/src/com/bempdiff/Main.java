@@ -39,9 +39,15 @@ import java.util.*;
  *   java -cp out com.bempdiff.Main compare <old> <new> [--expand-all]
  *   java -cp out com.bempdiff.Main decompile <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>]
  */
-public final class Main {
+public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但职责单一
 
     private static final String STATS_PREFIX = "stats: ";
+    private static final String ARG_REPORT = "--report";
+    private static final String ARG_REPLAY = "--replay";
+    private static final String ARG_PROJECT = "--project";
+    private static final String ARG_APIKEY = "--apikey";
+    private static final String ARG_PROVIDER = "--provider";
+    private static final String ARG_BASEURL = "--baseurl";
     private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(Main.class.getName());
 
     private static int layerCount(Map<String, LogicalEntry> entries, Layer layer) {
@@ -104,14 +110,14 @@ public final class Main {
         System.out.println("left : " + leftDir); // NOSONAR
         System.out.println("right: " + rightDir); // NOSONAR
         System.out.println("--- 汇总 ---"); // NOSONAR
-        System.out.println("仅左侧存在 : " + r.summary.leftOnly); // NOSONAR
-        System.out.println("仅右侧存在 : " + r.summary.rightOnly); // NOSONAR
-        System.out.println("两侧不同   : " + r.summary.modified + " (内容不同=" + r.summary.contentChanged // NOSONAR
-                + ", 仅属性不同=" + r.summary.attrOnlyChanged + ")"); // NOSONAR
-        System.out.println("完全相同   : " + r.summary.same); // NOSONAR
-        System.out.println("类型冲突   : " + r.summary.typeMismatch); // NOSONAR
-        System.out.println("扫描文件/目录: " + r.summary.scannedFiles + "/" + r.summary.scannedDirs // NOSONAR
-                + "  读取错误: " + r.summary.errors); // NOSONAR
+        System.out.println("仅左侧存在 : " + r.summary.getLeftOnly()); // NOSONAR
+        System.out.println("仅右侧存在 : " + r.summary.getRightOnly()); // NOSONAR
+        System.out.println("两侧不同   : " + r.summary.getModified() + " (内容不同=" + r.summary.getContentChanged() // NOSONAR
+                + ", 仅属性不同=" + r.summary.getAttrOnlyChanged() + ")"); // NOSONAR
+        System.out.println("完全相同   : " + r.summary.getSame()); // NOSONAR
+        System.out.println("类型冲突   : " + r.summary.getTypeMismatch()); // NOSONAR
+        System.out.println("扫描文件/目录: " + r.summary.getScannedFiles() + "/" + r.summary.getScannedDirs() // NOSONAR
+                + "  读取错误: " + r.summary.getErrors()); // NOSONAR
         System.out.println("--- 差异树 (展开) ---"); // NOSONAR
         printFolderTree(r.roots, "");
         if (reportMd != null) {
@@ -218,7 +224,7 @@ public final class Main {
             }
         }
         System.out.println("----------------------------------------"); // NOSONAR
-        System.out.println("反编译成功=" + okCnt + " / " + cands.size()
+        System.out.println("反编译成功=" + okCnt + " / " + cands.size() // NOSONAR(S106) - CLI 控制台输出
                 + "  文本类文件比对=" + feOk + " / " + fe.size()); // NOSONAR
     }
 
@@ -264,7 +270,7 @@ public final class Main {
         if (a.contains("--ai")) {
             AiConfig aiCfg = loadAiConfig(a);
             Path replayDir = Paths.get(System.getProperty("user.home"), ".bempdiff", "ai_replay");
-            if (a.contains("--replay")) replayDir = Paths.get(a.get(a.indexOf("--replay") + 1));
+            if (a.contains(ARG_REPLAY)) replayDir = Paths.get(a.get(a.indexOf(ARG_REPLAY) + 1));
             AiAnalyzer analyzer;
             if (aiCfg.getApiKey() != null && !aiCfg.getApiKey().isEmpty()) {
                 analyzer = new HttpAiAnalyzer(aiCfg);
@@ -275,9 +281,9 @@ public final class Main {
             }
             // 项目级上下文增强（可选 --project <dir>）：离线扫描工程目录，作为 AI 分析依据
             ProjectContext ctx = null;
-            if (a.contains("--project")) {
+            if (a.contains(ARG_PROJECT)) {
                 try {
-                    Path projDir = Paths.get(a.get(a.indexOf("--project") + 1));
+                    Path projDir = Paths.get(a.get(a.indexOf(ARG_PROJECT) + 1));
                     ctx = ProjectContextAnalyzer.analyze(projDir);
                     LOG.log(java.util.logging.Level.INFO, "[AI] 项目级上下文已加载：{0}（构建系统={1}, 模块数={2}）",
                             new Object[]{projDir, ctx.getBuildSystem(), ctx.getModules().size()});
@@ -304,8 +310,8 @@ public final class Main {
             List<FileAnalysis> b = new ArrayList<>();
             try {
                 List<AiAnalyzer.DecompileReq> bCands = new ArrayList<>();
-                for (String k : aiMap.keySet()) {
-                    bCands.add(new AiAnalyzer.DecompileReq(k, aiMap.get(k), fileClassOfKey(k, oldSnap, newSnap)));
+                for (Map.Entry<String, DecompiledUnit> e : aiMap.entrySet()) {
+                    bCands.add(new AiAnalyzer.DecompileReq(e.getKey(), e.getValue(), fileClassOfKey(e.getKey(), oldSnap, newSnap)));
                 }
                 if (bCands.size() > aiCfg.getStageBTopK()) bCands = bCands.subList(0, aiCfg.getStageBTopK());
                 b = analyzer.stageB(bCands, aiCfg, ctx);
@@ -317,7 +323,7 @@ public final class Main {
             System.out.println("项目级上下文: " + (ctx != null && !ctx.isEmpty() ? ("已启用（构建系统=" + ctx.getBuildSystem() + ", 模块数=" + ctx.getModules().size() + "）") : "未启用")); // NOSONAR
             System.out.println("out: " + outMd); // NOSONAR
             System.out.println("AI 整体风险=" + summary.getOverallRisk() + "  阶段B 深读=" + b.size() + " 文件"); // NOSONAR
-            System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size()
+            System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size() // NOSONAR(S106) - CLI 控制台输出
                     + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
             return;
         }
@@ -325,7 +331,7 @@ public final class Main {
         rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
         System.out.println("== REPORT =="); // NOSONAR
         System.out.println("out: " + outMd); // NOSONAR
-        System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size()
+        System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() // NOSONAR(S106) - CLI 控制台输出
                 + "  text=" + text.size()
                 + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
     }
@@ -351,7 +357,9 @@ public final class Main {
         if (libJar.isEmpty()) {
             System.out.println("差异依赖 JAR: 无（WEB-INF/lib 下无 ADDED/MODIFIED/DELETED 的 JAR）"); // NOSONAR
         } else {
-            long jarAdded = 0, jarModified = 0, jarDeleted = 0;
+            long jarAdded = 0;
+            long jarModified = 0;
+            long jarDeleted = 0;
             for (com.bempdiff.diff.LibJarDiff.DiffJarInfo jar : libJar.jars) {
                 if (jar.jarStatus == DiffStatus.ADDED) jarAdded++;
                 else if (jar.jarStatus == DiffStatus.MODIFIED) jarModified++;
@@ -410,9 +418,9 @@ public final class Main {
             }
         }
         // CLI 覆盖（优先级最高）
-        if (a.contains("--apikey")) c.setApiKey(a.get(a.indexOf("--apikey") + 1));
-        if (a.contains("--provider")) c.setProvider(a.get(a.indexOf("--provider") + 1));
-        if (a.contains("--baseurl")) c.setBaseUrl(a.get(a.indexOf("--baseurl") + 1));
+        if (a.contains(ARG_APIKEY)) c.setApiKey(a.get(a.indexOf(ARG_APIKEY) + 1));
+        if (a.contains(ARG_PROVIDER)) c.setProvider(a.get(a.indexOf(ARG_PROVIDER) + 1));
+        if (a.contains(ARG_BASEURL)) c.setBaseUrl(a.get(a.indexOf(ARG_BASEURL) + 1));
         if (a.contains("--model")) c.setModel(a.get(a.indexOf("--model") + 1));
         if (c.getApiKey() != null && !c.getApiKey().isEmpty()) c.setEnabled(true);
         return c;
@@ -487,10 +495,10 @@ public final class Main {
         aiCfg.setProvider("openai");
         // 有真实 API Key -> 用 HttpAiAnalyzer（真实调用）；否则离线回放 Mock
         AiAnalyzer analyzer;
-        if (a.contains("--apikey")) {
-            aiCfg.setApiKey(a.get(a.indexOf("--apikey") + 1));
-            if (a.contains("--provider")) aiCfg.setProvider(a.get(a.indexOf("--provider") + 1));
-            if (a.contains("--baseurl")) aiCfg.setBaseUrl(a.get(a.indexOf("--baseurl") + 1));
+        if (a.contains(ARG_APIKEY)) {
+            aiCfg.setApiKey(a.get(a.indexOf(ARG_APIKEY) + 1));
+            if (a.contains(ARG_PROVIDER)) aiCfg.setProvider(a.get(a.indexOf(ARG_PROVIDER) + 1));
+            if (a.contains(ARG_BASEURL)) aiCfg.setBaseUrl(a.get(a.indexOf(ARG_BASEURL) + 1));
             analyzer = new HttpAiAnalyzer(aiCfg);
             LOG.log(java.util.logging.Level.INFO, "[AI] 使用 HttpAiAnalyzer（真实调用，provider={0}）", aiCfg.getProvider());
         } else {
@@ -500,9 +508,9 @@ public final class Main {
 
         // 项目级上下文增强（可选 --project <dir>）：扫描工程目录，作为 AI 分析依据
         ProjectContext ctx = null;
-        if (a.contains("--project")) {
+        if (a.contains(ARG_PROJECT)) {
             try {
-                Path projDir = Paths.get(a.get(a.indexOf("--project") + 1));
+                Path projDir = Paths.get(a.get(a.indexOf(ARG_PROJECT) + 1));
                 ctx = ProjectContextAnalyzer.analyze(projDir);
                 LOG.log(java.util.logging.Level.INFO, "[AI] 项目级上下文已加载：{0}（构建系统={1}, 模块数={2}）",
                         new Object[]{projDir, ctx.getBuildSystem(), ctx.getModules().size()});
@@ -527,8 +535,8 @@ public final class Main {
 
             // 阶段B：仅对前 topK 候选深读（含文本类文件，携带 fileClass 以切换领域措辞）
             List<AiAnalyzer.DecompileReq> bCands = new ArrayList<>();
-            for (String k : decompiled.keySet()) {
-                bCands.add(new AiAnalyzer.DecompileReq(k, decompiled.get(k), fileClassOfKey(k, oldSnap, newSnap)));
+            for (Map.Entry<String, DecompiledUnit> e : decompiled.entrySet()) {
+                bCands.add(new AiAnalyzer.DecompileReq(e.getKey(), e.getValue(), fileClassOfKey(e.getKey(), oldSnap, newSnap)));
             }
             // 成本闸门：阶段B 仅对前 aiCfg.stageBTopK 深读
             if (bCands.size() > aiCfg.getStageBTopK()) bCands = bCands.subList(0, aiCfg.getStageBTopK());
@@ -585,7 +593,14 @@ public final class Main {
             String k = cands.get(i);
             LogicalEntry oe = oldSnap.getEntries().get(k);
             LogicalEntry ne = newSnap.getEntries().get(k);
-            FileClass fc = (ne != null) ? ne.getFileClass() : (oe != null ? oe.getFileClass() : FileClass.JS);
+            FileClass fc;
+            if (ne != null) {
+                fc = ne.getFileClass();
+            } else if (oe != null) {
+                fc = oe.getFileClass();
+            } else {
+                fc = FileClass.JS;
+            }
             m.put(k, ftd.diff(oldSnap, newSnap, oe, ne, k, fc));
         }
         return m;
@@ -612,8 +627,8 @@ public final class Main {
         int maxDepth = -1;
         if (a.contains("--max-depth")) maxDepth = Integer.parseInt(a.get(a.indexOf("--max-depth") + 1));
         FolderDiff.Options fopts = FolderDiff.Options.defaults();
-        fopts.maxDepth = maxDepth;
-        Path folderReport = a.contains("--report") ? Paths.get(a.get(a.indexOf("--report") + 1)) : null;
+        fopts.setMaxDepth(maxDepth);
+        Path folderReport = a.contains(ARG_REPORT) ? Paths.get(a.get(a.indexOf(ARG_REPORT) + 1)) : null;
 
         switch (cmd) {
             case "inspect":
@@ -654,7 +669,7 @@ public final class Main {
             case "ai":
                 requireArgs(args, 3, cmd);
                 ai(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
-                        outPath(a, "--replay", "bempdiff-ai-replay"), a);
+                        outPath(a, ARG_REPLAY, "bempdiff-ai-replay"), a);
                 break;
             case "server": {
                 int srvPort = 18765;
@@ -705,7 +720,7 @@ public final class Main {
 
     /** 报告输出路径：兼容 --out 与 --report 两种写法（历史子命令曾混用，统一为别名）。 */
     private static Path reportOutPath(List<String> a, String def) {
-        for (String flag : new String[]{"--out", "--report"}) {
+        for (String flag : new String[]{"--out", ARG_REPORT}) {
             if (a.contains(flag)) return Paths.get(a.get(a.indexOf(flag) + 1));
         }
         return Paths.get(def);

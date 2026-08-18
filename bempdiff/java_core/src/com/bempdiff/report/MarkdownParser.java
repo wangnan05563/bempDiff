@@ -20,6 +20,8 @@ import java.util.List;
  */
 public final class MarkdownParser {
 
+    private static final String FENCE = "```";
+
     private MarkdownParser() {
     }
 
@@ -29,30 +31,102 @@ public final class MarkdownParser {
 
     /** 一个已识别的 Markdown 块。 */
     public static final class Block {
-        public BlockType type;
-        public int headingLevel;            // HEADING 专用
-        public String headingText;          // HEADING / QUOTE 复用：标题文本 / 引用文本（可能含 \n）
-        public String codeLang;             // CODE 专用：围栏后的语言标识
-        public String codeText;             // CODE 专用：原始代码
-        public boolean ordered;             // LIST 专用：是否整体有序（按首个条目判定）
-        public List<ListItem> items = new ArrayList<>();      // LIST 专用
-        public List<String> tableHeader = new ArrayList<>();  // TABLE 专用
-        public List<List<String>> tableRows = new ArrayList<>(); // TABLE 专用：数据行
+        private BlockType type;
+        private int headingLevel;            // HEADING 专用
+        private String headingText;          // HEADING / QUOTE 复用：标题文本 / 引用文本（可能含 \n）
+        private String codeLang;             // CODE 专用：围栏后的语言标识
+        private String codeText;             // CODE 专用：原始代码
+        private boolean ordered;             // LIST 专用：是否整体有序（按首个条目判定）
+        private final List<ListItem> items = new ArrayList<>();      // LIST 专用
+        private final List<String> tableHeader = new ArrayList<>();  // TABLE 专用
+        private final List<List<String>> tableRows = new ArrayList<>(); // TABLE 专用：数据行
 
         public Block(BlockType type) {
             this.type = type;
+        }
+
+        public BlockType getType() {
+            return type;
+        }
+
+        public int getHeadingLevel() {
+            return headingLevel;
+        }
+
+        public void setHeadingLevel(int headingLevel) {
+            this.headingLevel = headingLevel;
+        }
+
+        public String getHeadingText() {
+            return headingText;
+        }
+
+        public void setHeadingText(String headingText) {
+            this.headingText = headingText;
+        }
+
+        public String getCodeLang() {
+            return codeLang;
+        }
+
+        public void setCodeLang(String codeLang) {
+            this.codeLang = codeLang;
+        }
+
+        public String getCodeText() {
+            return codeText;
+        }
+
+        public void setCodeText(String codeText) {
+            this.codeText = codeText;
+        }
+
+        public boolean isOrdered() {
+            return ordered;
+        }
+
+        public void setOrdered(boolean ordered) {
+            this.ordered = ordered;
+        }
+
+        public List<ListItem> getItems() {
+            return items;
+        }
+
+        public List<String> getTableHeader() {
+            return tableHeader;
+        }
+
+        public List<List<String>> getTableRows() {
+            return tableRows;
         }
     }
 
     /** 列表项。indent 为前导空格数，用于渲染时呈现嵌套层级。 */
     public static final class ListItem {
-        public final int indent;
-        public final boolean ordered;
-        public String content;
+        private final int indent;
+        private final boolean ordered;
+        private String content;
 
         public ListItem(int indent, boolean ordered, String content) {
             this.indent = indent;
             this.ordered = ordered;
+            this.content = content;
+        }
+
+        public int getIndent() {
+            return indent;
+        }
+
+        public boolean isOrdered() {
+            return ordered;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
             this.content = content;
         }
     }
@@ -83,139 +157,165 @@ public final class MarkdownParser {
         int i = 0;
         int n = lines.size();
         while (i < n) {
-            String line = lines.get(i);
-            String trimmed = line.trim();
+            String trimmed = lines.get(i).trim();
             if (trimmed.isEmpty()) {
                 i++;
-                continue;
-            }
-
-            // 1) 围栏代码块（最高优先级，内部内容原样保留，不解析 --- / | 等）
-            if (trimmed.startsWith("```")) {
-                String lang = trimmed.substring(3).trim();
-                List<String> code = new ArrayList<>();
+            } else if (trimmed.startsWith(FENCE)) {
+                i = parseCodeBlock(lines, i, blocks);
+            } else if (trimmed.startsWith("#") && isHeadingLine(trimmed)) {
+                blocks.add(headingBlock(trimmed));
                 i++;
-                while (i < n) {
-                    if (lines.get(i).trim().startsWith("```")) {
-                        i++;
-                        break;
-                    }
-                    code.add(lines.get(i));
-                    i++;
-                }
-                Block b = new Block(BlockType.CODE);
-                b.codeLang = lang;
-                b.codeText = String.join("\n", code);
-                blocks.add(b);
-                continue;
-            }
-
-            // 2) 标题
-            if (trimmed.startsWith("#")) {
-                int level = 0;
-                while (level < trimmed.length() && trimmed.charAt(level) == '#') {
-                    level++;
-                }
-                if (level <= 6 && (trimmed.length() == level || trimmed.charAt(level) == ' ')) {
-                    Block b = new Block(BlockType.HEADING);
-                    b.headingLevel = level;
-                    b.headingText = trimmed.substring(level).trim();
-                    blocks.add(b);
-                    i++;
-                    continue;
-                }
-            }
-
-            // 3) 表格（当前行含 |，且下一行是分隔行）
-            if (trimmed.contains("|") && i + 1 < n && isTableSeparator(lines.get(i + 1))) {
-                Block b = new Block(BlockType.TABLE);
-                b.tableHeader = splitRow(trimmed);
-                i += 2; // 跳过表头行与分隔行
-                while (i < n) {
-                    String t = lines.get(i).trim();
-                    if (t.isEmpty() || t.startsWith("```") || !t.contains("|")) {
-                        break;
-                    }
-                    b.tableRows.add(splitRow(t));
-                    i++;
-                }
-                blocks.add(b);
-                continue;
-            }
-
-            // 4) 分隔线
-            if (isHr(trimmed)) {
+            } else if (trimmed.contains("|") && i + 1 < n && isTableSeparator(lines.get(i + 1))) {
+                i = parseTable(lines, i, blocks);
+            } else if (isHr(trimmed)) {
                 blocks.add(new Block(BlockType.HR));
                 i++;
-                continue;
+            } else if (isListItem(trimmed)) {
+                i = parseList(lines, i, blocks);
+            } else if (trimmed.startsWith(">")) {
+                i = parseQuote(lines, i, blocks);
+            } else {
+                i = parseParagraph(lines, i, blocks);
             }
-
-            // 5) 列表
-            if (isListItem(trimmed)) {
-                Block b = new Block(BlockType.LIST);
-                while (i < n) {
-                    String raw = lines.get(i);
-                    String t = raw.trim();
-                    if (t.isEmpty()) {
-                        break;
-                    }
-                    if (isListItem(t)) {
-                        int indent = leadingSpaces(raw);
-                        boolean ord = t.matches("^\\d+\\.\\s+.*");
-                        String content = ord
-                                ? t.replaceFirst("^\\d+\\.\\s+", "")
-                                : t.replaceFirst("^[-*]\\s+", "");
-                        b.items.add(new ListItem(indent, ord, content.trim()));
-                        if (b.items.size() == 1) {
-                            b.ordered = ord;
-                        }
-                    } else if (isContinuation(raw)) {
-                        if (!b.items.isEmpty()) {
-                            ListItem last = b.items.get(b.items.size() - 1);
-                            last.content += " " + t;
-                        }
-                    } else {
-                        break;
-                    }
-                    i++;
-                }
-                blocks.add(b);
-                continue;
-            }
-
-            // 6) 引用块
-            if (trimmed.startsWith(">")) {
-                List<String> q = new ArrayList<>();
-                while (i < n && lines.get(i).trim().startsWith(">")) {
-                    q.add(lines.get(i).trim().replaceFirst("^>\\s?", ""));
-                    i++;
-                }
-                Block b = new Block(BlockType.QUOTE);
-                b.headingText = String.join("\n", q);
-                blocks.add(b);
-                continue;
-            }
-
-            // 7) 段落（聚合相邻普通行）
-            List<String> para = new ArrayList<>();
-            while (i < n) {
-                String t = lines.get(i).trim();
-                if (t.isEmpty()) {
-                    break;
-                }
-                if (t.startsWith("#") || isHr(t) || t.startsWith("```") || isListItem(t)
-                        || (t.contains("|") && i + 1 < n && isTableSeparator(lines.get(i + 1)))
-                        || t.startsWith(">")) {
-                    break;
-                }
-                para.add(t);
-                i++;
-            }
-            Block b = new Block(BlockType.PARAGRAPH);
-            b.headingText = String.join(" ", para);
-            blocks.add(b);
         }
         return blocks;
+    }
+
+    /** 围栏代码块：内部内容原样保留，不解析 --- / | 等。 */
+    private static int parseCodeBlock(List<String> lines, int i, List<Block> blocks) {
+        String lang = lines.get(i).trim().substring(3).trim();
+        List<String> code = new ArrayList<>();
+        i++;
+        int n = lines.size();
+        while (i < n) {
+            if (lines.get(i).trim().startsWith(FENCE)) {
+                i++;
+                break;
+            }
+            code.add(lines.get(i));
+            i++;
+        }
+        Block b = new Block(BlockType.CODE);
+        b.setCodeLang(lang);
+        b.setCodeText(String.join("\n", code));
+        blocks.add(b);
+        return i;
+    }
+
+    /** GFM 表格：当前行作为表头，其后连续的 | 行作为数据行。 */
+    private static int parseTable(List<String> lines, int i, List<Block> blocks) {
+        int n = lines.size();
+        Block b = new Block(BlockType.TABLE);
+        b.getTableHeader().addAll(splitRow(lines.get(i).trim()));
+        i += 2; // 跳过表头行与分隔行
+        while (i < n) {
+            String t = lines.get(i).trim();
+            if (t.isEmpty() || t.startsWith(FENCE) || !t.contains("|")) {
+                break;
+            }
+            b.getTableRows().add(splitRow(t));
+            i++;
+        }
+        blocks.add(b);
+        return i;
+    }
+
+    /** 列表：连续列表项聚合，首次项判定有序/无序，缩进的续行追加到上一项。 */
+    private static int parseList(List<String> lines, int i, List<Block> blocks) {
+        Block b = new Block(BlockType.LIST);
+        int n = lines.size();
+        while (i < n) {
+            String raw = lines.get(i);
+            String t = raw.trim();
+            if (t.isEmpty() || (!isListItem(t) && !isContinuation(raw))) {
+                break;
+            }
+            accumulateListItem(b, raw, t);
+            i++;
+        }
+        blocks.add(b);
+        return i;
+    }
+
+    /** 列表项聚合 (有序+无序判定+缩进续行追加)。 */
+    private static void accumulateListItem(Block b, String raw, String t) {
+        if (isListItem(t)) {
+            int indent = leadingSpaces(raw);
+            boolean ord = t.matches("^\\d+\\.\\s+.*");
+            String content = ord
+                    ? t.replaceFirst("^\\d+\\.\\s+", "")
+                    : t.replaceFirst("^[-*]\\s+", "");
+            ListItem item = new ListItem(indent, ord, content.trim());
+            b.getItems().add(item);
+            if (b.getItems().size() == 1) {
+                b.setOrdered(ord);
+            }
+        } else {
+            if (!b.getItems().isEmpty()) {
+                ListItem last = b.getItems().get(b.getItems().size() - 1);
+                last.setContent(last.getContent() + " " + t);
+            }
+        }
+    }
+
+    /** 引用块：以 > 开头的连续行聚合。 */
+    private static int parseQuote(List<String> lines, int i, List<Block> blocks) {
+        List<String> q = new ArrayList<>();
+        int n = lines.size();
+        while (i < n && lines.get(i).trim().startsWith(">")) {
+            q.add(lines.get(i).trim().replaceFirst("^>\\s?", ""));
+            i++;
+        }
+        Block b = new Block(BlockType.QUOTE);
+        b.setHeadingText(String.join("\n", q));
+        blocks.add(b);
+        return i;
+    }
+
+    /** 段落：聚合相邻的普通非空行。 */
+    private static int parseParagraph(List<String> lines, int i, List<Block> blocks) {
+        List<String> para = new ArrayList<>();
+        int n = lines.size();
+        while (i < n) {
+            String t = lines.get(i).trim();
+            if (t.isEmpty() || isParagraphBoundary(t, lines, i, n)) {
+                break;
+            }
+            para.add(t);
+            i++;
+        }
+        Block b = new Block(BlockType.PARAGRAPH);
+        b.setHeadingText(String.join(" ", para));
+        blocks.add(b);
+        return i;
+    }
+
+    /** 判定某行是否属于其他元素结构，作为段落的停止条件。 */
+    private static boolean isParagraphBoundary(String t, List<String> lines, int i, int n) {
+        if (t.startsWith("#") || isHr(t) || t.startsWith(FENCE) || isListItem(t) || t.startsWith(">")) {
+            return true;
+        }
+        return t.contains("|") && i + 1 < n && isTableSeparator(lines.get(i + 1));
+    }
+
+    private static Block headingBlock(String trimmed) {
+        int level = 0;
+        while (level < trimmed.length() && trimmed.charAt(level) == '#') {
+            level++;
+        }
+        Block b = new Block(BlockType.HEADING);
+        b.setHeadingLevel(level);
+        b.setHeadingText(trimmed.substring(level).trim());
+        return b;
+    }
+
+    /** 是否为合法标题行：# 数 1~6 且后随空格或行尾。 */
+    private static boolean isHeadingLine(String trimmed) {
+        int level = 0;
+        while (level < trimmed.length() && trimmed.charAt(level) == '#') {
+            level++;
+        }
+        return level <= 6 && (trimmed.length() == level || trimmed.charAt(level) == ' ');
     }
 
     // ------------------------------------------------------------------
@@ -232,61 +332,63 @@ public final class MarkdownParser {
         int len = s.length();
         while (idx < len) {
             char c = s.charAt(idx);
-            // 行内代码
             if (c == '`') {
-                if (buf.length() > 0) {
-                    toks.add(new InlineToken(InlineToken.Kind.TEXT, buf.toString()));
-                    buf.setLength(0);
-                }
-                int end = s.indexOf('`', idx + 1);
-                if (end < 0) {
-                    buf.append(c);
-                    idx++;
-                    continue;
-                }
-                toks.add(new InlineToken(InlineToken.Kind.CODE, s.substring(idx + 1, end)));
-                idx = end + 1;
-                continue;
+                idx = parseInlineCode(s, idx, buf, toks);
+            } else if (c == '*' && idx + 1 < len && s.charAt(idx + 1) == '*') {
+                idx = parseInlineBold(s, idx, buf, toks);
+            } else if (c == '*') {
+                idx = parseInlineItalic(s, idx, buf, toks);
+            } else {
+                buf.append(c);
+                idx++;
             }
-            // 粗体 **
-            if (c == '*' && idx + 1 < len && s.charAt(idx + 1) == '*') {
-                if (buf.length() > 0) {
-                    toks.add(new InlineToken(InlineToken.Kind.TEXT, buf.toString()));
-                    buf.setLength(0);
-                }
-                int end = s.indexOf("**", idx + 2);
-                if (end < 0) {
-                    buf.append("**");
-                    idx += 2;
-                    continue;
-                }
-                toks.add(new InlineToken(InlineToken.Kind.BOLD, s.substring(idx + 2, end)));
-                idx = end + 2;
-                continue;
-            }
-            // 斜体 *
-            if (c == '*') {
-                if (buf.length() > 0) {
-                    toks.add(new InlineToken(InlineToken.Kind.TEXT, buf.toString()));
-                    buf.setLength(0);
-                }
-                int end = s.indexOf('*', idx + 1);
-                if (end < 0) {
-                    buf.append(c);
-                    idx++;
-                    continue;
-                }
-                toks.add(new InlineToken(InlineToken.Kind.ITALIC, s.substring(idx + 1, end)));
-                idx = end + 1;
-                continue;
-            }
-            buf.append(c);
-            idx++;
         }
+        flushToken(buf, toks);
+        return toks;
+    }
+
+    /** 将积累的普通文本作为 TEXT token 提交。 */
+    private static void flushToken(StringBuilder buf, List<InlineToken> toks) {
         if (buf.length() > 0) {
             toks.add(new InlineToken(InlineToken.Kind.TEXT, buf.toString()));
+            buf.setLength(0);
         }
-        return toks;
+    }
+
+    /** 行内代码：s[idx] 为 `。返回处理后的新下标。 */
+    private static int parseInlineCode(String s, int idx, StringBuilder buf, List<InlineToken> toks) {
+        flushToken(buf, toks);
+        int end = s.indexOf('`', idx + 1);
+        if (end < 0) {
+            buf.append('`');
+            return idx + 1;
+        }
+        toks.add(new InlineToken(InlineToken.Kind.CODE, s.substring(idx + 1, end)));
+        return end + 1;
+    }
+
+    /** 粗体：s[idx..idx+1] 为 **。返回处理后的新下标。 */
+    private static int parseInlineBold(String s, int idx, StringBuilder buf, List<InlineToken> toks) {
+        flushToken(buf, toks);
+        int end = s.indexOf("**", idx + 2);
+        if (end < 0) {
+            buf.append("**");
+            return idx + 2;
+        }
+        toks.add(new InlineToken(InlineToken.Kind.BOLD, s.substring(idx + 2, end)));
+        return end + 2;
+    }
+
+    /** 斜体：s[idx] 为 *。返回处理后的新下标。 */
+    private static int parseInlineItalic(String s, int idx, StringBuilder buf, List<InlineToken> toks) {
+        flushToken(buf, toks);
+        int end = s.indexOf('*', idx + 1);
+        if (end < 0) {
+            buf.append('*');
+            return idx + 1;
+        }
+        toks.add(new InlineToken(InlineToken.Kind.ITALIC, s.substring(idx + 1, end)));
+        return end + 1;
     }
 
     // ------------------------------------------------------------------
@@ -295,15 +397,7 @@ public final class MarkdownParser {
 
     private static List<String> readLines(String md) {
         List<String> lines = new ArrayList<>();
-        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.StringReader(md))) {
-            String l;
-            while ((l = br.readLine()) != null) {
-                lines.add(l);
-            }
-        } catch (java.io.IOException e) {
-            // StringReader 不会抛 IO 异常，这里仅为编译完备
-            throw new RuntimeException(e);
-        }
+        md.lines().forEach(lines::add);
         return lines;
     }
 
