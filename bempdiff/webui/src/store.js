@@ -479,7 +479,9 @@ export function startAiAnalysis(category = 'risk', prompt = '') {
   })
 }
 
-/** 拉起某个 task 的 SSE 流（从头开始）。 */
+/** 拉起某个 task 的 SSE 流（从头开始）。
+ *  回调归属守卫：若该 task 已被「重新分析/关闭」换上新 controller，旧流的异步回调
+ *  （onThinking/onAnswer/onDone/onError）一律忽略，避免污染新流答案或误删新 controller。 */
 function runAiTaskStream(t) {
   t.status = 'streaming'
   t.thinking = []
@@ -487,13 +489,22 @@ function runAiTaskStream(t) {
   t.error = ''
   const body = { category: t.category, prompt: t.prompt || '' }
   const controller = api.analyzeStream(state.job.jobId, {
-    onThinking: (d) => { t.thinking.push({ phase: d.phase || 'thinking', message: d.message || '' }) },
-    onAnswer: (d) => { t.answer += (d.text || '') },
+    onThinking: (d) => {
+      // 仅当当前流的 controller 仍是本 controller 时才写入（防止陈旧流污染）
+      if (aiControllers.get(t.id) !== controller) return
+      t.thinking.push({ phase: d.phase || 'thinking', message: d.message || '' })
+    },
+    onAnswer: (d) => {
+      if (aiControllers.get(t.id) !== controller) return
+      t.answer += (d.text || '')
+    },
     onDone: (d) => {
+      if (aiControllers.get(t.id) !== controller) return
       aiControllers.delete(t.id)
       t.status = (d && d.aborted) ? 'aborted' : 'done'
     },
     onError: (d) => {
+      if (aiControllers.get(t.id) !== controller) return
       aiControllers.delete(t.id)
       t.status = 'error'
       t.error = (d && d.message) || '分析失败'
