@@ -4,7 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
-/** 票据开具服务（v2：新增税率、有效期校验，调整金额上限） */
+/** 业务开具服务（v2：新增税率、有效期校验，调整金额上限） */
 public class InvoiceService {
 
     private static final BigDecimal MAX_AMOUNT = new BigDecimal("9999999.99");

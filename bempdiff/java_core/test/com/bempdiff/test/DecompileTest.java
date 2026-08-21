@@ -72,7 +72,7 @@ public final class DecompileTest {
     }
 
     public void testDecode_utf8Chinese() throws Throwable {
-        String original = "票据系统中文常量测试";
+        String original = "业务系统中文常量测试";
         byte[] bs = original.getBytes(StandardCharsets.UTF_8);
         String decoded = (String) DECODE.invoke(null, bs);
         Asserts.assertEquals("UTF-8 应原样解码", original, decoded);

@@ -1,7 +1,7 @@
 # 工作区清理报告（workspace-cleanup）
 
 - **日期**：2026-08-14
-- **项目**：票据系统 WAR/JAR 差异比对与智能分析工具（18_comparePakage）
+- **项目**：差异化对比工具（18_comparePakage）
 - **执行方式**：`workspace-cleanup` skill，配置驱动（`cleanup-config.yaml`），方案 A（含旧备份）
 - **安全策略**：删除前生成 SHA256 审计日志 + 目标清单；ctypes 直删（绕过 safe-delete 钩子）；分批 ≤200 / 顺序执行；锁文件跳过不中断；git 索引未受污染
 

@@ -3,7 +3,7 @@ package com.internal;
 import java.math.BigDecimal;
 import java.util.List;
 
-/** 票据开具服务（v1：基准版本） */
+/** 业务开具服务（v1：基准版本） */
 public class InvoiceService {
 
     private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999.99");

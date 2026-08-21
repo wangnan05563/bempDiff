@@ -79,7 +79,7 @@ public final class TestFixtures {
     public static final String SRC_A_V1 = """
         package com.internal;
         public class A {
-            private String name = "票据名称V1";
+            private String name = "业务名称V1";
             public int add(int a, int b) { return a + b; }
         }
         """;
@@ -87,7 +87,7 @@ public final class TestFixtures {
     public static final String SRC_A_V2 = """
         package com.internal;
         public class A {
-            private String name = "票据名称V2";
+            private String name = "业务名称V2";
             public int add(int a, int b) { return a + b + 1; }
             public void newMethod() {}
         }

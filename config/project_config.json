@@ -1,16 +1,16 @@
 {
   "_meta": {
     "file": "project_config.json",
-    "purpose": "BempDiff（票据系统WAR-JAR差异比对与智能分析工具）项目特定配置",
+    "purpose": "BempDiff（差异化对比工具）项目特定配置",
     "version": "1.0.0",
     "schema_version": "2.4.0",
     "last_updated": "2026-08-09"
   },
   "project": {
     "key": "bempdiff",
-    "name": "BempDiff - Package Comparison Tool",
+    "name": "BempDiff - 差异化对比工具",
     "base_path": ".",
-    "description": "Java 桌面工具：WAR/JAR 差异比对与智能分析"
+    "description": "Java 桌面工具：通用构建包（war/jar/文件夹）差异比对与智能分析"
   },
   "business_constraints": {
     "_description": "业务特定硬约束文件加载清单",

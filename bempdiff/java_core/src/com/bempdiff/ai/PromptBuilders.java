@@ -51,7 +51,7 @@ public final class PromptBuilders {
     }
 
     private static void appendDiffHeader(StringBuilder p, DiffResult diff, AiConfig cfg) {
-        p.append("你是票据系统（含 Java 后端与前端 JS/HTML/CSS 资源）升级的差异分析助手。下面是新/老两个构建包的差异清单，");
+        p.append("你是软件构建包（含 Java 后端与前端 JS/HTML/CSS 资源）升级的差异分析助手。下面是新/老两个构建包的差异清单，");
         p.append("请据此以 JSON 返回，字段固定为：\n");
         p.append("- `overallRisk`：整体风险等级(LOW/MEDIUM/HIGH)\n");
         p.append("- `impactScope`：影响范围描述（受影响的模块/对外接口）\n");

@@ -250,7 +250,7 @@ pub fn run() {
                 "main",
                 WebviewUrl::External(window_url.parse::<url::Url>().expect("invalid window url")),
             )
-            .title("BempDiff — 票据系统 WAR/JAR 差异比对与智能分析")
+            .title("BempDiff — 差异化对比工具")
             .inner_size(1366.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .resizable(true)
