@@ -70,6 +70,19 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     }
 
     private static void compare(Path oldP, Path newP, boolean expandAll) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
+        // 智能识别：同名不同版本的压缩包自动按版本升序（旧→新），无需手动分辨新旧。
+        if (com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(
+                oldP.getFileName().toString(), newP.getFileName().toString())) {
+            String[] ordered = com.bempdiff.parse.PackageVersion.orderOldNew(
+                    oldP.getFileName().toString(), newP.getFileName().toString());
+            if (!ordered[0].equals(oldP.getFileName().toString())) {
+                Path t = oldP;
+                oldP = newP;
+                newP = t;
+                System.out.println("[智能识别] 检测到同名不同版本，已自动按版本排序：旧=" // NOSONAR
+                        + oldP.getFileName() + " 新=" + newP.getFileName());
+            }
+        }
         PackageParser parser = new PackageParser();
         ParseConfig cfg = new ParseConfig();
         PackageSnapshot oldSnap = parser.parse(oldP, cfg, expandAll);

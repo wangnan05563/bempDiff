@@ -6,6 +6,7 @@ import com.bempdiff.config.AiConfig;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.model.DecompiledUnit;
+import com.bempdiff.model.FileClass;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -49,6 +50,53 @@ public final class AiTest {
         Asserts.assertNotContains("Top-K=1 不应含 Add", prompt, "WEB-INF/classes/com/internal/Add.class");
         Asserts.assertContains("应出现截断提示", prompt, "截断，共 5 行");
         Asserts.assertNotContains("不应出现第 3 行", prompt, "L3");
+    }
+
+    /** 阶段B 单文件 diff 内容超长时必须截断（防整文件重写/超大文件撑爆请求与成本预估）。 */
+    public void testBuildStageB_diffCapTruncatesHugeDiff() {
+        AiConfig cfg = new AiConfig();
+        MockAiAnalyzer a = new MockAiAnalyzer(java.nio.file.Paths.get("."));
+        StringBuilder huge = new StringBuilder();
+        for (int i = 0; i < 5000; i++) huge.append("- line").append(i).append(" xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+        DecompiledUnit u = new DecompiledUnit("k", null, null, huge.toString(), "js-beautify", "", true);
+        String prompt = a.buildStageBPrompt("static/app.js", u, FileClass.JS, cfg);
+        Asserts.assertTrue("prompt 长度应受截断上限约束（原 30 万+ 字符）",
+                prompt.length() <= PromptBuilders.STAGE_B_DIFF_CHAR_CAP + 512);
+        Asserts.assertContains("应出现省略/截断标记", prompt, "省略");
+        Asserts.assertNotContains("不应残留尾部行", prompt, "line4999");
+        // 成本预估同步有界（estimateTokens = 字符数 / 2）
+        double est = a.estimateTokens(prompt);
+        Asserts.assertTrue("预估 token 应有界", est < 40_000);
+    }
+
+    /** 阶段B prompt 的 diff 呈现：仅变更行 + 行号 + 类型标注，上下文行不出现（AI 报告聚焦变更）。 */
+    public void testBuildStageB_diffDigestOnlyChangedLines() {
+        AiConfig cfg = new AiConfig();
+        MockAiAnalyzer a = new MockAiAnalyzer(java.nio.file.Paths.get("."));
+        String diff = "@@ -1,4 +1,4 @@\n"
+                + " ctx1\n"
+                + "-old value\n"
+                + "+new value\n"
+                + " ctx2\n"
+                + "@@ -10,1 +10,2 @@\n"
+                + "+inserted line\n"
+                + " kept\n";
+        DecompiledUnit u = new DecompiledUnit("k", "o", "n", diff, "js-beautify", "", true);
+        String prompt = a.buildStageBPrompt("static/app.js", u, FileClass.JS, cfg);
+        // 类型与行号标注
+        Asserts.assertContains("应标注 [修改]", prompt, "[修改]");
+        Asserts.assertContains("应含老侧行号 L2", prompt, "老 L2");
+        Asserts.assertContains("应含新侧行号 L2", prompt, "新 L2");
+        Asserts.assertContains("应标注 [新增]", prompt, "[新增]");
+        Asserts.assertContains("应含新增行号 L10", prompt, "新 L10");
+        // 变更行内容
+        Asserts.assertContains("应含旧行内容", prompt, "old value");
+        Asserts.assertContains("应含新行内容", prompt, "new value");
+        Asserts.assertContains("应含插入行内容", prompt, "inserted line");
+        // 上下文行不出现（仅变更行）
+        Asserts.assertNotContains("不应出现上下文行 ctx1", prompt, "ctx1");
+        Asserts.assertNotContains("不应出现上下文行 ctx2", prompt, "ctx2");
+        Asserts.assertNotContains("不应出现上下文行 kept", prompt, "kept");
     }
 
     public void testSanitize_localModel_noRedaction() {

@@ -26,6 +26,14 @@ public final class PromptBuilders {
     /** 阶段标题前缀（buildStageB 多处重复，提取为常量规避 S1192）。 */
     private static final String FILE_HEADER = "## 文件：";
 
+    /**
+     * 阶段B 单文件 diff 内容长度上限（字符）。
+     * 超限截断：防止「整文件重写 / 超大型文件 / 压缩资源美化后」把单次 LLM 请求与成本预估撑爆
+     * （此前实测：整文件 diff 无上限，15 个文件即可累计 1.3 亿字符 ≈ 6700 万 token 预估）。
+     * 预估与真实调用共用本 builder，改此处即可同时收紧成本闸门预估与真实请求体。
+     */
+    public static final int STAGE_B_DIFF_CHAR_CAP = 60_000;
+
     /** 阶段A prompt：让模型产出 JSON（整体风险/影响/测试主题 + 每文件初评）。 */
     public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         return buildStageA(diff, decompiled, cfg, null);
@@ -131,8 +139,23 @@ public final class PromptBuilders {
             p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n\n");
             p.append(FILE_HEADER).append(key).append("\n");
         }
-        p.append("```diff\n").append(unit.getDiffText() == null ? "" : unit.getDiffText()).append("\n```\n");
+        p.append("> 以下为仅含变更行的差异摘要：每块标注变更类型（修改/新增/删除）与行号区间（老 Lx-y → 新 La-b），"
+                + "请在分析中引用具体行号定位变更，便于用户核对。\n\n");
+        p.append("```diff\n").append(compactDiffForPrompt(unit)).append("\n```\n");
         return sanitize(p.toString(), cfg);
+    }
+
+    /**
+     * 阶段B 单文件 diff 内容：仅列变更行（带行号与新增/删除/修改类型标注），不呈现完整文件，
+     * 避免篇幅过大。由 {@link com.bempdiff.diff.DiffDigest} 解析 unified diff 生成紧凑摘要；
+     * 摘要本身若仍超长（块内/块数护栏已使其远小于原文件），再做最终字符截断兜底。
+     */
+    private static String compactDiffForPrompt(DecompiledUnit unit) {
+        String diff = (unit == null || unit.getDiffText() == null) ? "" : unit.getDiffText();
+        String compact = com.bempdiff.diff.DiffDigest.render(diff);
+        if (compact.length() <= STAGE_B_DIFF_CHAR_CAP) return compact;
+        return compact.substring(0, STAGE_B_DIFF_CHAR_CAP)
+                + "\n... (差异摘要过长已截断：共 " + compact.length() + " 字符，建议人工查看完整比对)\n";
     }
 
     /** 文本文件类型中文标签（用于阶段A 摘要标注与阶段B 措辞）。 */
@@ -149,18 +172,26 @@ public final class PromptBuilders {
 
     /** 由文件扩展名推断文本类型（用于阶段A 摘要标注；class 返回 null）。 */
     private static FileClass fileClassOf(String key) {
-        if (key.endsWith(".js")) return FileClass.JS;
-        if (key.endsWith(".html") || key.endsWith(".htm")) return FileClass.HTML;
-        if (key.endsWith(".css")) return FileClass.CSS;
+        String lower = key.toLowerCase();
+        if (lower.endsWith(".js")) return FileClass.JS;
+        if (lower.endsWith(".html") || lower.endsWith(".htm")) return FileClass.HTML;
+        if (lower.endsWith(".css")) return FileClass.CSS;
         if (key.endsWith(".jsp") || key.endsWith(".jspx")
                 || key.endsWith(".tag") || key.endsWith(".tagx")) return FileClass.JSP;
-        if (key.endsWith(".xml") || key.endsWith(".properties") || key.endsWith(".yml")
+        // .mf 与 PackageParser.classify 保持一致，让 AI 报告把 MANIFEST.MF 看作「配置文件」而非 nullptr
+        if (lower.endsWith(".mf") || key.endsWith(".xml") || key.endsWith(".properties") || key.endsWith(".yml")
                 || key.endsWith(".yaml") || key.endsWith(".json") || key.endsWith(".conf")
                 || key.endsWith(".cfg") || key.endsWith(".tld") || key.endsWith(".xhtml")
                 || key.endsWith(".wsdl") || key.endsWith(".xsl") || key.endsWith(".xslt")
                 || key.endsWith(".dtd") || key.endsWith(".vm") || key.endsWith(".ftl")
                 || key.endsWith(".ini") || key.endsWith(".toml") || key.endsWith(".txt")
                 || key.endsWith(".csv")) return FileClass.CONFIG;
+        // Office 文档（OpenXML zip）：与 PackageParser.classify 保持一致，AI 摘要/深读可标注「Office 文档」
+        if (lower.endsWith(".docx") || lower.endsWith(".docm") || lower.endsWith(".dotx")
+                || lower.endsWith(".xlsx") || lower.endsWith(".xlsm") || lower.endsWith(".xltx")
+                || lower.endsWith(".pptx") || lower.endsWith(".pptm")
+                || lower.endsWith(".doc") || lower.endsWith(".xls") || lower.endsWith(".ppt"))
+            return FileClass.OFFICE;
         return null;
     }
 

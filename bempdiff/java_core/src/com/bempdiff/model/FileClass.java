@@ -27,6 +27,20 @@ public enum FileClass {
      * {@link com.bempdiff.model.FileClass#JAR} 仍表示库 jar（war 内的 lib jar 等），与 ARCHIVE 平级。
      */
     ARCHIVE,
+    /**
+     * Office 文档（.docx/.xlsx/.pptx 等 OpenXML zip 格式）。
+     * 由 {@link com.bempdiff.diff.OfficeTextDiff} 解析文档内容（段落文本 / 工作表单元格），
+     * 提取为可读文本后做行级 unified diff，前端 DiffView 直接复用现有渲染链路。
+     * 老式二进制 OLE 格式（.doc/.xls/.ppt）归类相同，但解析器会明确提示暂不支持。
+     */
+    OFFICE,
+    /**
+     * 文件夹条目（仅文件夹对比模式出现）：代表目录树中的一个非空目录节点。
+     * 由 {@link com.bempdiff.parse.FolderParser} 登记（key 以 '/' 结尾、哨兵 sha），
+     * 使差异树具备"文件夹对象"供右键菜单（设为基准文件夹/删除/重命名/复制等）操作；
+     * 内容变化仍由子文件条目体现，目录自身仅按存在性判定 新增/删除。
+     */
+    FOLDER,
     OTHER;
 
     /** 是否为"前端源码文本"——需要内容 diff 与 AI 分析（区别于图片/字体等二进制 STATIC）。 */
@@ -51,6 +65,8 @@ public enum FileClass {
             case CSS:   return "前端 CSS";
             case STATIC:return "静态资源(图片/字体)";
             case ARCHIVE:return "归档压缩包(zip/war/ear/tar)";
+            case OFFICE:return "Office 文档(docx/xlsx)";
+            case FOLDER:return "文件夹";
             default:    return "其他";
         }
     }

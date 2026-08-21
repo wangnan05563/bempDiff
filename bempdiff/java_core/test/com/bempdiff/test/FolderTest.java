@@ -51,11 +51,16 @@ public class FolderTest {
 
         PackageSnapshot snap = parser.parse(d, cfg);
         Map<String, LogicalEntry> e = snap.getEntries();
-        Asserts.assertEquals("应仅 3 个文件入表（空目录不入）", 3, e.size());
+        // 3 个文件 + 2 个非空目录条目（sub/ 与 sub/deep/）；空目录 emptyDir 不入表
+        Asserts.assertEquals("应入表 3 文件 + 2 非空目录（空目录不入）", 5, e.size());
         Asserts.assertTrue("应含 a.txt", e.containsKey("a.txt"));
         Asserts.assertTrue("应含 sub/b.txt", e.containsKey("sub/b.txt"));
         Asserts.assertTrue("应含 sub/deep/c.md", e.containsKey("sub/deep/c.md"));
         Asserts.assertFalse("空目录不应入表", e.containsKey("emptyDir"));
+        Asserts.assertTrue("非空目录应入表（key 带尾斜杠）", e.containsKey("sub/"));
+        Asserts.assertTrue("深层非空目录应入表", e.containsKey("sub/deep/"));
+        Asserts.assertEquals("目录条目类型应为 FOLDER", FileClass.FOLDER, e.get("sub/").getFileClass());
+        Asserts.assertTrue("目录条目 sha 应为哨兵（非空）", e.get("sub/").getSha256() != null && !e.get("sub/").getSha256().isEmpty());
         Asserts.assertEquals("类型应为 FOLDER", PackageType.FOLDER, snap.getType());
     }
 
@@ -170,5 +175,38 @@ public class FolderTest {
         Asserts.assertTrue("新目录文件应标记 ADDED", r.get(DiffStatus.ADDED).contains("v2/ServiceImpl.java"));
         // 内容相同，不应有 MODIFIED
         Asserts.assertEquals("改名目录内容相同，不应有 MODIFIED", 0, r.get(DiffStatus.MODIFIED).size());
+    }
+
+    /** folder 模式 readEntryBytes：snap.getFile() 是目录，应直接读磁盘文件（此前 ZipFile 打开目录 → 拒绝访问）。 */
+    public void testReadEntryBytes_folderMode_diskRead() throws IOException {
+        Path d = mkDir();
+        write(d, "a.txt", "hello folder");
+        PackageSnapshot snap = parser.parse(d, cfg);
+        LogicalEntry e = snap.getEntries().get("a.txt");
+        Asserts.assertNotNull("条目应存在", e);
+        byte[] bs = new com.bempdiff.parse.PackageParser().readEntryBytes(snap, e);
+        Asserts.assertEquals("应读到磁盘文件内容", "hello folder", new String(bs, java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /** folder 模式内容 diff 链路：FrontendTextDiff.diff 应 ok（依赖 readEntryBytes 目录兼容修复），
+     *  旧/新源码供前端对齐并显示行号。 */
+    public void testFolderContentDiff_textOk() throws IOException {
+        Path oldD = mkDir();
+        write(oldD, "conf/app.properties", "port=8080\nname=old\n");
+        Path newD = mkDir();
+        write(newD, "conf/app.properties", "port=9090\nname=old\n");
+
+        PackageSnapshot oldSnap = parser.parse(oldD, cfg);
+        PackageSnapshot newSnap = parser.parse(newD, cfg);
+        LogicalEntry oe = oldSnap.getEntries().get("conf/app.properties");
+        LogicalEntry ne = newSnap.getEntries().get("conf/app.properties");
+
+        com.bempdiff.model.DecompiledUnit u = new com.bempdiff.diff.FrontendTextDiff()
+                .diff(oldSnap, newSnap, oe, ne, "conf/app.properties", FileClass.CONFIG);
+        Asserts.assertTrue("folder 模式文本 diff 应 ok：err=" + u.getError(), u.isOk());
+        Asserts.assertNotNull("oldSource 应有（前端据此显示左栏行号）", u.getOldSource());
+        Asserts.assertNotNull("newSource 应有（前端据此显示右栏行号）", u.getNewSource());
+        Asserts.assertTrue("oldSource 应含旧值", u.getOldSource().contains("port=8080"));
+        Asserts.assertTrue("newSource 应含新值", u.getNewSource().contains("port=9090"));
     }
 }

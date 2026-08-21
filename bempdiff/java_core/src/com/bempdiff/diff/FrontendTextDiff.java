@@ -44,9 +44,11 @@ public final class FrontendTextDiff {
 
             String diff;
             if (oldText == null) {
-                diff = "// [新增文件] 老包无此文件\n" + (newText == null ? "" : newText);
+                // 新增文件：每行加 "+ " 前缀（含说明行），保证前端 diff 行号计数连续、右栏归属正确
+                diff = prefixLines("+ ", "// [新增文件] 老包无此文件\n" + (newText == null ? "" : newText));
             } else if (newText == null) {
-                diff = "// [删除文件] 新包无此文件（资源移除，需确认引用方）\n" + oldText;
+                // 删除文件：每行加 "- " 前缀，同理保证行号计数
+                diff = prefixLines("- ", "// [删除文件] 新包无此文件（资源移除，需确认引用方）\n" + oldText);
             } else {
                 diff = LineDiff.unified(oldText, newText, rules);
             }
@@ -70,9 +72,11 @@ public final class FrontendTextDiff {
             String engine = engineLabel(fc);
             String diff;
             if (oldText == null) {
-                diff = "// [新增文件] 老侧无此文件\n" + (newText == null ? "" : newText);
+                // 新增文件：每行加 "+ " 前缀（含说明行），保证前端 diff 行号计数连续、右栏归属正确
+                diff = prefixLines("+ ", "// [新增文件] 老侧无此文件\n" + (newText == null ? "" : newText));
             } else if (newText == null) {
-                diff = "// [删除文件] 新侧无此文件（资源移除，需确认引用方）\n" + oldText;
+                // 删除文件：每行加 "- " 前缀，同理保证行号计数
+                diff = prefixLines("- ", "// [删除文件] 新侧无此文件（资源移除，需确认引用方）\n" + oldText);
             } else {
                 diff = LineDiff.unified(oldText, newText, rules);
             }
@@ -80,6 +84,19 @@ public final class FrontendTextDiff {
         } catch (Exception e) {
             return DecompiledUnit.fail(key, e.getMessage());
         }
+    }
+
+    /**
+     * 给文本每一行统一加 diff 前缀（含尾空行），使前端 DiffView 的行号计数对所有行生效。
+     * 空行也会得到前缀（如 "+ "），避免前端把无前缀裸行判为「无行号」并破坏后续计数。
+     */
+    static String prefixLines(String prefix, String text) {
+        if (text == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String line : text.split("\n", -1)) {
+            sb.append(prefix).append(line).append("\n");
+        }
+        return sb.toString();
     }
 
     /** 引擎标签：按文件类型区分美化/比对方式（用于报告与导出清单标注）。 */

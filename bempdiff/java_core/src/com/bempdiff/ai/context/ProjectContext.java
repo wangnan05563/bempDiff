@@ -1,6 +1,7 @@
 package com.bempdiff.ai.context;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 项目级上下文模型（AI 分析增强 · 需求 2）。
@@ -82,5 +83,47 @@ public final class ProjectContext {
             sb.append(l.get(i));
         }
         return sb.toString();
+    }
+
+    // ---- 缓存序列化（ProjectIndex 落盘/回读） ----
+
+    public Map<String, Object> toJsonMap() {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("rootPath", rootPath);
+        m.put("buildSystem", buildSystem);
+        m.put("modules", modules);
+        m.put("dependencies", dependencies);
+        m.put("entryPoints", entryPoints);
+        m.put("configFiles", configFiles);
+        m.put("techStack", techStack);
+        m.put("conventions", conventions);
+        m.put("summary", summary);
+        return m;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static ProjectContext fromJsonMap(Map<String, Object> m) {
+        return new ProjectContext(
+                str(m.get("rootPath")),
+                str(m.get("buildSystem")),
+                strList(m.get("modules")),
+                strList(m.get("dependencies")),
+                strList(m.get("entryPoints")),
+                strList(m.get("configFiles")),
+                strList(m.get("techStack")),
+                strList(m.get("conventions")),
+                str(m.get("summary")));
+    }
+
+    private static String str(Object o) {
+        return (o == null) ? "" : String.valueOf(o);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> strList(Object o) {
+        if (!(o instanceof List)) return List.of();
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (Object x : (List<Object>) o) out.add(String.valueOf(x));
+        return out;
     }
 }

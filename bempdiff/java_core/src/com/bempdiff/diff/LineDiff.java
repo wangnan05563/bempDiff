@@ -11,6 +11,13 @@ import java.util.List;
  */
 public final class LineDiff {
 
+    /**
+     * LCS 动态规划单元格上限：超过则退化为「前缀/后缀公共行 + 中段整体替换」的线性 diff。
+     * 防超大文件（如压缩 JS 美化后数万行）把 n×m int 表撑爆（20000×20000 ≈ 1.6GB → OOM，
+     * 实测会静默走 fail 分支导致 AI 预估为 0、内容 diff 缺失）。
+     */
+    static final long MAX_LCS_CELLS = 5_000_000L;
+
     private LineDiff() {
         throw new UnsupportedOperationException("工具类不允许实例化");
     }
@@ -39,11 +46,37 @@ public final class LineDiff {
     public static String unified(List<String> a, List<String> b, DiffRules rules) {
         int n = a.size();
         int m = b.size();
+        // 超大输入：退化为线性 diff（前缀/后缀公共 + 中段整体替换），避免 LCS O(n×m) 内存爆炸
+        if ((long) (n + 1) * (m + 1) > MAX_LCS_CELLS) {
+            return linearDiff(a, b, rules);
+        }
         // 归一化行仅用于匹配（决定两行是否视为相同）
         List<String> ak = normalizeLines(a, rules);
         List<String> bk = normalizeLines(b, rules);
         int[][] dp = computeLCS(ak, bk, n, m);
         return render(a, b, ak, bk, dp);
+    }
+
+    /**
+     * 线性 diff（O(n+m)）：公共前缀行 + 中段整体替换 + 公共后缀行。
+     * 超大文件可读性可接受（改动集中在文件头部/尾部时仍能精确呈现；中段整改时给出全量替换视图），
+     * 且内存/耗时均有界——比 LCS 全表更稳健，是超大输入的兜底路径。
+     */
+    private static String linearDiff(List<String> a, List<String> b, DiffRules rules) {
+        List<String> ak = normalizeLines(a, rules);
+        List<String> bk = normalizeLines(b, rules);
+        int n = a.size();
+        int m = b.size();
+        int i = 0; // 公共前缀行数
+        while (i < n && i < m && ak.get(i).equals(bk.get(i))) i++;
+        int j = 0; // 公共后缀行数（不越过前缀）
+        while (j < n - i && j < m - i && ak.get(n - 1 - j).equals(bk.get(m - 1 - j))) j++;
+        StringBuilder sb = new StringBuilder();
+        for (int k = 0; k < i; k++) sb.append("  ").append(a.get(k)).append("\n");
+        for (int k = i; k < n - j; k++) sb.append("- ").append(a.get(k)).append("\n");
+        for (int k = i; k < m - j; k++) sb.append("+ ").append(b.get(k)).append("\n");
+        for (int k = m - j; k < m; k++) sb.append("  ").append(b.get(k)).append("\n");
+        return sb.toString();
     }
 
     /** 按忽略规则归一化每一行（返回归一化副本，不影响原始行）。 */

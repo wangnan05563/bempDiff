@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Enumeration;
@@ -280,10 +281,23 @@ public final class PackageParser {
         out.put(key, new LogicalEntry(key, layer, classify(key), size, h, new EntrySource(key, null)));
     }
 
-    /** 从 EntrySource 取回 class 字节（prototype: _extract_bytes）。 */
+    /** 从 EntrySource 取回 class 字节（prototype: _extract_bytes）。
+     *  folder（解压目录）模式兼容：snap.getFile() 是目录而非 zip，此时 outerEntry 即磁盘真实文件路径，
+     *  直接 Files.readAllBytes——修复 folder 模式下点开文本/class 一律「拒绝访问」（此前 ZipFile 打开目录必然失败）。 */
     public byte[] readEntryBytes(PackageSnapshot snap, LogicalEntry entry) throws IOException {
         EntrySource src = entry.getSrc();
         Path file = snap.getFile();
+        if (Files.isDirectory(file)) {
+            // 文件夹模式：条目即磁盘文件（outerEntry=绝对路径），直接整读
+            if (src == null || src.getOuterEntry() == null) {
+                throw new IOException("文件夹模式条目缺少磁盘路径: " + (entry != null ? entry.getKey() : "null"));
+            }
+            Path disk = Paths.get(src.getOuterEntry());
+            if (!Files.isRegularFile(disk)) {
+                throw new IOException("文件夹模式条目不是可读文件: " + disk);
+            }
+            return Files.readAllBytes(disk);
+        }
         try (ZipFile zf = new ZipFile(file.toFile())) {
             if (!src.isNested()) {
                 ZipEntry ze = zf.getEntry(src.getOuterEntry());
@@ -352,19 +366,11 @@ public final class PackageParser {
             "Version"
     };
 
-    /** 从包文件名兜底提取版本号，支持 old-1.6.1.war / app-1.6.1-SNAPSHOT.jar 等。 */
+    /** 从包文件名兜底提取版本号，支持 old-1.6.1.war / app-1.6.1-SNAPSHOT.jar 及构建号式
+     *  BEMP5.0-adapterV202301-02-036M061(20260707-1135).zip（委托 PackageVersion）。 */
     private String extractVersionFromFileName(Path file) {
-        String name = file.getFileName().toString();
-        // 取最后一个点之前的部分
-        int lastDot = name.lastIndexOf('.');
-        String stem = (lastDot > 0) ? name.substring(0, lastDot) : name;
-        // 优先匹配末尾的 x.y.z... 版本段（数字.数字.数字... 或带 -SNAPSHOT 等后缀）
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile("[Vv]?(\\d+(?:\\.\\d+)*+(?:[-_][A-Za-z0-9]+)?)$");
-        java.util.regex.Matcher m = p.matcher(stem);
-        if (m.find()) {
-            return m.group(1);
-        }
-        return null;
+        String v = PackageVersion.extractFromFileName(file.getFileName().toString());
+        return (v == null || v.isEmpty()) ? null : v;
     }
 
     /** 在多个版本来源中取"最详细"的一个：段数更多优先；段数相同则字符更长优先。 */
@@ -416,13 +422,23 @@ public final class PackageParser {
                 || name.endsWith(".tag") || name.endsWith(".tagx")) return FileClass.JSP;
         // 文本配置 / 描述符 / 模板：纳入内容 diff（XML/Properties/YAML/JSON/TLD/XHTML/WS
         // DL/XSL/模板语言等）；.svg 视作图片（二进制 sha 比对，见下方 STATIC）。
-        if (name.endsWith(".xml") || name.endsWith(".properties") || name.endsWith(".yml")
+        // .mf（META-INF/MANIFEST.MF 等约定大写）也归 CONFIG 并走 FrontendTextDiff，
+        // 否则 ArchiveTree.computeInnerEntry 走 isTextDiffable() 守卫失败，错误为
+        // 「该文件无法反编译（引擎：none）」。
+        if (lower.endsWith(".mf") || name.endsWith(".xml") || name.endsWith(".properties") || name.endsWith(".yml")
                 || name.endsWith(".yaml") || name.endsWith(".json") || name.endsWith(".conf")
                 || name.endsWith(".cfg") || name.endsWith(".tld") || name.endsWith(".xhtml")
                 || name.endsWith(".wsdl") || name.endsWith(".xsl") || name.endsWith(".xslt")
                 || name.endsWith(".dtd") || name.endsWith(".vm") || name.endsWith(".ftl")
                 || name.endsWith(".ini") || name.endsWith(".toml") || name.endsWith(".txt")
                 || name.endsWith(".csv")) return FileClass.CONFIG;
+        // Office 文档（OpenXML zip 与旧版二进制 OLE）：由 OfficeTextDiff 解析内容做文本 diff。
+        // 与 CONFIG 并列在 JSP/前端源码判定之前，避免 .xlsx 等被 STATIC 抢走仅做 sha 比对。
+        if (lower.endsWith(".docx") || lower.endsWith(".docm") || lower.endsWith(".dotx")
+                || lower.endsWith(".xlsx") || lower.endsWith(".xlsm") || lower.endsWith(".xltx")
+                || lower.endsWith(".pptx") || lower.endsWith(".pptm")
+                || lower.endsWith(".doc") || lower.endsWith(".xls") || lower.endsWith(".ppt"))
+            return FileClass.OFFICE;
         // 前端源码文本：纳入内容 diff 与 AI 分析（FR4.4 增强）
         if (name.endsWith(".js")) return FileClass.JS;
         if (name.endsWith(".html") || name.endsWith(".htm")) return FileClass.HTML;

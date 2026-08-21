@@ -82,8 +82,13 @@ public interface AiAnalyzer {
         public final String key;
         public final DecompiledUnit unit;
         public final FileClass fileClass;
+        /** 该文件所属项目的上下文（多项目场景精准注入）；null 时回退到统一 ctx。 */
+        public final ProjectContext perFileCtx;
         public DecompileReq(String key, DecompiledUnit unit, FileClass fileClass) {
-            this.key = key; this.unit = unit; this.fileClass = fileClass;
+            this(key, unit, fileClass, null);
+        }
+        public DecompileReq(String key, DecompiledUnit unit, FileClass fileClass, ProjectContext perFileCtx) {
+            this.key = key; this.unit = unit; this.fileClass = fileClass; this.perFileCtx = perFileCtx;
         }
     }
 }

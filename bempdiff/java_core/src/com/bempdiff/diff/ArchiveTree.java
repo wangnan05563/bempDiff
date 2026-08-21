@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -39,11 +40,17 @@ public final class ArchiveTree {
     /** 单条目读取硬上限（防 zip bomb / 巨型条目拖垮 JVM）。 */
     public static final long ENTRY_READ_CAP = 64L * 1024 * 1024;
 
+    /** 自动递归解包的最大深度（防 zip-bomb 式深嵌套把调用栈/临时文件拖垮）。 */
+    public static final int MAX_RECURSION_DEPTH = 12;
+    /** 自动递归解包的节点总数上限（防超大批量把响应撑爆）。 */
+    public static final int MAX_RECURSIVE_NODES = 20_000;
+
     private ArchiveTree() {}
 
     /**
      * 展开归档：返回内部条目列表，并跨旧/新两侧计算逐文件 ADDED/DELETED/MODIFIED/UNCHANGED。
      * key 可为顶层归档 key，或复合键 outer!/innerArchive（支持递归展开嵌套归档）。
+     * 目录以结构标记节点呈现（isDir=true，不可再展开；zip 条目扁平，目录内容由同层文件条目体现）。
      */
     public static List<Map<String, Object>> computeChildren(PackageSnapshot oldSnap, PackageSnapshot newSnap, String key) throws IOException {
         List<String> parts = splitCompound(key);
@@ -52,35 +59,80 @@ public final class ArchiveTree {
         Map<String, long[]> oldMap = listArchive(oldArch);
         Map<String, long[]> newMap = listArchive(newArch);
 
+        // 目录结构对比：由文件路径前缀 + zip 目录条目派生目录集合（空目录/移动目录也可见）。
+        Map<String, Boolean> oldDirs = deriveDirs(oldMap.keySet());
+        Map<String, Boolean> newDirs = deriveDirs(newMap.keySet());
+
         List<String> names = new ArrayList<>(oldMap.keySet());
         for (String n : newMap.keySet()) if (!names.contains(n)) names.add(n);
+        for (String d : oldDirs.keySet()) if (!names.contains(d)) names.add(d);
+        for (String d : newDirs.keySet()) if (!names.contains(d)) names.add(d);
         names.sort((a, b) -> {
-            int sa = statusRank(a, oldMap, newMap), sb = statusRank(b, oldMap, newMap);
+            int sa = statusRank(a, oldMap, newMap, oldDirs, newDirs);
+            int sb = statusRank(b, oldMap, newMap, oldDirs, newDirs);
             if (sa != sb) return Integer.compare(sa, sb);
             return a.compareTo(b);
         });
 
         List<Map<String, Object>> children = new ArrayList<>();
         for (String name : names) {
-            boolean inOld = oldMap.containsKey(name);
-            boolean inNew = newMap.containsKey(name);
+            boolean isDir = name.endsWith("/");
+            boolean inOld = isDir ? oldDirs.containsKey(name) : oldMap.containsKey(name);
+            boolean inNew = isDir ? newDirs.containsKey(name) : newMap.containsKey(name);
             String status;
             if (inOld && inNew) {
-                long[] a = oldMap.get(name), b = newMap.get(name);
-                status = (a[0] == b[0] && a[1] == b[1]) ? "UNCHANGED" : "MODIFIED";
+                if (isDir) {
+                    // 目录只比对存在性（新增/删除/未变），内容变化由内部文件条目体现
+                    status = "UNCHANGED";
+                } else {
+                    long[] a = oldMap.get(name), b = newMap.get(name);
+                    status = (a[0] == b[0] && a[1] == b[1]) ? "UNCHANGED" : "MODIFIED";
+                }
             } else if (inOld) status = "DELETED";
             else status = "ADDED";
-            FileClass fc = PackageParser.classify(name);
+            FileClass fc = isDir ? FileClass.OTHER : PackageParser.classify(name);
             Map<String, Object> node = new LinkedHashMap<>();
             node.put("key", key + "!/" + name);
             node.put("status", status);
             node.put("fileClass", fc.name());
-            node.put("size", inNew ? newMap.get(name)[0] : oldMap.get(name)[0]);
+            node.put("size", isDir ? 0L : (inNew ? newMap.get(name)[0] : oldMap.get(name)[0]));
             node.put("name", name);
-            node.put("expandable", isArchiveType(fc));
+            node.put("isDir", isDir);
+            // 目录/普通文件不可展开；嵌套归档（zip/jar/war 等）可继续递归展开
+            node.put("expandable", !isDir && isArchiveType(fc));
             children.add(node);
         }
         return children;
+    }
+
+    /**
+     * 自动递归解包：把归档（含任意深度嵌套归档）一次性展开为完整的嵌套差异树。
+     * 每层节点与 {@link #computeChildren} 同构（key/status/fileClass/name/size/expandable），
+     * 嵌套归档节点额外带 children（其内部条目清单），目录节点为结构标记（不可再展开）。
+     * 返回形如 {key: &lt;topKey&gt;, children: [节点...]} 的树；受 MAX_RECURSION_DEPTH /
+     * MAX_RECURSIVE_NODES 双重护栏约束。
+     */
+    public static Map<String, Object> recursiveUnpack(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                                                      String key) throws IOException {
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("key", key);
+        root.put("children", buildRecursive(oldSnap, newSnap, key, 0, new AtomicInteger(0)));
+        return root;
+    }
+
+    private static List<Map<String, Object>> buildRecursive(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                                                            String key, int depth, AtomicInteger counter) throws IOException {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (depth >= MAX_RECURSION_DEPTH) return out; // 触顶：不再下钻（节点保留，仍可手动展开）
+        List<Map<String, Object>> flat = computeChildren(oldSnap, newSnap, key);
+        for (Map<String, Object> child : flat) {
+            if (counter.incrementAndGet() > MAX_RECURSIVE_NODES) return out; // 超节点上限：截断
+            if (Boolean.TRUE.equals(child.get("expandable")) && !Boolean.TRUE.equals(child.get("isDir"))) {
+                child.put("children", buildRecursive(oldSnap, newSnap, (String) child.get("key"), depth + 1, counter));
+            }
+            out.add(child);
+        }
+        return out;
     }
 
     /**
@@ -104,6 +156,12 @@ public final class ArchiveTree {
             Path tmpOld = (oldBytes != null) ? writeTemp(oldBytes) : null;
             Path tmpNew = (newBytes != null) ? writeTemp(newBytes) : null;
             u = new ArchiveDiff().diff(innerPath, tmpOld, tmpNew);
+            // S1 修复：归档清单对比已生成 diffText，临时抽取文件可删（不再被引用）。
+            deleteTemp(tmpOld);
+            deleteTemp(tmpNew);
+        } else if (fc == FileClass.OFFICE) {
+            // Office 文档（docx/xlsx/pptx）：解析内容为文本后行级 diff（需求：文档内容对比）
+            u = new OfficeTextDiff().diffBytes(oldBytes, newBytes, innerPath, fc, rules);
         } else if (fc.isTextDiffable()) {
             u = new FrontendTextDiff().diffBytes(oldBytes, newBytes, innerPath, fc, rules);
         } else {
@@ -117,13 +175,34 @@ public final class ArchiveTree {
 
     // ===================== 下方为抽取/枚举辅助（private static） =====================
 
-    static int statusRank(String name, Map<String, long[]> oldMap, Map<String, long[]> newMap) {
-        boolean inOld = oldMap.containsKey(name), inNew = newMap.containsKey(name);
+    static int statusRank(String name, Map<String, long[]> oldMap, Map<String, long[]> newMap,
+                          Map<String, Boolean> oldDirs, Map<String, Boolean> newDirs) {
+        boolean isDir = name.endsWith("/");
+        boolean inOld = isDir ? oldDirs.containsKey(name) : oldMap.containsKey(name);
+        boolean inNew = isDir ? newDirs.containsKey(name) : newMap.containsKey(name);
         if (inOld && inNew) {
+            if (isDir) return 3; // 目录仅存在性比对：未变
             long[] a = oldMap.get(name), b = newMap.get(name);
             return (a[0] == b[0] && a[1] == b[1]) ? 3 : 0; // UNCHANGED=3, MODIFIED=0
         }
         return inOld ? 1 : 2; // DELETED=1, ADDED=2
+    }
+
+    /** 由条目名集合派生目录集合：目录名以 "/" 结尾（含 zip 显式目录条目与文件路径前缀）。 */
+    static Map<String, Boolean> deriveDirs(Iterable<String> names) {
+        Map<String, Boolean> dirs = new TreeMap<>();
+        for (String n : names) {
+            if (n.endsWith("/")) { // zip 显式目录条目（空目录）
+                dirs.put(n, Boolean.TRUE);
+                continue;
+            }
+            int idx = n.indexOf('/');
+            while (idx >= 0) {
+                dirs.put(n.substring(0, idx + 1), Boolean.TRUE);
+                idx = n.indexOf('/', idx + 1);
+            }
+        }
+        return dirs;
     }
 
     static boolean isArchiveType(FileClass fc) {
@@ -143,7 +222,7 @@ public final class ArchiveTree {
         return parts;
     }
 
-    /** 把顶层归档 key 解析为磁盘 Path（非嵌套→原文件；嵌套→临时抽取）。 */
+    /** 把顶层归档 key 解析为磁盘 Path（真实磁盘归档文件→直接打开；包内条目/嵌套归档→临时抽取）。 */
     static Path resolveTopArchive(PackageSnapshot snap, String topKey) throws IOException {
         if (snap == null) return null;
         LogicalEntry e = snap.getEntries().get(topKey);
@@ -151,9 +230,17 @@ public final class ArchiveTree {
         EntrySource src = e.getSrc();
         if (src != null && !src.isNested()) {
             String outer = src.getOuterEntry();
-            if (outer != null) return Paths.get(outer);
+            if (outer != null) {
+                Path candidate = Paths.get(outer);
+                // 文件夹模式（或真实压缩包文件）：outerEntry 就是磁盘上的归档文件 → 直接打开。
+                // 包对比模式（直接比对两个 .zip/.war）：顶层条目 key 是外层包内的条目名，
+                // outerEntry 也是该条目名（如 "lib/bundle.zip"），并非独立磁盘文件，
+                // 必须从 snap.getFile()（外层包）抽取该条目后再打开——否则 ZipFile 打开失败
+                // （此前实测：NoSuchFileException: lib\bundle.zip，嵌套归档无法解包）。
+                if (Files.isRegularFile(candidate)) return candidate;
+            }
         }
-        // 嵌套归档：读字节落临时文件
+        // 包内条目（含嵌套归档）：从 snap.getFile() 读取字节落临时文件
         byte[] b = new PackageParser().readEntryBytes(snap, e);
         if (b == null) return null;
         return writeTemp(b);
@@ -217,7 +304,7 @@ public final class ArchiveTree {
         }
     }
 
-    /** 枚举归档条目为 name → {size, crc}（CRC 用于判断同内容修改）。 */
+    /** 枚举归档条目为 name → {size, crc}（CRC 用于判断同内容修改）。目录条目也纳入（空目录/结构变化可见）。 */
     static Map<String, long[]> listArchive(Path archive) throws IOException {
         Map<String, long[]> m = new TreeMap<>();
         if (archive == null) return m;
@@ -227,8 +314,12 @@ public final class ArchiveTree {
             while (en.hasMoreElements()) {
                 if (count++ > 200_000) { m.put("... (已截断)", new long[]{0, 0}); break; }
                 ZipEntry e = en.nextElement();
-                if (e.isDirectory()) continue;
-                m.put(e.getName(), new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
+                String n = e.getName();
+                if (e.isDirectory()) {
+                    m.put(n.endsWith("/") ? n : n + "/", new long[]{0, 0});
+                    continue;
+                }
+                m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
             }
         } catch (IOException ioe) {
             throw new IOException("无法读取归档条目: " + ioe.getMessage(), ioe);
@@ -239,6 +330,15 @@ public final class ArchiveTree {
     static Path writeTemp(byte[] b) throws IOException {
         Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
         Files.write(tmp, b);
+        // S1 修复：临时抽取文件用后即删，避免运行期 %TEMP% 持续累积（磁盘泄漏）。
+        // 注册 JVM 退出时清理；调用方在 diff 完成后也应尽快用完落盘的文件（此处统一兜底）。
+        try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {}
         return tmp;
+    }
+
+    /** S1 修复：安全删除临时文件（失败静默，不干扰主流程）。 */
+    static void deleteTemp(Path p) {
+        if (p == null) return;
+        try { Files.deleteIfExists(p); } catch (Exception ignored) {}
     }
 }

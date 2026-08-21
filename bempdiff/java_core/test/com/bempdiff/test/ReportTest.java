@@ -49,7 +49,10 @@ public final class ReportTest {
     /** 前端 JS 美化后 diff 单元（与 class 反编译同构的 DecompiledUnit）。 */
     private static Map<String, DecompiledUnit> makeFrontend() {
         Map<String, DecompiledUnit> frontend = new LinkedHashMap<>();
-        frontend.put("app.min.js", new DecompiledUnit("app.min.js", "o", "n", "diff-js", "frontend", "", true));
+        // 合法 unified diff（无 hunk 头，与 LineDiff 输出一致）：上下文行 + 删除行 + 新增行，
+        // 经 DiffDigest 解析为一个「修改」块（老 L2 → 新 L2）。
+        String diffJs = " var x = 1;\n-var x = 1;\n+let x = 2;\n class A {}\n";
+        frontend.put("app.min.js", new DecompiledUnit("app.min.js", "o", "n", diffJs, "frontend", "", true));
         return frontend;
     }
 
@@ -82,8 +85,35 @@ public final class ReportTest {
         String md = rep.render(snap("1.0"), snap("2.0"), buildDiff(), buildStats(), makeDecompiled(), makeFrontend());
         Asserts.assertContains("前端章节标题(现归类于文本类文件内容差异)", md, "## 四、文本类文件内容差异");
         Asserts.assertContains("前端文件名应出现在报告", md, "app.min.js");
-        Asserts.assertContains("前端 diff 内容", md, "diff-js");
+        // 报告代码差异章节现已精简为「仅变更行 + 行号 + 类型」：
+        Asserts.assertContains("前端 diff 应含旧行内容", md, "var x = 1");
+        Asserts.assertContains("前端 diff 应含新行内容", md, "let x = 2");
+        Asserts.assertContains("前端 diff 应标注变更类型", md, "[修改]");
+        Asserts.assertContains("前端 diff 应含行号", md, "L2");
         Asserts.assertContains("前端处理引擎标注", md, "frontend");
+    }
+
+    /** 需求守护：报告代码差异章节仅展示变更行（不含上下文行/整个文件），附原始/修改后行号与变更类型。 */
+    public void testRender_codeDiffShowsOnlyChangedLines() {
+        MarkdownReport rep = new MarkdownReport(15);
+        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
+        // 含上下文行 + 变更行的 unified diff（无 hunk 头，与 LineDiff/Decompiler.simpleDiff 输出一致）
+        String diff = " // ctx line AAA\n"
+                + "-int oldVal = 1;\n"
+                + "+int newVal = 2;\n"
+                + " // ctx line ZZZ\n";
+        decompiled.put("a.class", new DecompiledUnit("a.class", "o", "n", diff, "cfr", "", true));
+        String md = rep.render(snap("1.0"), snap("2.0"), buildDiff(), buildStats(), decompiled, EMPTY);
+        // 需求1：仅展示存在差异的代码行，不显示整个文件内容（上下文行应被剔除）
+        Asserts.assertContains("应含旧行内容", md, "int oldVal = 1");
+        Asserts.assertContains("应含新行内容", md, "int newVal = 2");
+        Asserts.assertNotContains("不应展示上下文行 AAA", md, "ctx line AAA");
+        Asserts.assertNotContains("不应展示上下文行 ZZZ", md, "ctx line ZZZ");
+        // 需求2：差异行附带原始行号与修改后行号
+        Asserts.assertContains("应含老侧行号", md, "老 L2");
+        Asserts.assertContains("应含新侧行号", md, "新 L2");
+        // 需求3：标注差异类型（修改/新增/删除）
+        Asserts.assertContains("应标注变更类型", md, "[修改]");
     }
 
     public void testRender_aiSection_withContextInfluence() {

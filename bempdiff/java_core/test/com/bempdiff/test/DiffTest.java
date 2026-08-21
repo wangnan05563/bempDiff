@@ -4,6 +4,7 @@ import com.bempdiff.diff.DiffEngine;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStats;
 import com.bempdiff.diff.DiffStatus;
+import com.bempdiff.diff.LineDiff;
 import com.bempdiff.model.EntrySource;
 import com.bempdiff.model.FileClass;
 import com.bempdiff.model.Layer;
@@ -88,5 +89,20 @@ public final class DiffTest {
         Asserts.assertContains("含 d", cands.toString(), "d.class");
         Asserts.assertNotContains("不应含未变的 u", cands.toString(), "u.class");
         Asserts.assertNotContains("不应含 jar", cands.toString(), "x.jar");
+    }
+
+    /** 超大文件（LCS 单元格超限）→ 退化为线性 diff：不 OOM、输出有界、含增删行。 */
+    public void testLineDiff_hugeInputFallsBackToLinear() {
+        StringBuilder oldB = new StringBuilder(), newB = new StringBuilder();
+        int lines = 20_000; // 20000×20000 = 4 亿单元格 ≈1.6GB，远超 MAX_LCS_CELLS
+        for (int i = 0; i < lines; i++) {
+            oldB.append("line").append(i).append(" common old\n");
+            newB.append("LINE").append(i).append(" changed new\n"); // 每行都变（无公共行，除前缀/后缀边界）
+        }
+        String diff = LineDiff.unified(oldB.toString(), newB.toString());
+        Asserts.assertTrue("diff 输出应完整覆盖双侧内容", diff.length() > lines * 10L);
+        Asserts.assertContains("应含删除行", diff, "- line0");
+        Asserts.assertContains("应含新增行", diff, "+ LINE0");
+        Asserts.assertTrue("不应因 LCS 内存爆炸返回空/抛异常", diff.length() > 0);
     }
 }

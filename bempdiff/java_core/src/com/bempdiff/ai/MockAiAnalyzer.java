@@ -57,7 +57,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         writePrompt("stageA.prompt.txt", prompt);
         String resp = readResponse("stageA.response.txt");
         if (resp != null) return parseStageA(resp, false);
-        return buildFallbackSummary(diff, null);
+        return buildFallbackSummary(diff, null, cfg);
     }
 
     @Override
@@ -67,21 +67,23 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         String resp = readResponse("stageA.response.txt");
         boolean withCtx = ctx != null && !ctx.isEmpty();
         if (resp != null) return parseStageA(resp, withCtx);
-        return buildFallbackSummary(diff, ctx);
+        return buildFallbackSummary(diff, ctx, cfg);
     }
 
-    private static StageASummary buildFallbackSummary(DiffResult diff, ProjectContext ctx) {
+    private static StageASummary buildFallbackSummary(DiffResult diff, ProjectContext ctx, AiConfig cfg) {
         StageASummary s = new StageASummary();
         s.setOverallRisk(DEFAULT_RISK);
         int changed = diff.get(DiffStatus.ADDED).size() + diff.get(DiffStatus.DELETED).size()
                 + diff.get(DiffStatus.MODIFIED).size();
+        String reason = offlineReason(cfg);
         if (ctx != null && !ctx.isEmpty()) {
-            s.setImpactScope("离线回放模式（含项目上下文[" + ctx.getBuildSystem() + "]）：未提供 stageA.response.txt，"
-                    + "使用内置兜底摘要。差异文件数=" + changed);
+            s.setImpactScope("离线回放模式（含项目上下文[" + ctx.getBuildSystem() + "]）：" + reason + "，"
+                    + "未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
             s.setContextInfluence("已结合项目上下文（构建系统=" + ctx.getBuildSystem()
-                    + "）做基础判断；未接入 LLM，影响评估限于结构层面。");
+                    + "）做基础判断；" + reason + "，影响评估限于结构层面。");
         } else {
-            s.setImpactScope("离线回放模式：未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
+            s.setImpactScope("离线回放模式（" + reason + "）："
+                    + "未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
         }
         s.setTestThemes(java.util.Arrays.asList("回归核心业务流程", "校验对外接口兼容性", "验证删除类无外部依赖"));
         s.setFileRisks(new ArrayList<>());
@@ -98,18 +100,23 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         List<FileAnalysis> out = new ArrayList<>();
         int idx = 0;
         boolean withCtx = ctx != null && !ctx.isEmpty();
+        String reason = offlineReason(cfg);
         for (DecompileReq req : candidates) {
-            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx);
+            ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
+            boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx);
             writePrompt("stageB." + idx + ".prompt.txt", prompt);
             String resp = readResponse("stageB." + idx + ".response.txt");
             if (resp != null) {
-                out.add(parseFileAnalysis(req.key, resp, withCtx));
+                out.add(parseFileAnalysis(req.key, resp, effWithCtx));
             } else {
-                String influence = withCtx
-                        ? "已结合项目上下文（" + ctx.getBuildSystem() + "）做基础判断；未接入 LLM。"
+                String influence = effWithCtx
+                        ? "已结合项目上下文（" + effCtx.getBuildSystem() + "）做基础判断；" + reason + "。"
                         : "";
-                out.add(new FileAnalysis(req.key, "离线回放模式：未提供回放响应", DEFAULT_RISK,
-                        "需人工核对", java.util.Arrays.asList("回归该类的调用方"), influence));
+                out.add(new FileAnalysis(req.key,
+                        "离线回放模式：" + reason,
+                        DEFAULT_RISK,
+                        "需人工核对（离线演示结果）", java.util.Arrays.asList("回归该类的调用方"), influence));
             }
             idx++;
         }
@@ -133,7 +140,90 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         String resp = readResponse("stageA.response.txt");
         boolean withCtx = ctx != null && !ctx.isEmpty();
         if (resp != null) return parseStageA(resp, withCtx);
-        return buildFallbackSummary(diff, ctx);
+        // 修复：兜底摘要按聚焦维度差异化，离线/无 API Key 时不同分析项的报告内容可区分
+        return buildFallbackSummary(diff, ctx, focus, cfg);
+    }
+
+    /** 无回放响应时的内置兜底：按聚焦维度（focus）生成不同摘要，避免所有分析项内容雷同。 */
+    private static StageASummary buildFallbackSummary(DiffResult diff, ProjectContext ctx, String focus, AiConfig cfg) {
+        int changed = diff.get(DiffStatus.ADDED).size() + diff.get(DiffStatus.DELETED).size()
+                + diff.get(DiffStatus.MODIFIED).size();
+        int added = diff.get(DiffStatus.ADDED).size();
+        int deleted = diff.get(DiffStatus.DELETED).size();
+        int modified = diff.get(DiffStatus.MODIFIED).size();
+        FocusKind kind = FocusKind.of(focus);
+        String ctxTxt = (ctx != null && !ctx.isEmpty())
+                ? "（含项目上下文[" + ctx.getBuildSystem() + "]）" : "";
+        String reason = offlineReason(cfg);
+        StageASummary s = new StageASummary();
+        s.setOverallRisk(DEFAULT_RISK);
+        switch (kind) {
+            case BREAKING:
+                s.setImpactScope("离线兜底[破坏性变更专项]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                        + "（删除=" + deleted + "，签名/结构变更需人工核对对外契约）；"
+                        + "重点排查删除类、方法签名变更与接口实现变更的调用方兼容性。");
+                s.setTestThemes(java.util.Arrays.asList(
+                        "核对所有删除类/删除方法的调用方与引用",
+                        "验证接口签名变更后的编译与运行兼容性",
+                        "回归序列化/反序列化契约（字段类型变更场景）"));
+                break;
+            case IMPACT:
+                s.setImpactScope("离线兜底[影响范围分析]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                        + "（新增=" + added + "，修改=" + modified + "，删除=" + deleted + "）；"
+                        + "按依赖方向评估波及模块：先查直接依赖变更文件的调用方，再向上游链路扩散。");
+                s.setTestThemes(java.util.Arrays.asList(
+                        "梳理变更文件的直接/间接调用方清单",
+                        "验证上下游模块之间的接口契约与数据流",
+                        "针对受影响模块做链路级回归"));
+                break;
+            case TESTPOINTS:
+                s.setImpactScope("离线兜底[测试要点分析]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                        + "，聚焦给出可执行的回归测试场景、用例思路与验证重点。");
+                s.setTestThemes(java.util.Arrays.asList(
+                        "核心业务流程主链路回归（含变更点前后对比）",
+                        "边界与异常分支用例（空值/超长/非法输入）",
+                        "兼容性用例：旧数据/旧配置/跨版本序列化"));
+                break;
+            case RISK:
+                s.setImpactScope("离线兜底[整体风险分析]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                        + "（新增=" + added + "，修改=" + modified + "，删除=" + deleted + "），"
+                        + "整体风险等级中，需结合降级与回滚预案综合评估。");
+                s.setTestThemes(java.util.Arrays.asList(
+                        "回归核心业务流程",
+                        "校验对外接口兼容性",
+                        "验证删除类无外部依赖"));
+                break;
+            default:
+                s.setImpactScope("离线回放模式" + ctxTxt + "：" + reason + "；未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
+                s.setTestThemes(java.util.Arrays.asList("回归核心业务流程", "校验对外接口兼容性", "验证删除类无外部依赖"));
+        }
+        if (ctx != null && !ctx.isEmpty()) {
+            s.setContextInfluence("已结合项目上下文（构建系统=" + ctx.getBuildSystem()
+                    + "）做基础判断；" + reason + "，影响评估限于结构层面。");
+        }
+        s.setFileRisks(new ArrayList<>());
+        return s;
+    }
+
+    /** 离线兜底原因精确化：区分「开关未开启」与「已开启但未配置/未持久化 API Key」。 */
+    private static String offlineReason(AiConfig cfg) {
+        if (cfg == null) return "未接入 LLM（未配置 AI 分析）";
+        if (!cfg.isEnabled()) return "未接入 LLM（AI 分析开关未开启，请在配置中心启用）";
+        return "未接入 LLM（AI 分析已开启，但未配置 API Key 或未持久化）";
+    }
+
+    /** 聚焦维度枚举：由 buildFocus 的中文指令关键词判定，用于离线兜底差异化输出。 */
+    private enum FocusKind {
+        BREAKING, IMPACT, TESTPOINTS, RISK, DEFAULT;
+
+        static FocusKind of(String focus) {
+            if (focus == null || focus.trim().isEmpty()) return RISK;
+            if (focus.contains("破坏性") || focus.contains("兼容性") || focus.contains("接口契约")) return BREAKING;
+            if (focus.contains("影响范围") || focus.contains("上下游") || focus.contains("依赖")) return IMPACT;
+            if (focus.contains("测试") || focus.contains("回归")) return TESTPOINTS;
+            if (focus.contains("风险") || focus.contains("降级") || focus.contains("回滚")) return RISK;
+            return DEFAULT;
+        }
     }
 
     @Override
@@ -141,22 +231,46 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         List<FileAnalysis> out = new ArrayList<>();
         int idx = 0;
         boolean withCtx = ctx != null && !ctx.isEmpty();
+        // 修复：兜底文件结论按聚焦维度微调，离线模式下不同分析项的报告内容可区分
+        List<String> fallbackPoints = fallbackTestPoints(focus);
+        String reason = offlineReason(cfg);
         for (DecompileReq req : candidates) {
-            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx, focus);
+            ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
+            boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx, focus);
             writePrompt("stageB." + idx + ".prompt.txt", prompt);
             String resp = readResponse("stageB." + idx + ".response.txt");
             if (resp != null) {
-                out.add(parseFileAnalysis(req.key, resp, withCtx));
+                out.add(parseFileAnalysis(req.key, resp, effWithCtx));
             } else {
-                String influence = withCtx
-                        ? "已结合项目上下文（" + ctx.getBuildSystem() + "）做基础判断；未接入 LLM。"
+                String influence = effWithCtx
+                        ? "已结合项目上下文（" + effCtx.getBuildSystem() + "）做基础判断；" + reason + "。"
                         : "";
-                out.add(new FileAnalysis(req.key, "离线回放模式：未提供回放响应", DEFAULT_RISK,
-                        "需人工核对", java.util.Arrays.asList("回归该类的调用方"), influence));
+                out.add(new FileAnalysis(req.key,
+                        "离线回放模式：" + reason,
+                        DEFAULT_RISK,
+                        "需人工核对（离线演示结果）", new ArrayList<>(fallbackPoints), influence));
             }
             idx++;
         }
         return out;
+    }
+
+    /** 按聚焦维度给出 stageB 兜底测试要点（无回放响应时使用）。 */
+    private static List<String> fallbackTestPoints(String focus) {
+        switch (FocusKind.of(focus)) {
+            case BREAKING: return java.util.Arrays.asList(
+                    "核对本类删除/签名变更的调用方兼容性",
+                    "验证接口契约与序列化格式未破坏");
+            case IMPACT: return java.util.Arrays.asList(
+                    "回归本类直接调用方与依赖链路",
+                    "验证变更对外部模块的影响范围");
+            case TESTPOINTS: return java.util.Arrays.asList(
+                    "为本类变更设计正向/边界/异常用例",
+                    "结合变更行号定位精确回归点");
+            case RISK:
+            default: return java.util.Arrays.asList("回归该类的调用方");
+        }
     }
 
     @Override

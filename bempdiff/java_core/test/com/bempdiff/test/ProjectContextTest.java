@@ -76,6 +76,78 @@ public final class ProjectContextTest {
         Asserts.assertContains("摘要应提示未识别", ctx.getSummary(), "未识别");
     }
 
+    /** 部署产物核心场景：WAR 解包目录（无标准构建文件）应识别为 Java Web 部署包，并从 WEB-INF/lib 提取依赖。 */
+    public void testAnalyze_warDeployment() throws IOException {
+        Path root = Files.createTempDirectory("bdctx");
+        Files.createDirectories(root);
+        write(root, "META-INF/MANIFEST.MF",
+                "Manifest-Version: 1.0\nImplementation-Title: bemp-served\nImplementation-Version: 2.1.0\n");
+        write(root, "WEB-INF/classes/com/internal/A.class", "a");
+        write(root, "WEB-INF/classes/properties/version.properties", "version=2.1.0");
+        write(root, "WEB-INF/lib/spring-core-6.1.0.jar", "x");
+        write(root, "WEB-INF/lib/mybatis-3.5.14.jar", "x");
+        write(root, "WEB-INF/web.xml", "<web-app/>");
+        write(root, "deploy.xml", "<deploy/>");
+
+        ProjectContext ctx = ProjectContextAnalyzer.analyze(root);
+        Asserts.assertEquals("WAR 解包应识别为部署包", "Java Web 部署包（WAR 解包）", ctx.getBuildSystem());
+        Asserts.assertTrue("应提取 WEB-INF/lib 依赖 spring-core-6.1.0",
+                ctx.getDependencies().contains("spring-core-6.1.0"));
+        Asserts.assertTrue("应提取 WEB-INF/lib 依赖 mybatis-3.5.14",
+                ctx.getDependencies().contains("mybatis-3.5.14"));
+        Asserts.assertTrue("应识别 MANIFEST 为产物元信息",
+                ctx.getConfigFiles().stream().anyMatch(s -> s.endsWith("META-INF/MANIFEST.MF")));
+        Asserts.assertTrue("应识别 WEB-INF/classes 下 properties 为配置",
+                ctx.getConfigFiles().stream().anyMatch(s -> s.endsWith("version.properties")));
+        Asserts.assertTrue("约定应含部署包标识版本",
+                ctx.getConventions().stream().anyMatch(s -> s.contains("bemp-served") && s.contains("2.1.0")));
+        Asserts.assertContains("摘要应说明部署包结构", ctx.getSummary(), "部署包");
+    }
+
+    /** JAR 解包目录（仅 META-INF/MANIFEST，无 WEB-INF）应识别为 Java 应用产物。 */
+    public void testAnalyze_jarDeployment() throws IOException {
+        Path root = Files.createTempDirectory("bdctx");
+        Files.createDirectories(root);
+        write(root, "META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nImplementation-Title: demo.jar\n");
+        write(root, "com/demo/App.class", "a");
+
+        ProjectContext ctx = ProjectContextAnalyzer.analyze(root);
+        Asserts.assertEquals("JAR 解包应识别为应用产物", "Java 应用产物（JAR 解包）", ctx.getBuildSystem());
+        Asserts.assertTrue("应识别 MANIFEST 元信息",
+                ctx.getConfigFiles().stream().anyMatch(s -> s.endsWith("META-INF/MANIFEST.MF")));
+    }
+
+    /** 无根级构建文件、但子目录含独立构建文件时，应兜底识别子目录为模块（修复 collectFallbackModules 死代码）。 */
+    public void testAnalyze_submoduleFallback() throws IOException {
+        Path root = Files.createTempDirectory("bdctx");
+        Files.createDirectories(root);
+        write(root, "readme.txt", "loose layout");
+        write(root, "billing-core/pom.xml", "<project/>");
+        write(root, "billing-web/pom.xml", "<project/>");
+        write(root, "shared-lib/build.gradle", "dependencies {}");
+
+        ProjectContext ctx = ProjectContextAnalyzer.analyze(root);
+        Asserts.assertEquals("无根级构建文件应仍为 none", "none", ctx.getBuildSystem());
+        Asserts.assertTrue("应兜底识别子模块 billing-core",
+                ctx.getModules().contains("billing-core"));
+        Asserts.assertTrue("应兜底识别子模块 billing-web",
+                ctx.getModules().contains("billing-web"));
+        Asserts.assertTrue("应兜底识别 gradle 子模块 shared-lib",
+                ctx.getModules().contains("shared-lib"));
+    }
+
+    /** 非标准 Java 源码布局（无构建文件、无 src/main/java）至少应识别为 Java 源码工程。 */
+    public void testAnalyze_nonStandardSource() throws IOException {
+        Path root = Files.createTempDirectory("bdctx");
+        Files.createDirectories(root);
+        write(root, "com/hundsun/bank/InterestController.java", "package com.hundsun.bank; public class InterestController {}");
+        write(root, "com/hundsun/bank/InterestService.java", "package com.hundsun.bank; public class InterestService {}");
+
+        ProjectContext ctx = ProjectContextAnalyzer.analyze(root);
+        Asserts.assertEquals("非标准源码布局应识别为 Java 源码工程",
+                "Java 源码工程（非标准布局）", ctx.getBuildSystem());
+    }
+
     public void testAnalyze_nullOrInvalid() {
         ProjectContext ctx1 = ProjectContextAnalyzer.analyze(null);
         Asserts.assertTrue("null 应返回空上下文", ctx1.isEmpty());

@@ -174,6 +174,99 @@ def main():
         assert d["ok"], f"嵌套 class 反编译不 ok: {d}"
         print("[ok] 嵌套 class 反编译 ok")
 
+        # 8) 3 层嵌套：app.zip -> lib/bundle.zip -> deep/inner.zip -> data.txt（含目录结构/逐层状态）
+        inner_old = make_zip_bytes({"data.txt": b"v1", "keep.txt": b"same"})
+        inner_new = make_zip_bytes({"data.txt": b"v2", "keep.txt": b"same", "new.txt": b"n"})
+        mid_old = make_zip_bytes({"deep/inner.zip": inner_old, "info.txt": b"i-old"})
+        mid_new = make_zip_bytes({"deep/inner.zip": inner_new, "info.txt": b"i-old"})
+        deep_old = make_zip_bytes({"lib/bundle.zip": mid_old})
+        deep_new = make_zip_bytes({"lib/bundle.zip": mid_new})
+        deep_old_dir = os.path.join(tmp, "deepold"); deep_new_dir = os.path.join(tmp, "deepnew")
+        os.makedirs(deep_old_dir); os.makedirs(deep_new_dir)
+        write_zip(os.path.join(deep_old_dir, "app.zip"), {"lib/bundle.zip": mid_old, "lib/other.txt": b"x"})
+        write_zip(os.path.join(deep_new_dir, "app.zip"), {"lib/bundle.zip": mid_new, "lib/other.txt": b"x"})
+
+        st, body = req("POST", "/api/session/compare",
+                        {"leftType": "folder", "leftPath": deep_old_dir, "rightPath": deep_new_dir,
+                         "options": {"expandAll": False}})
+        assert st == 200, f"deep compare 失败 {st}: {body}"
+        job2 = json.loads(body)["jobId"]
+        for _ in range(200):
+            st, body = req("GET", f"/api/job/{job2}/status")
+            j = json.loads(body)
+            if j.get("status") == "DONE": break
+            if j.get("status") == "ERROR": raise RuntimeError("deep 比对 ERROR: " + j.get("error", ""))
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("deep 比对超时")
+
+        # L2 展开 bundle.zip
+        st, body = req("GET", f"/api/entry/children?jobId={job2}&key=app.zip!/lib/bundle.zip")
+        assert st == 200, f"deep L2 失败 {st}: {body}"
+        l2 = {k["key"]: k for k in json.loads(body)}
+        assert "app.zip!/lib/bundle.zip!/deep/inner.zip" in l2, "L2 应含 deep/inner.zip"
+        assert l2["app.zip!/lib/bundle.zip!/deep/inner.zip"]["status"] == "MODIFIED"
+        assert l2["app.zip!/lib/bundle.zip!/deep/inner.zip"]["expandable"] is True
+        assert "app.zip!/lib/bundle.zip!/deep/" in l2, "L2 应含目录结构节点 deep/"
+
+        # L3 展开 inner.zip，最内层文件状态正确
+        st, body = req("GET", f"/api/entry/children?jobId={job2}&key=app.zip!/lib/bundle.zip!/deep/inner.zip")
+        assert st == 200, f"deep L3 失败 {st}: {body}"
+        l3 = {k["key"]: k for k in json.loads(body)}
+        assert l3["app.zip!/lib/bundle.zip!/deep/inner.zip!/data.txt"]["status"] == "MODIFIED", "data.txt 应为 MODIFIED"
+        assert l3["app.zip!/lib/bundle.zip!/deep/inner.zip!/keep.txt"]["status"] == "UNCHANGED", "keep.txt 应为 UNCHANGED"
+        assert l3["app.zip!/lib/bundle.zip!/deep/inner.zip!/new.txt"]["status"] == "ADDED", "new.txt 应为 ADDED"
+        print("[ok] 3 层嵌套逐层递归展开，最内层 ADDED/MODIFIED/UNCHANGED 状态正确")
+
+        # 9) 自动递归解包端点：一次返回完整嵌套树
+        st, body = req("GET", f"/api/entry/recursive?jobId={job2}&key=app.zip")
+        assert st == 200, f"recursive 失败 {st}: {body}"
+        tree = json.loads(body)
+
+        def find_node(nodes, key):
+            for n in (nodes or []):
+                if n.get("key") == key: return n
+                hit = find_node(n.get("children"), key)
+                if hit: return hit
+            return None
+
+        assert find_node(tree.get("children"), "app.zip!/lib/bundle.zip") is not None, "递归树应含 bundle.zip"
+        deep_node = find_node(tree.get("children"), "app.zip!/lib/bundle.zip!/deep/inner.zip")
+        assert deep_node is not None, "递归树应穿透到 deep/inner.zip"
+        data_node = find_node(deep_node.get("children"), "app.zip!/lib/bundle.zip!/deep/inner.zip!/data.txt")
+        assert data_node is not None and data_node["status"] == "MODIFIED", "递归树最内层 data.txt 应 MODIFIED"
+        print("[ok] /api/entry/recursive 一次返回完整嵌套差异树")
+
+        # 10) 包对比模式（直接比对两个 .zip）：修复前嵌套归档无法解包（NoSuchFileException）
+        pkg_old = os.path.join(tmp, "pkg_old.zip"); pkg_new = os.path.join(tmp, "pkg_new.zip")
+        write_zip(pkg_old, {"lib/bundle.zip": mid_old, "README.txt": b"readme"})
+        write_zip(pkg_new, {"lib/bundle.zip": mid_new, "README.txt": b"readme"})
+        st, body = req("POST", "/api/session/compare",
+                        {"leftType": "package", "leftPath": pkg_old, "rightPath": pkg_new,
+                         "options": {"expandAll": False}})
+        assert st == 200, f"pkg compare 失败 {st}: {body}"
+        job3 = json.loads(body)["jobId"]
+        for _ in range(200):
+            st, body = req("GET", f"/api/job/{job3}/status")
+            j = json.loads(body)
+            if j.get("status") == "DONE": break
+            if j.get("status") == "ERROR": raise RuntimeError("pkg 比对 ERROR: " + j.get("error", ""))
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("pkg 比对超时")
+
+        # 包模式下嵌套 bundle.zip 顶层 key 即条目名（修复点）
+        st, body = req("GET", f"/api/entry/children?jobId={job3}&key=lib/bundle.zip")
+        assert st == 200, f"pkg 嵌套 children 失败 {st}: {body}"
+        pk = {k["key"]: k for k in json.loads(body)}
+        assert "lib/bundle.zip!/deep/inner.zip" in pk, "包模式嵌套展开应含 deep/inner.zip（修复点）"
+        assert pk["lib/bundle.zip!/deep/inner.zip"]["status"] == "MODIFIED"
+        st, body = req("GET", f"/api/entry/children?jobId={job3}&key=lib/bundle.zip!/deep/inner.zip")
+        assert st == 200, f"pkg 深层 children 失败 {st}: {body}"
+        pk3 = {k["key"]: k for k in json.loads(body)}
+        assert pk3["lib/bundle.zip!/deep/inner.zip!/data.txt"]["status"] == "MODIFIED", "包模式最内层 data.txt 应 MODIFIED"
+        print("[ok] 包对比模式嵌套 zip 逐层递归展开（修复 NoSuchFileException）")
+
         print("\n=== 递归解包活体冒烟全部通过 ===")
     except AssertionError as e:
         ok = False

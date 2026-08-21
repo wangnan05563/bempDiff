@@ -35,30 +35,62 @@ public final class FolderParser {
     /** 单文件读取防御上限（与 PackageParser.HARD_CAP 同源，防超长文件拖垮比对）。 */
     private static final long HARD_CAP = 64L * 1024 * 1024;
 
+    /**
+     * 目录条目的哨兵 sha：两侧同名目录固定相等（内容变化由子文件条目体现，目录自身仅按存在性
+     * 判定 新增/删除）。非 null 保证 DiffEngine 的 sha.equals 比较安全。
+     */
+    private static final String DIR_SHA = "dir";
+
     public PackageSnapshot parse(Path dir, ParseConfig cfg) throws IOException { // NOSONAR - cfg 为统一 parse 接口签名保留（文件夹场景暂无层级配置）
         if (dir == null || !Files.isDirectory(dir)) {
             throw new IOException("不是有效目录（无法解析文件夹）: " + dir);
         }
         Map<String, LogicalEntry> entries = new LinkedHashMap<>();
+        java.util.Set<String> dirs = new java.util.LinkedHashSet<>();
         Path root = dir.toAbsolutePath().normalize();
 
         try (Stream<Path> walk = Files.walk(root)) {
             for (Path p : (Iterable<Path>) walk::iterator) {
-                ingestPath(root, p, entries);
+                ingestPath(root, p, entries, dirs);
+            }
+        }
+        // 目录条目：仅收录"含文件"的目录（空目录无意义，且避免 DiffEngine 把空目录对称差误判为差异）。
+        // key 以 '/' 结尾，FileClass.FOLDER，供差异树右键「文件夹对象」操作（设为基准/删除/重命名等）。
+        for (String dk : dirs) {
+            if (hasChildEntry(entries, dk)) {
+                Path d = root.resolve(dk.replace('/', java.io.File.separatorChar));
+                entries.put(dk, new LogicalEntry(dk, Layer.L0, FileClass.FOLDER, 0, DIR_SHA,
+                        new EntrySource(d.toString(), null)));
             }
         }
         return new PackageSnapshot(dir, PackageType.FOLDER, null, entries);
     }
 
-    /** 处理单个扫描到的路径：仅文件入表；符号链接/目录/不可读均隔离跳过，不影响其余比对。 */
-    private void ingestPath(Path root, Path p, Map<String, LogicalEntry> entries) {
+    /** 判断是否存在 key 以目录前缀（如 "sub/"）开头的文件条目。 */
+    private static boolean hasChildEntry(Map<String, LogicalEntry> entries, String dirKey) {
+        for (String k : entries.keySet()) {
+            if (k.startsWith(dirKey)) return true;
+        }
+        return false;
+    }
+
+    /** 处理单个扫描到的路径：文件入表、目录登记（空目录不入表）、符号链接/不可读隔离跳过。 */
+    private void ingestPath(Path root, Path p, Map<String, LogicalEntry> entries, java.util.Set<String> dirs) {
         if (Files.isSymbolicLink(p)) {
             // 跳过符号链接：避免符号链接环导致无限遍历，且链接目标可能越界
             LOG.log(Level.FINE, "[隔离] 跳过符号链接: {0}", root.relativize(p));
             return;
         }
         if (Files.isDirectory(p)) {
-            return; // 目录不入表，结构由文件路径派生
+            if (!root.equals(p.toAbsolutePath().normalize())) {
+                try {
+                    String dk = sanitizeKey(root, p) + "/";
+                    dirs.add(dk);
+                } catch (IOException bad) {
+                    LOG.log(Level.WARNING, "[隔离] 跳过可疑目录路径（已拒绝，不影响其余比对）: {0}", bad.getMessage());
+                }
+            }
+            return;
         }
         if (!Files.isRegularFile(p)) {
             return;

@@ -4,6 +4,7 @@ import com.bempdiff.ai.FileAnalysis;
 import com.bempdiff.ai.FileRisk;
 import com.bempdiff.ai.StageASummary;
 import com.bempdiff.ai.context.ProjectContext;
+import com.bempdiff.diff.DiffDigest;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.LibJarDiff;
 import com.bempdiff.diff.DiffStats;
@@ -38,6 +39,19 @@ public final class MarkdownReport {
 
     public MarkdownReport(int topK) {
         this.topK = topK;
+    }
+
+    /** 本次 AI 分析聚焦项（可读标签，如「破坏性变更专项」）；null 表示默认整体分析。 */
+    private String aiFocus = null;
+
+    /** 设置报告 AI 章节的分析聚焦标注（由 BempServer.runAiAnalysis 按 category/prompt 派生）。 */
+    public MarkdownReport setAiFocus(String focus) {
+        this.aiFocus = focus;
+        return this;
+    }
+
+    public String getAiFocus() {
+        return aiFocus;
     }
 
     public String render(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
@@ -101,10 +115,14 @@ public final class MarkdownReport {
         return sb.toString();
     }
 
-    /** 追加 AI 智能分析章节：项目级上下文摘要 + 阶段A 概览 + 阶段B 逐文件。 */
+    /** 追加 AI 智能分析章节：分析聚焦标注 + 项目级上下文摘要 + 阶段A 概览 + 阶段B 逐文件。 */
     private void appendAiSection(StringBuilder sb, StageASummary summary,
                                  List<FileAnalysis> fileAnalyses, ProjectContext ctx) {
         sb.append("## 七、AI 智能分析（两阶段 / 项目级上下文增强）\n");
+        // 修复：显式标注本次所选分析项，避免「不同分析项生成的报告看起来相同」
+        if (aiFocus != null && !aiFocus.isEmpty()) {
+            sb.append("- **本次分析聚焦**：").append(aiFocus).append("\n\n");
+        }
         appendAiContext(sb, ctx);
         appendStageASummary(sb, summary);
         appendStageB(sb, fileAnalyses);
@@ -223,7 +241,8 @@ public final class MarkdownReport {
 
     private void renderDecompiledDiff(StringBuilder sb, Map<String, DecompiledUnit> decompiled) {
         sb.append("## 三、反编译源码级差异（Top-").append(topK).append(" 修改/新增/删除 Java 类）\n");
-        sb.append("> 共 ").append(decompiled.size()).append(" 个类已反编译（本处仅展示前 Top-K 条完整 diff）。\n\n");
+        sb.append("> 共 ").append(decompiled.size()).append(" 个类已反编译（本处仅展示前 Top-K 条，"
+                + "且每条仅列变更行：附原始/修改后行号与变更类型——修改/新增/删除，不展示整个文件）。\n\n");
         int shown = 0;
         for (Map.Entry<String, DecompiledUnit> e : decompiled.entrySet()) {
             if (shown >= topK) {
@@ -235,7 +254,7 @@ public final class MarkdownReport {
                 sb.append("- 反编译失败：").append(u.getError()).append("\n\n");
             } else {
                 sb.append("- 反编译引擎：").append(u.getEngine()).append("\n");
-                sb.append(DIFF_OPEN).append(u.getDiffText() == null ? "" : u.getDiffText()).append(DIFF_CLOSE);
+                sb.append(DIFF_OPEN).append(renderCompactDiff(u.getDiffText())).append(DIFF_CLOSE);
                 shown++;
             }
         }
@@ -303,7 +322,7 @@ public final class MarkdownReport {
         }
         sb.append("#### ").append(u.innerClass).append("  [").append(statusLabel(u.status)).append("]\n");
         sb.append("- 反编译引擎：").append(du.getEngine()).append("\n");
-        sb.append(DIFF_OPEN).append(du.getDiffText() == null ? "" : du.getDiffText()).append(DIFF_CLOSE);
+        sb.append(DIFF_OPEN).append(renderCompactDiff(du.getDiffText())).append(DIFF_CLOSE);
         return shown + 1;
     }
 
@@ -405,7 +424,7 @@ public final class MarkdownReport {
             return;
         }
         sb.append("> 共 ").append(text.size()).append(" 个文本类文件已做内容级逐行 diff")
-          .append("（本处仅展示前 Top-K 条完整 diff）。\n\n");
+          .append("（本处仅展示前 Top-K 条，且每条仅列变更行：附原始/修改后行号与变更类型——修改/新增/删除，不展示整个文件）。\n\n");
         int shown = 0;
         for (Map.Entry<String, DecompiledUnit> e : text.entrySet()) {
             if (shown >= topK) {
@@ -417,7 +436,7 @@ public final class MarkdownReport {
                 sb.append("- 读取/美化失败：").append(u.getError()).append("\n\n");
             } else {
                 sb.append("- 处理引擎：").append(u.getEngine()).append("\n");
-                sb.append(DIFF_OPEN).append(u.getDiffText() == null ? "" : u.getDiffText()).append(DIFF_CLOSE);
+                sb.append(DIFF_OPEN).append(renderCompactDiff(u.getDiffText())).append(DIFF_CLOSE);
                 shown++;
             }
         }
@@ -515,5 +534,15 @@ public final class MarkdownReport {
 
     private static String nullToNA(String s) {
         return s == null ? "N/A" : s;
+    }
+
+    /**
+     * 渲染代码差异为紧凑变更摘要：仅列变更行（不含上下文行），每块附行号区间（老 Lx-y → 新 La-b）
+     * 与变更类型（修改/新增/删除），控制报告篇幅。复用 {@link DiffDigest} 的解析与渲染：
+     * 仅展示发生变更的代码行而非整个文件，便于用户快速定位与核对。
+     */
+    private static String renderCompactDiff(String diffText) {
+        if (diffText == null || diffText.isEmpty()) return "(无差异内容)";
+        return DiffDigest.render(diffText);
     }
 }

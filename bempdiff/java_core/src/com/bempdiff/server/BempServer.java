@@ -7,6 +7,9 @@ import com.bempdiff.ai.MockAiAnalyzer;
 import com.bempdiff.ai.StageASummary;
 import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.ai.context.ProjectContextAnalyzer;
+import com.bempdiff.ai.context.ProjectContextCache;
+import com.bempdiff.ai.context.ProjectIndex;
+import com.bempdiff.ai.context.ProjectContextService;
 import com.bempdiff.config.AiConfig;
 import com.bempdiff.config.ParseConfig;
 import com.bempdiff.decompile.Decompiler;
@@ -18,6 +21,7 @@ import com.bempdiff.diff.FrontendTextDiff;
 import com.bempdiff.diff.LibJarDiff;
 import com.bempdiff.diff.ArchiveTree;
 import com.bempdiff.export.AssetExporter;
+import com.bempdiff.fs.FileOps;
 import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.FileClass;
 import com.bempdiff.model.LogicalEntry;
@@ -90,6 +94,10 @@ public final class BempServer {
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     // 成本闸门：AI 入口 token 预估缓存（per-job），避免重复反编译；DONE 后 diff 不可变，可安全复用。
     private final Map<String, Map<String, Object>> aiEstimateCache = new ConcurrentHashMap<>();
+    // per-job 的 AI 工作缓存（反编译类图 + 前端文本差异 + 依赖 jar 分析）。
+    // report / ai-analyze / export 三入口共用，避免并行发起多个分析类别时 N 倍重复反编译（评审 P1 #8）。
+    private final Map<String, AiWorkCache> aiWorkCache = new ConcurrentHashMap<>();
+    private static final int AI_WORK_CACHE_MAX = 16; // 粗粒度上限：超限清空，避免 job 长期驻留占用内存
 
     public BempServer(ServerConfig config, Path webroot) {
         this.config = config;
@@ -101,9 +109,11 @@ public final class BempServer {
         server.createContext("/api/session/compare", this::handleCompare);
         server.createContext("/api/job", this::handleJob);
         server.createContext("/api/entry", this::handleEntry);
+        server.createContext("/api/file", this::handleFile);
         server.createContext("/api/config", this::handleConfig);
         server.createContext("/api/ai/test", this::handleAiTest);
         server.createContext("/api/ai/models", this::handleAiModels);
+        server.createContext("/api/ai/context", this::handleAiContext);
         server.createContext("/", this::handleStatic);
         // 关键：默认 HttpServer 用单线程串行处理所有请求——一次长比对会阻塞全部 API/静态资源。
         // 改为每个请求一个虚拟线程，比对任务再下沉到 workers 执行器，UI 才能边比对边轮询进度。
@@ -239,12 +249,29 @@ public final class BempServer {
             ParseConfig pc = opts.toParseConfig();
             final String mode = MODE_FOLDER.equals(leftType) ? MODE_FOLDER : "package";
 
+            // 智能识别：同名不同版本的压缩包 → 自动按版本升序（旧→新），无需手动分辨新旧。
+            boolean autoOrdered = false;
+            String oldVersion = null;
+            String newVersion = null;
+            if (!MODE_FOLDER.equals(mode)) {
+                if (com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(leftPath, rightPath)) {
+                    String[] ordered = com.bempdiff.parse.PackageVersion.orderOldNew(leftPath, rightPath);
+                    leftPath = ordered[0];
+                    rightPath = ordered[1];
+                    oldVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(leftPath);
+                    newVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(rightPath);
+                    autoOrdered = true;
+                }
+            }
+
             String jobId = "job-" + seq.incrementAndGet();
             Job job = new Job(jobId, mode, opts);
             store.put(job);
 
             // 后台异步执行（解析 + 差异计算可能很慢）：提交即返回 jobId，前端轮询 /api/job/{id}/status 取进度/结果。
-            workers.submit(() -> runCompareTask(job, leftType, leftPath, rightPath, pc, opts));
+            final String fLeftPath = leftPath;
+            final String fRightPath = rightPath;
+            workers.submit(() -> runCompareTask(job, leftType, fLeftPath, fRightPath, pc, opts));
 
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put(KEY_JOB_ID, jobId);
@@ -253,6 +280,10 @@ public final class BempServer {
             resp.put("progress", job.getProgress());
             resp.put(KEY_PHASE, job.getPhase());
             resp.put(KEY_MESSAGE, job.getMessage());
+            // 智能识别结果：供前端提示「已按版本自动排序 旧 vX → 新 vY」
+            resp.put("autoOrdered", autoOrdered);
+            resp.put("oldVersion", oldVersion);
+            resp.put("newVersion", newVersion);
             sendJson(ex, 200, resp);
         } catch (Exception e) {
             LOG.log(Level.WARNING, "比对提交失败", e);
@@ -425,20 +456,25 @@ public final class BempServer {
         try {
             boolean ai = false;
             String projDir = null;
+            String category = null;   // 分析项（risk/breaking/impact/testpoints/custom）——修复：此前缺失，
+            String prompt = null;     // 导致「生成报告(AI)」永远走默认分析，不同分析项报告内容相同
             if (ex.getRequestMethod().equals("POST")) {
                 String body = readBody(ex);
                 if (!body.isEmpty()) {
                     Map<String, Object> req = Json.parseObject(body);
                     ai = Json.bool(req, "ai", false);
                     projDir = Json.str(req, KEY_PROJECT_DIR, null);
+                    category = Json.str(req, "category", null);
+                    prompt = Json.str(req, "prompt", null);
                 }
             }
-            Map<String, DecompiledUnit> decompiled = buildClassMap(job, job.opts.getTopK());
-            Map<String, DecompiledUnit> text = buildTextMap(job, job.opts.getTopK());
-            LibJarDiff.Result libJar = LibJarDiff.analyze(job.getOldSnap(), job.getNewSnap(), job.getResult(),
-                    new Decompiler(cfrPath(job.opts), findJava()), job.opts.getTopK());
+            // 前端未显式传 projectDir 时，回退到配置中心的项目上下文设置（旧前端/漏传均生效）
+            if (projDir == null && config.isProjectContextEnabled()) projDir = config.getProjectContextDir();
+            // 复用 per-job 工作缓存（反编译/文本差异/jar 分析），与 ai-analyze/export 共享，避免重复计算
+            AiWorkCache work = getAiWork(job);
             MarkdownReport rep = new MarkdownReport(job.opts.getTopK());
-            String md = buildMarkdown(job, ai, projDir, decompiled, text, libJar, rep);
+            String md = buildMarkdown(job, ai, projDir, category, prompt,
+                    work.decompiled, work.text, work.libJar, rep);
             sendText(ex, 200, "text/markdown", md);
         } catch (Exception e) {
             LOG.log(Level.WARNING, "报告生成失败", e);
@@ -446,7 +482,7 @@ public final class BempServer {
         }
     }
 
-    private String buildMarkdown(Job job, boolean ai, String projDir,
+    private String buildMarkdown(Job job, boolean ai, String projDir, String category, String prompt,
                                  Map<String, DecompiledUnit> decompiled, Map<String, DecompiledUnit> text,
                                  LibJarDiff.Result libJar, MarkdownReport rep) {
         if (!ai) {
@@ -454,7 +490,8 @@ public final class BempServer {
                     decompiled, text, libJar);
         }
         // AI 分支复用 runAiAnalysis，保证「报告」与「流式分析」产出完全一致（同一管线）。
-        return runAiAnalysis(job, decompiled, text, libJar, projDir, null, null).markdown;
+        // category/prompt 透传：buildFocus 据此追加「本次分析聚焦」，使不同分析项的报告内容可区分。
+        return runAiAnalysis(job, decompiled, text, libJar, projDir, category, prompt).markdown;
     }
 
     /**
@@ -465,27 +502,51 @@ public final class BempServer {
                                            Map<String, DecompiledUnit> text, LibJarDiff.Result libJar,
                                            String projDir, String category, String prompt) {
         AiConfig aiCfg = config.toAiConfig();
-        ProjectContext ctx = (projDir != null && !projDir.isEmpty())
-                ? ProjectContextAnalyzer.analyze(Paths.get(projDir)) : null;
-        AiAnalyzer analyzer = (aiCfg.getApiKey() != null && !aiCfg.getApiKey().isEmpty())
+        // 项目级上下文（递归识别多项目 + 缓存）：stageA 注入仓库级上下文视图；
+        // stageB 逐文件按所属项目精准注入（ProjectIndex.locate）。
+        ProjectIndex pIndex = ProjectContextService.resolve(projDir);
+        ProjectContext ctx = ProjectContextService.renderContextView(pIndex);
+        // 真实调用判定：AI 开关开启 且 已配置 API Key → HttpAiAnalyzer；否则离线回放（Mock）。
+        // （原实现只看 Key，若 persistApiKey=false 重启后 Key 丢失会静默降级 Mock，用户难以察觉原因。）
+        boolean realLlm = aiCfg.isEnabled() && aiCfg.getApiKey() != null && !aiCfg.getApiKey().isEmpty();
+        AiAnalyzer analyzer = realLlm
                 ? new HttpAiAnalyzer(aiCfg) : new MockAiAnalyzer(
                 Paths.get(System.getProperty(PROP_USER_HOME), DIR_BEMPDIFF, DIR_AI_REPLAY));
         Map<String, DecompiledUnit> aiMap = new LinkedHashMap<>(decompiled);
         aiMap.putAll(text);
         List<AiAnalyzer.DecompileReq> bCands = new ArrayList<>();
         for (Map.Entry<String, DecompiledUnit> en : aiMap.entrySet()) {
+            ProjectContext perCtx = (pIndex != null) ? pIndex.locate(en.getKey()) : null;
             bCands.add(new AiAnalyzer.DecompileReq(en.getKey(), en.getValue(),
-                    fileClassOfKey(en.getKey(), job.getOldSnap(), job.getNewSnap())));
+                    fileClassOfKey(en.getKey(), job.getOldSnap(), job.getNewSnap()), perCtx));
         }
         if (bCands.size() > aiCfg.getStageBTopK()) bCands = bCands.subList(0, aiCfg.getStageBTopK());
         String focus = buildFocus(category, prompt);
         StageASummary summary = analyzer.stageA(job.getResult(), aiMap, aiCfg, ctx, focus);
         List<FileAnalysis> b = analyzer.stageB(bCands, aiCfg, ctx, focus);
         MarkdownReport rep = new MarkdownReport(job.opts.getTopK());
+        // 报告 AI 章节标注本次分析聚焦项，让「所选分析项」在报告内容中显式可见
+        rep.setAiFocus(categoryLabel(category, prompt));
         String md = rep.render(job.getOldSnap(), job.getNewSnap(), job.getResult(), job.getStats(),
                 decompiled, text, summary, b, ctx, libJar);
         List<Map<String, Object>> thinking = buildThinkingSteps(job, summary, b, ctx);
         return new AiAnalysisResult(md, thinking);
+    }
+
+    /** 分析项可读标签：用于报告「分析聚焦」标注。custom 或未知类别返回自定义问题/默认整体分析。 */
+    private static String categoryLabel(String category, String prompt) {
+        if (prompt != null && !prompt.trim().isEmpty()) {
+            return "自定义问题：" + prompt.trim();
+        }
+        if (category == null || category.isEmpty()) return "整体风险分析";
+        switch (category) {
+            case "risk": return "整体风险分析";
+            case "breaking": return "破坏性变更专项";
+            case "impact": return "影响范围分析";
+            case "testpoints": return "测试要点分析";
+            case "custom": return "自定义问题";
+            default: return "整体风险分析";
+        }
     }
 
     /** 由类别/自定义 prompt 构造聚焦指令（非空时引导模型在对应维度深入，使不同类别分析报告内容可区分）。 */
@@ -563,6 +624,34 @@ public final class BempServer {
         }
     }
 
+    /** per-job 的 AI 工作负载（不可变快照）：反编译类图 + 前端文本差异 + 依赖 jar 分析，供多入口复用。 */
+    private static final class AiWorkCache {
+        final Map<String, DecompiledUnit> decompiled;
+        final Map<String, DecompiledUnit> text;
+        final LibJarDiff.Result libJar;
+        AiWorkCache(Map<String, DecompiledUnit> decompiled, Map<String, DecompiledUnit> text,
+                    LibJarDiff.Result libJar) {
+            this.decompiled = decompiled;
+            this.text = text;
+            this.libJar = libJar;
+        }
+    }
+
+    /** 取/算某 job 的 AI 工作负载：首次计算后按 jobId 缓存，report/ai-analyze/export 复用（评审 P1 #8）。 */
+    private AiWorkCache getAiWork(Job job) {
+        AiWorkCache c = aiWorkCache.get(job.id);
+        if (c == null) {
+            Map<String, DecompiledUnit> decompiled = buildClassMap(job, job.opts.getTopK());
+            Map<String, DecompiledUnit> text = buildTextMap(job, job.opts.getTopK());
+            LibJarDiff.Result libJar = LibJarDiff.analyze(job.getOldSnap(), job.getNewSnap(), job.getResult(),
+                    new Decompiler(cfrPath(job.opts), findJava()), job.opts.getTopK());
+            c = new AiWorkCache(decompiled, text, libJar);
+            aiWorkCache.put(job.id, c);
+            if (aiWorkCache.size() > AI_WORK_CACHE_MAX) aiWorkCache.clear(); // 粗粒度上限：超限清空，避免长期驻留
+        }
+        return c;
+    }
+
     private void handleExport(HttpExchange ex, Job job) throws IOException {
         if (!"DONE".equals(job.getStatus())) {
             sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
@@ -571,9 +660,10 @@ public final class BempServer {
         try {
             Path outDir = Files.createTempDirectory("bempdiff-export-");
             AssetExporter exporter = new AssetExporter();
-            Map<String, DecompiledUnit> decompiled = buildClassMap(job, job.opts.getTopK());
-            Map<String, DecompiledUnit> text = buildTextMap(job, job.opts.getTopK());
-            decompiled.putAll(text);
+            // 复用 per-job 工作缓存（反编译/文本差异），避免与 report/ai-analyze 重复计算（评审 P1 #8）
+            AiWorkCache work = getAiWork(job);
+            Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>(work.decompiled);
+            decompiled.putAll(work.text);
             exporter.exportDiffClasses(job.getResult(), job.getOldSnap(), job.getNewSnap(), outDir);
             exporter.exportDiffJars(job.getResult(), job.getOldSnap(), job.getNewSnap(), outDir);
             Path zip = exporter.exportDecompiledSources(decompiled, outDir, job.opts.getTopK());
@@ -607,10 +697,13 @@ public final class BempServer {
                     prompt = Json.str(req, "prompt", null);
                 }
             }
-            Map<String, DecompiledUnit> decompiled = buildClassMap(job, job.opts.getTopK());
-            Map<String, DecompiledUnit> text = buildTextMap(job, job.opts.getTopK());
-            LibJarDiff.Result libJar = LibJarDiff.analyze(job.getOldSnap(), job.getNewSnap(), job.getResult(),
-                    new Decompiler(cfrPath(job.opts), findJava()), job.opts.getTopK());
+            // 前端未显式传 projectDir 时，回退到配置中心的项目上下文设置（旧前端/漏传均生效）
+            if (projDir == null && config.isProjectContextEnabled()) projDir = config.getProjectContextDir();
+            // 复用 per-job 工作缓存（反编译/文本差异/jar 分析）：并行多类别分析共享同一份，避免 N 倍重复计算
+            AiWorkCache work = getAiWork(job);
+            Map<String, DecompiledUnit> decompiled = work.decompiled;
+            Map<String, DecompiledUnit> text = work.text;
+            LibJarDiff.Result libJar = work.libJar;
 
             // SSE 响应头：流式、禁缓冲/缓存、同源。content-length 不设置 → 分块传输。
             ex.getResponseHeaders().set(HDR_CONTENT_TYPE, "text/event-stream; charset=utf-8");
@@ -691,6 +784,10 @@ public final class BempServer {
             handleEntryChildren(ex);
             return;
         }
+        if ("recursive".equals(sub)) {
+            handleEntryRecursive(ex);
+            return;
+        }
         if (!"decompile".equals(sub)) {
             sendError(ex, 404, "未知 entry 操作: " + sub);
             return;
@@ -731,11 +828,24 @@ public final class BempServer {
                 if (fc == FileClass.CLASS) {
                     u = new Decompiler(cfrPath(job.opts), findJava()).decompile(job.getOldSnap(), job.getNewSnap(), oe, ne, key, rules);
                 } else if (fc == FileClass.ARCHIVE || fc == FileClass.JAR) {
-                    // 归档（含嵌套 jar）：清单对比；非顶层（嵌套）条目先抽取字节落临时文件
+                    // 归档（含嵌套 jar）：清单对比。outerEntry 仅 folder 模式是真实磁盘路径；
+                    // package 模式（outerEntry=包内相对路径）不能直接当磁盘路径用，需从包内抽取字节落临时文件。
                     Path oa = archivePath(oe), na = archivePath(ne);
-                    if (oa == null && oe != null) { byte[] b = new PackageParser().readEntryBytes(job.getOldSnap(), oe); if (b != null) oa = writeTemp(b); }
-                    if (na == null && ne != null) { byte[] b = new PackageParser().readEntryBytes(job.getNewSnap(), ne); if (b != null) na = writeTemp(b); }
-                    u = new com.bempdiff.diff.ArchiveDiff().diff(key, oa, na);
+                    boolean oaTemp = false, naTemp = false; // 仅本请求新建的临时落盘文件才允许删除（真实归档绝不删）
+                    if (oa != null && !Files.isRegularFile(oa)) oa = null;
+                    if (na != null && !Files.isRegularFile(na)) na = null;
+                    if (oa == null && oe != null) { byte[] b = new PackageParser().readEntryBytes(job.getOldSnap(), oe); if (b != null) { oa = writeTemp(b); oaTemp = true; } }
+                    if (na == null && ne != null) { byte[] b = new PackageParser().readEntryBytes(job.getNewSnap(), ne); if (b != null) { na = writeTemp(b); naTemp = true; } }
+                    try {
+                        u = new com.bempdiff.diff.ArchiveDiff().diff(key, oa, na);
+                    } finally {
+                        // 仅删除本请求新建的临时文件；oa/na 为真实归档路径（folder 模式）时标记为 false，绝不误删用户文件（修正 S1 修复的数据丢失隐患）
+                        if (oaTemp) deleteTemp(oa);
+                        if (naTemp) deleteTemp(na);
+                    }
+                } else if (fc == FileClass.OFFICE) {
+                    // Office 文档（docx/xlsx/pptx）：解析内容为文本后行级 diff（需求：文档内容对比）
+                    u = new com.bempdiff.diff.OfficeTextDiff().diff(job.getOldSnap(), job.getNewSnap(), oe, ne, key, fc, rules);
                 } else {
                     u = new FrontendTextDiff().diff(job.getOldSnap(), job.getNewSnap(), oe, ne, key, fc, rules);
                 }
@@ -756,6 +866,108 @@ public final class BempServer {
             LOG.log(Level.WARNING, e, () -> "反编译失败: " + key);
             sendError(ex, 500, "反编译失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 差异树右键菜单的磁盘文件操作（仅文件夹对比模式）。
+     * POST /api/file  body: { jobId, op: "info"|"delete"|"rename"|"copy", key, newName? }
+     * - 包对比模式（job.mode != folder）：返回 400 明确提示"条目位于压缩包内，无磁盘路径"。
+     * - 操作侧判定：DELETED→左侧；ADDED→右侧；其余→左侧（基准侧）；复制方向与目标侧相反。
+     * - 成功/失败统一 200 + {ok:boolean, code, message, side?}，由前端 toast 呈现（FileOps 纯逻辑可单测）。
+     */
+    private void handleFile(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals(M_OPTIONS)) {
+            sendJson(ex, 204, new LinkedHashMap<>());
+            return;
+        }
+        if (!"POST".equals(ex.getRequestMethod())) {
+            sendError(ex, 405, "仅支持 POST");
+            return;
+        }
+        String body = readBody(ex);
+        Map<String, Object> req = body.isEmpty() ? new LinkedHashMap<>() : Json.parseObject(body);
+        String jobId = Json.str(req, KEY_JOB_ID, null);
+        String key = Json.str(req, "key", null);
+        String op = Json.str(req, "op", null);
+        if (jobId == null || key == null || op == null) {
+            sendError(ex, 400, "缺少 jobId / key / op");
+            return;
+        }
+        Job job = store.get(jobId);
+        if (job == null) {
+            sendError(ex, 404, "任务不存在: " + jobId);
+            return;
+        }
+        if (!"DONE".equals(job.getStatus())) {
+            sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
+            return;
+        }
+        if (!MODE_FOLDER.equals(job.mode)) {
+            // 包对比模式：条目在压缩包内，物理路径不存在 → 明确提示（不静默失败）
+            sendError(ex, 400, "当前为包对比模式，条目位于压缩包内（无磁盘路径），不支持该文件操作；请切换到「文件夹」模式后重试");
+            return;
+        }
+        try {
+            Path oldRoot = job.getOldSnap().getFile().toAbsolutePath().normalize();
+            Path newRoot = job.getNewSnap().getFile().toAbsolutePath().normalize();
+            String status = statusOf(job, key);
+            String side = DiffStatus.DELETED.name().equals(status) ? "left"
+                    : DiffStatus.ADDED.name().equals(status) ? "right" : "left";
+            Path root = "left".equals(side) ? oldRoot : newRoot;
+            Path other = "left".equals(side) ? newRoot : oldRoot;
+
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("key", key);
+            resp.put("side", side);
+            resp.put("status", status);
+            switch (op) {
+                case "info" -> {
+                    FileOps.OpResult r = FileOps.info(root, key);
+                    resp.put("ok", r.ok());
+                    resp.put("code", r.code());
+                    resp.put(KEY_MESSAGE, r.message());
+                    if (r.info() != null) resp.put("info", r.info().toMap());
+                }
+                case "delete" -> {
+                    FileOps.OpResult r = FileOps.deleteEntry(root, key);
+                    resp.put("ok", r.ok());
+                    resp.put("code", r.code());
+                    resp.put(KEY_MESSAGE, r.message());
+                }
+                case "rename" -> {
+                    String newName = Json.str(req, "newName", null);
+                    FileOps.OpResult r = FileOps.renameEntry(root, key, newName);
+                    resp.put("ok", r.ok());
+                    resp.put("code", r.code());
+                    resp.put(KEY_MESSAGE, r.message());
+                }
+                case "copy" -> {
+                    // 复制方向：仅右侧存在（ADDED）→ 右→左；其余 → 左→右
+                    String direction = DiffStatus.ADDED.name().equals(status) ? "r2l" : "l2r";
+                    FileOps.OpResult r = FileOps.copyAcross(root, other, key, direction);
+                    resp.put("ok", r.ok());
+                    resp.put("code", r.code());
+                    resp.put(KEY_MESSAGE, r.message());
+                    resp.put("direction", direction);
+                }
+                default -> {
+                    sendError(ex, 400, "未知文件操作: " + op);
+                    return;
+                }
+            }
+            sendJson(ex, 200, resp);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, e, () -> "文件操作失败: " + op + " / " + key);
+            sendError(ex, 500, "文件操作失败: " + e.getMessage());
+        }
+    }
+
+    /** 查询 key 在差异结果中的状态（MODIFIED/ADDED/DELETED/UNCHANGED）。 */
+    private static String statusOf(Job job, String key) {
+        for (DiffStatus st : DiffStatus.values()) {
+            if (job.getResult().get(st).contains(key)) return st.name();
+        }
+        return DiffStatus.UNCHANGED.name();
     }
 
     /**
@@ -787,10 +999,47 @@ public final class BempServer {
         }
     }
 
+    /**
+     * 自动递归解包：把归档（含任意深度嵌套归档）一次性展开为完整嵌套差异树。
+     * 每层节点带 status（ADDED/DELETED/MODIFIED/UNCHANGED），嵌套归档节点带 children。
+     */
+    private void handleEntryRecursive(HttpExchange ex) throws IOException {
+        String jobId = queryParam(ex.getRequestURI(), KEY_JOB_ID);
+        String key = queryParam(ex.getRequestURI(), "key");
+        if (jobId == null || key == null) {
+            sendError(ex, 400, "缺少 jobId / key");
+            return;
+        }
+        Job job = store.get(jobId);
+        if (job == null) {
+            sendError(ex, 404, "任务不存在: " + jobId);
+            return;
+        }
+        if (!"DONE".equals(job.getStatus())) {
+            sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
+            return;
+        }
+        try {
+            Map<String, Object> tree = ArchiveTree.recursiveUnpack(job.getOldSnap(), job.getNewSnap(), key);
+            sendJson(ex, 200, tree);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, e, () -> "递归解包失败: " + key);
+            sendError(ex, 500, "递归解包失败: " + e.getMessage());
+        }
+    }
+
     private static Path writeTemp(byte[] b) throws IOException {
         Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
         Files.write(tmp, b);
+        // S1 修复：兜底在 JVM 退出时删除，避免 %TEMP% 持续累积（调用方也会显式删除）。
+        try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {}
         return tmp;
+    }
+
+    /** S1 修复：安全删除临时文件（失败静默，不干扰主流程）。 */
+    private static void deleteTemp(Path p) {
+        if (p == null) return;
+        try { Files.deleteIfExists(p); } catch (Exception ignored) {}
     }
 
 
@@ -896,6 +1145,92 @@ public final class BempServer {
             resp.put(KEY_MESSAGE, "获取模型列表异常: " + e.getMessage());
             sendJson(ex, 200, resp);
         }
+    }
+
+    // ---------------- 项目级上下文（递归识别 + 缓存）管理 ----------------
+
+    /**
+     * 查询/刷新「上下文目录」的递归项目索引。
+     * GET /api/ai/context?dir=<projDir>&refresh=1 ；POST body {dir, refresh} 亦可。
+     * 返回项目清单（relPath/构建系统/模块数/依赖数/简述）与缓存信息，供配置中心展示与手动刷新。
+     */
+    private void handleAiContext(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals(M_OPTIONS)) {
+            sendJson(ex, 204, new LinkedHashMap<>());
+            return;
+        }
+        try {
+            String dir = "";
+            boolean refresh = false;
+            if (ex.getRequestMethod().equals("GET")) {
+                Map<String, String> q = queryOf(ex.getRequestURI().getQuery());
+                dir = q.getOrDefault("dir", "");
+                refresh = "1".equals(q.get("refresh")) || "true".equals(q.get("refresh"));
+            } else if (ex.getRequestMethod().equals("POST")) {
+                Map<String, Object> req = Json.parseObject(readBody(ex));
+                dir = Json.str(req, "dir", "");
+                refresh = Json.bool(req, "refresh", false);
+            }
+            if (dir.isEmpty()) dir = config.getProjectContextDir();
+            if (dir == null || dir.isEmpty()) {
+                Map<String, Object> resp = new LinkedHashMap<>();
+                resp.put("ok", false);
+                resp.put(KEY_MESSAGE, "未指定 dir 且配置中心未设置项目上下文目录");
+                sendJson(ex, 200, resp);
+                return;
+            }
+            boolean fromCache;
+            ProjectIndex idx = refresh ? ProjectContextService.refresh(dir)
+                    : ProjectContextService.resolve(dir);
+            if (idx == null) {
+                Map<String, Object> resp = new LinkedHashMap<>();
+                resp.put("ok", false);
+                resp.put(KEY_MESSAGE, "目录无效：\"" + dir + "\"");
+                sendJson(ex, 200, resp);
+                return;
+            }
+            // fromCache：显式刷新后必为 false；resolve 命中内存/磁盘缓存时为 true
+            fromCache = !refresh && ProjectContextCache.load(dir) != null;
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("ok", true);
+            resp.putAll(ProjectContextCache.summaryOf(idx, fromCache));
+            List<Map<String, Object>> projects = new ArrayList<>();
+            int totalJava = 0;
+            for (ProjectIndex.ProjectEntry e : idx.getProjects()) {
+                ProjectContext c = e.getCtx();
+                if (c == null) continue;
+                Map<String, Object> pm = new LinkedHashMap<>();
+                pm.put("relPath", e.getRelPath());
+                pm.put("buildSystem", c.getBuildSystem());
+                pm.put("moduleCount", c.getModules() == null ? 0 : c.getModules().size());
+                pm.put("depCount", c.getDependencies() == null ? 0 : c.getDependencies().size());
+                pm.put("fileCount", e.getJavaFileCount());
+                pm.put("summary", c.getSummary());
+                projects.add(pm);
+                totalJava += e.getJavaFileCount();
+            }
+            resp.put("projects", projects);
+            resp.put("javaFileCount", totalJava);
+            resp.put(KEY_MESSAGE, (refresh ? "已刷新" : "已加载") + " " + idx.size() + " 个项目上下文");
+            sendJson(ex, 200, resp);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "查询项目上下文异常", e);
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("ok", false);
+            resp.put(KEY_MESSAGE, "查询项目上下文异常: " + e.getMessage());
+            sendJson(ex, 200, resp);
+        }
+    }
+
+    /** 解析查询串为键值对（dir、refresh 等），容错空值。 */
+    private static Map<String, String> queryOf(String query) {
+        Map<String, String> m = new LinkedHashMap<>();
+        if (query == null || query.isEmpty()) return m;
+        for (String kv : query.split("&")) {
+            int eq = kv.indexOf('=');
+            if (eq > 0) m.put(kv.substring(0, eq), kv.substring(eq + 1));
+        }
+        return m;
     }
 
     private AiConfig readAiTestConfig(HttpExchange ex) throws IOException {
@@ -1007,11 +1342,10 @@ public final class BempServer {
             boolean realLlm = aiCfg.getApiKey() != null && !aiCfg.getApiKey().isEmpty();
             AiAnalyzer analyzer = realLlm ? new HttpAiAnalyzer(aiCfg)
                     : new MockAiAnalyzer(Paths.get(System.getProperty(PROP_USER_HOME), DIR_BEMPDIFF, DIR_AI_REPLAY));
-            List<AiAnalyzer.DecompileReq> cands = new ArrayList<>();
-            for (Map.Entry<String, DecompiledUnit> en : aiMap.entrySet()) {
-                cands.add(new AiAnalyzer.DecompileReq(en.getKey(), en.getValue(), fileClassOfKey(en.getKey(), job.getOldSnap(), job.getNewSnap())));
-            }
-            if (cands.size() > aiCfg.getStageBTopK()) cands = cands.subList(0, aiCfg.getStageBTopK());
+            // 修复：智能分类覆盖全部变更文件，不按 stageBTopK 截断。
+            // 此前复用报告/分析的 topK 截断（默认 15），导致差异树只对前 N 个文件打标、
+            // 其余文件无分类（用户反馈「分类不全」）。候选顺序保持 aiMap 插入序（ADDED/MODIFIED/DELETED）。
+            List<AiAnalyzer.DecompileReq> cands = buildAllCandidates(aiMap, job);
             List<FileAnalysis> b = analyzer.stageB(cands, aiCfg, ctx);
             List<Map<String, Object>> items = new ArrayList<>();
             for (int i = 0; i < cands.size(); i++) {
@@ -1059,13 +1393,33 @@ public final class BempServer {
         }
         try {
             AiConfig aiCfg = config.toAiConfig();
+            // 修复：预估按分析项区分（与 report/ai-analyze 真实 prompt 口径一致）。
+            // 缓存键含类别：不同分析项 prompt 不同、token 预估不同，必须分开缓存。
+            String category = null;
+            String prompt = null;
+            String projDir = null;
+            if (ex.getRequestMethod().equals("POST")) {
+                String body = readBody(ex);
+                if (!body.isEmpty()) {
+                    Map<String, Object> req = Json.parseObject(body);
+                    category = Json.str(req, "category", null);
+                    prompt = Json.str(req, "prompt", null);
+                    projDir = Json.str(req, KEY_PROJECT_DIR, null);
+                }
+            }
+            // 前端未显式传 projectDir 时回退到配置中心的项目上下文设置（与 runAiAnalysis 口径一致）。
+            if (projDir == null && config.isProjectContextEnabled()) projDir = config.getProjectContextDir();
+            String focus = buildFocus(category, prompt);
             // 缓存键含阈值：阈值可热更新，变化时必须失效重算（否则闸门阈值被冻结，与配置脱节）。
             double threshold = aiCfg.getCostGateWarnTokens();
-            String cacheKey = job.id + "@" + threshold;
+            String cacheKey = job.id + "@" + threshold + "@" + String.valueOf(focus);
             Map<String, Object> cached = aiEstimateCache.get(cacheKey);
             if (cached != null) { sendJson(ex, 200, cached); return; }
             Map<String, Object> r = new LinkedHashMap<>();
-            double rep = estimateStageAStageB(job, aiCfg, null);
+            // M4 修复：report/analyze 的 ctx 须与真实 runAiAnalysis 口径一致（按 projDir 推导），
+            // 此前传 null 导致启用「项目级上下文增强」时预估低于实际消耗（成本闸门可能漏拦）。
+            ProjectContext ctx = reportContext(projDir);
+            double rep = estimateStageAStageB(job, aiCfg, ctx, focus);
             r.put("report", rep);
             r.put("analyze", rep);
             // classify 的 ctx 与真实调用一致：projectContextEnabled 时注入项目上下文
@@ -1092,27 +1446,41 @@ public final class BempServer {
         return null;
     }
 
+    /** M4 修复：report/analyze 预估使用的项目上下文，口径与 runAiAnalysis 完全一致——
+     *  优先用本次请求携带的 projectDir，未传则回退到配置中心的项目上下文目录。 */
+    private ProjectContext reportContext(String projDir) {
+        if (projDir != null && !projDir.isEmpty()) {
+            try {
+                return ProjectContextAnalyzer.analyze(Paths.get(projDir));
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "项目上下文分析失败（预估降级为无上下文）", e);
+            }
+        }
+        return null;
+    }
+
     /** 报告/流式分析：stageA 一次 + stageB 逐候选文件（截断 stageBTopK），汇总 token 估算。 */
-    private double estimateStageAStageB(Job job, AiConfig aiCfg, ProjectContext ctx) {
+    private double estimateStageAStageB(Job job, AiConfig aiCfg, ProjectContext ctx, String focus) {
         Map<String, DecompiledUnit> aiMap = aiMapForReport(job);
         AiAnalyzer analyzer = new MockAiAnalyzer(
                 Paths.get(System.getProperty(PROP_USER_HOME), DIR_BEMPDIFF, DIR_AI_REPLAY));
         double tokens = analyzer.estimateTokens(
-                analyzer.buildStageAPrompt(job.getResult(), aiMap, aiCfg, ctx));
+                analyzer.buildStageAPrompt(job.getResult(), aiMap, aiCfg, ctx, focus));
         for (AiAnalyzer.DecompileReq req : buildCandidates(aiMap, job, aiCfg.getStageBTopK())) {
             tokens += analyzer.estimateTokens(
-                    analyzer.buildStageBPrompt(req.key, req.unit, req.fileClass, aiCfg, ctx));
+                    analyzer.buildStageBPrompt(req.key, req.unit, req.fileClass, aiCfg, ctx, focus));
         }
         return tokens;
     }
 
-    /** 智能分类：仅 stageB 逐候选文件（截断 stageBTopK），汇总 token 估算。 */
+    /** 智能分类：仅 stageB 逐候选文件。修复：覆盖全部变更文件（与 handleClassify 一致，
+     *  不按 stageBTopK 截断——分类是逐文件打标，截断会使成本预估低于真实消耗、成本闸门漏拦）。 */
     private double estimateStageBOnly(Job job, AiConfig aiCfg, ProjectContext ctx) {
         Map<String, DecompiledUnit> aiMap = aiMapForClassify(job);
         AiAnalyzer analyzer = new MockAiAnalyzer(
                 Paths.get(System.getProperty(PROP_USER_HOME), DIR_BEMPDIFF, DIR_AI_REPLAY));
         double tokens = 0;
-        for (AiAnalyzer.DecompileReq req : buildCandidates(aiMap, job, aiCfg.getStageBTopK())) {
+        for (AiAnalyzer.DecompileReq req : buildAllCandidates(aiMap, job)) {
             tokens += analyzer.estimateTokens(
                     analyzer.buildStageBPrompt(req.key, req.unit, req.fileClass, aiCfg, ctx));
         }
@@ -1148,7 +1516,7 @@ public final class BempServer {
         return aiMap;
     }
 
-    /** 按 aiMap 构造候选（与 runAiAnalysis/handleClassify 候选顺序、截断一致），用于 stageB 估算。 */
+    /** 按 aiMap 构造候选（与 runAiAnalysis 候选顺序、截断一致），用于 report/analyze 的 stageB 估算。 */
     private List<AiAnalyzer.DecompileReq> buildCandidates(
             Map<String, DecompiledUnit> aiMap, Job job, int topK) {
         List<AiAnalyzer.DecompileReq> cands = new ArrayList<>();
@@ -1157,6 +1525,17 @@ public final class BempServer {
                     fileClassOfKey(en.getKey(), job.getOldSnap(), job.getNewSnap())));
         }
         if (cands.size() > topK) cands = cands.subList(0, topK);
+        return cands;
+    }
+
+    /** 全量候选（不截断）：智能分类需覆盖全部变更文件，与 handleClassify 真实调用一致。 */
+    private List<AiAnalyzer.DecompileReq> buildAllCandidates(
+            Map<String, DecompiledUnit> aiMap, Job job) {
+        List<AiAnalyzer.DecompileReq> cands = new ArrayList<>();
+        for (Map.Entry<String, DecompiledUnit> en : aiMap.entrySet()) {
+            cands.add(new AiAnalyzer.DecompileReq(en.getKey(), en.getValue(),
+                    fileClassOfKey(en.getKey(), job.getOldSnap(), job.getNewSnap())));
+        }
         return cands;
     }
 

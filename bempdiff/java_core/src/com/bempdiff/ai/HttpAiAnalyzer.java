@@ -269,9 +269,11 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         List<FileAnalysis> out = new ArrayList<>();
         boolean withCtx = ctx != null && !ctx.isEmpty();
         for (DecompileReq req : candidates) {
-            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx);
+            ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
+            boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx);
             String json = callChat(prompt, 0.1);
-            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, withCtx));
+            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, effWithCtx));
         }
         return out;
     }
@@ -299,9 +301,11 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         List<FileAnalysis> out = new ArrayList<>();
         boolean withCtx = ctx != null && !ctx.isEmpty();
         for (DecompileReq req : candidates) {
-            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, ctx, focus);
+            ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
+            boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
+            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx, focus);
             String json = callChat(prompt, 0.1);
-            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, withCtx));
+            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, effWithCtx));
         }
         return out;
     }

@@ -1,18 +1,23 @@
 package com.bempdiff.test;
 
+import com.bempdiff.diff.ArchiveTree;
 import com.bempdiff.diff.DiffEngine;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.diff.FrontendTextDiff;
 import com.bempdiff.diff.LineDiff;
 import com.bempdiff.model.DecompiledUnit;
+import com.bempdiff.model.EntrySource;
 import com.bempdiff.model.FileClass;
+import com.bempdiff.model.Layer;
 import com.bempdiff.model.LogicalEntry;
 import com.bempdiff.model.PackageSnapshot;
 import com.bempdiff.parse.PackageParser;
+import com.bempdiff.server.CompareOptions;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +30,8 @@ import java.util.Map;
  *  - 候选收集（collectFrontendTextCandidates）
  */
 public final class FrontendTest {
+
+    private static final CompareOptions OPTS = new CompareOptions();
 
     private final PackageParser parser = new PackageParser();
 
@@ -96,6 +103,33 @@ public final class FrontendTest {
         Asserts.assertNotNull("新增文件 newSource 可用", u.getNewSource());
     }
 
+    /** 新增/删除文件的 diff 必须每行带 + / - 前缀：前端 DiffView 行号计数依赖前缀，裸文本会导致整段无行号。 */
+    public void testAddedDeletedDiff_hasLinePrefix() throws IOException {
+        // 新增
+        DecompiledUnit add = new FrontendTextDiff().diffBytes(null,
+                "line1\nline2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "new.js", FileClass.JS, com.bempdiff.diff.DiffRules.DEFAULT);
+        String[] addLines = add.getDiffText().split("\n", -1);
+        for (String ln : addLines) {
+            if (ln.isEmpty()) continue;
+            Asserts.assertTrue("新增文件每行应以 + 开头: " + ln, ln.startsWith("+ "));
+        }
+        // 删除
+        DecompiledUnit del = new FrontendTextDiff().diffBytes(
+                "gone1\ngone2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                null, "old.js", FileClass.JS, com.bempdiff.diff.DiffRules.DEFAULT);
+        for (String ln : del.getDiffText().split("\n", -1)) {
+            if (ln.isEmpty()) continue;
+            Asserts.assertTrue("删除文件每行应以 - 开头: " + ln, ln.startsWith("- "));
+        }
+        // 空行也要有前缀（前端 else 分支会给空行丢行号并破坏后续计数）
+        DecompiledUnit addBlank = new FrontendTextDiff().diffBytes(null,
+                "a\n\nb\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "b.js", FileClass.JS, com.bempdiff.diff.DiffRules.DEFAULT);
+        Asserts.assertTrue("新增含空行文件 diff 应含 '+ ' 前缀空行",
+                addBlank.getDiffText().contains("+ \n"));
+    }
+
     public void testCollectFrontendCandidates() throws IOException {
         String oldJs = "function a(){return 1;}";
         String newJs = "function a(){return 2;}";
@@ -115,7 +149,64 @@ public final class FrontendTest {
         Asserts.assertContains("应含新增 B", d, "+ B");
     }
 
+    // ---- MANIFEST.MF 文本对比（2026-08-19 修复：.MF 不再回退到 engine=none） ----
+
+    /** PackageParser.classify 必须把 *.MF 识别为 CONFIG（且 isTextDiffable 命中），
+     *  否则 ArchiveTree.computeInnerEntry 走 isTextDiffable 守卫失败，错误为
+     *  「该文件无法反编译（引擎：none）」。 */
+    public void testClassify_manifestIsConfig() {
+        // 约定大写：MANIFEST.MF
+        Asserts.assertEquals("MANIFEST.MF 应归 CONFIG",
+                FileClass.CONFIG, PackageParser.classify("META-INF/MANIFEST.MF"));
+        Asserts.assertTrue("MANIFEST.MF 应可内容 diff",
+                PackageParser.classify("META-INF/MANIFEST.MF").isTextDiffable());
+        // 全小写 .mf 兜底
+        Asserts.assertEquals("x.mf 应归 CONFIG",
+                FileClass.CONFIG, PackageParser.classify("x/y/z.mf"));
+        // 回归：.class 仍是 CLASS（防止笼统改 lower.endsWith 误命中）
+        Asserts.assertEquals("回归: .class 仍是 CLASS", FileClass.CLASS, PackageParser.classify("com/x/A.class"));
+        // 回归：.png 仍是 STATIC
+        Asserts.assertEquals("回归: .png 仍是 STATIC", FileClass.STATIC, PackageParser.classify("img/logo.png"));
+    }
+
+    /** 端到端：jar 内的 META-INF/MANIFEST.MF 内容差异 → 应走 FrontendTextDiff 返回 ok，
+     *  而不是 fail("该文件无法反编译（引擎：none）")。 */
+    public void testManifestInnerEntryDiff() throws IOException {
+        Map<String, byte[]> oldE = new LinkedHashMap<>();
+        oldE.put("META-INF/MANIFEST.MF",
+                ("Manifest-Version: 1.0\r\nImplementation-Version: 1.0\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        oldE.put("a/keep.txt", "kept".getBytes());
+
+        Map<String, byte[]> newE = new LinkedHashMap<>();
+        newE.put("META-INF/MANIFEST.MF",
+                ("Manifest-Version: 1.0\r\nImplementation-Version: 2.0\r\nNew-Attr: x\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        newE.put("a/keep.txt", "kept".getBytes());
+
+        PackageSnapshot oldSnap = snap("app.war", oldE);
+        PackageSnapshot newSnap = snap("app.war", newE);
+
+        DecompiledUnit u = ArchiveTree.computeInnerEntry(oldSnap, newSnap, OPTS,
+                "app.war!/META-INF/MANIFEST.MF", null, null);
+        Asserts.assertTrue("MANIFEST.MF 内部条目 diff 应 ok：engine=" + u.getEngine()
+                + " err=" + u.getError(), u.isOk());
+        Asserts.assertEquals("MANIFEST.MF diff engine 应为 text-normalize",
+                "text-normalize", u.getEngine());
+        Asserts.assertNotNull("diffText 不应为空", u.getDiffText());
+        Asserts.assertTrue("diff 应体现 Implementation-Version 变化",
+                u.getDiffText().contains("Implementation-Version"));
+    }
+
     // ---- 夹具 ----
+
+    /** 与 ArchiveChildrenTest 同结构：打 zip 落盘 + 在快照里登记一个顶层归档条目。 */
+    private static PackageSnapshot snap(String zipName, Map<String, byte[]> entries) throws IOException {
+        byte[] zip = TestFixtures.makeZip(entries);
+        Path zipPath = TestFixtures.writePackage(zip, "mf-snap");
+        Map<String, LogicalEntry> map = new LinkedHashMap<>();
+        map.put(zipName, new LogicalEntry(zipName, Layer.L0, FileClass.ARCHIVE,
+                zip.length, "sha-" + zipName, new EntrySource(zipPath.toString(), null)));
+        return new PackageSnapshot(zipPath, com.bempdiff.model.PackageType.WAR, "1.0", map);
+    }
 
     private java.nio.file.Path warWith(String name, String content) throws IOException {
         Map<String, byte[]> e = new LinkedHashMap<>();
