@@ -45,22 +45,48 @@ export const api = {
   entryChildren(jobId, key) {
     return req('GET', `/api/entry/children?jobId=${encodeURIComponent(jobId)}&key=${encodeURIComponent(key)}`)
   },
-  // ai:boolean -> markdown 文本
-  report(id, ai) { return req('POST', `/api/job/${encodeURIComponent(id)}/report`, { ai }, { text: true }) },
+  // 自动递归解包：一次性返回完整嵌套差异树（嵌套归档节点带 children，受后端深度/节点护栏约束）。
+  // 每层节点含 status（ADDED/DELETED/MODIFIED/UNCHANGED），供"点开即自动展开全部嵌套层"使用。
+  entryRecursive(jobId, key) {
+    return req('GET', `/api/entry/recursive?jobId=${encodeURIComponent(jobId)}&key=${encodeURIComponent(key)}`)
+  },
+  // ai:boolean -> markdown 文本；category/prompt 可选（AI 分析项，透传给后端 buildFocus，使不同分析项报告内容可区分）；
+  // projDir 可选：项目级上下文目录（后端未传时回退到服务端配置，双保险）
+  report(id, ai, category, prompt, projDir) {
+    const body = { ai }
+    if (category) body.category = category
+    if (prompt) body.prompt = prompt
+    if (projDir) body.projectDir = projDir
+    return req('POST', `/api/job/${encodeURIComponent(id)}/report`, body, { text: true })
+  },
   // -> blob (zip)
   exportZip(id) { return req('POST', `/api/job/${encodeURIComponent(id)}/export`, {}, { blob: true }) },
   // -> { items:[{key,risk(HIGH/MEDIUM/LOW),category,reason}], coverage, totalChanged }
   classify(id, projDir) {
     return req('POST', `/api/job/${encodeURIComponent(id)}/ai-classify`, projDir ? { projectDir: projDir } : {})
   },
-  // -> { report, analyze, classify, threshold }  AI token 预估（成本闸门，P0 #5）
-  aiEstimate(id) {
-    return req('GET', `/api/job/${encodeURIComponent(id)}/ai-estimate`)
+  // 差异树右键菜单磁盘操作（仅文件夹对比模式）：{ jobId, op:'info'|'delete'|'rename'|'copy', key, newName? }
+  // -> { ok, code, message, side, status, info? }
+  fileOps(payload) {
+    return req('POST', '/api/file', payload)
+  },
+  // -> { report, analyze, classify, threshold }  AI token 预估（成本闸门，P0 #5）。
+  // category/prompt 可选：与 report/ai-analyze 口径一致，使预估按分析项区分（后端 handleAiEstimate 读取 POST body）。
+  aiEstimate(id, category, prompt) {
+    const body = {}
+    if (category) body.category = category
+    if (prompt) body.prompt = prompt
+    return req('POST', `/api/job/${encodeURIComponent(id)}/ai-estimate`, body)
   },
   // -> config json（GET 不回显 apiKey，含 hasApiKey）
   getConfig() { return req('GET', '/api/config') },
   // cfg: 部分/完整 config
   putConfig(cfg) { return req('PUT', '/api/config', cfg) },
+  // -> { ok, rootPath, projectCount, scannedAt, cacheFile, fromCache, javaFileCount, projects[], message }
+  // 查询/刷新「上下文目录」递归项目索引（refresh=1 强制重扫）
+  contextStatus(dir, refresh) {
+    return req('GET', `/api/ai/context?dir=${encodeURIComponent(dir || '')}&refresh=${refresh ? 1 : 0}`)
+  },
   // body: { provider, baseUrl, apiKey, model, httpProxy?, httpsProxy? }
   testAi(payload) { return req('POST', '/api/ai/test', payload) },
   // -> { ok, models: string[], lastError, message } 按 API Base URL + Key 自动拉取可用模型
@@ -73,6 +99,13 @@ export const api = {
   analyzeStream(id, handlers = {}, body) {
     const url = BASE + `/api/job/${encodeURIComponent(id)}/ai-analyze`
     const controller = new AbortController()
+    // onDone 恰好触发一次：done 事件 / 流结束 EOF / abort 三者先到者胜，避免双触发（评审 P1 #6）
+    let finished = false
+    const finish = (data) => {
+      if (finished) return
+      finished = true
+      handlers.onDone && handlers.onDone(data)
+    }
     ;(async () => {
       let res
       try {
@@ -83,7 +116,7 @@ export const api = {
           signal: controller.signal
         })
       } catch (e) {
-        if (e.name === 'AbortError') { handlers.onDone && handlers.onDone({ ok: true, aborted: true }); return }
+        if (e.name === 'AbortError') { finish({ ok: true, aborted: true }); return }
         handlers.onError && handlers.onError({ message: '无法连接后端服务：' + e.message }); return
       }
       if (!res.ok) {
@@ -108,15 +141,17 @@ export const api = {
               let data
               try { data = JSON.parse(dataStr) } catch (_) { continue }
               dispatchSse(curEvent, data, handlers)
+              // done/error 为终态事件：置 finished，后续 EOF/abort 不再重复回调
+              if (curEvent === 'done' || curEvent === 'error') finished = true
               curEvent = ''
             }
           }
         }
       } catch (e) {
-        if (e.name === 'AbortError') { handlers.onDone && handlers.onDone({ ok: true, aborted: true }); return }
+        if (e.name === 'AbortError') { finish({ ok: true, aborted: true }); return }
         handlers.onError && handlers.onError({ message: e.message }); return
       }
-      handlers.onDone && handlers.onDone({ ok: true })
+      finish({ ok: true })
     })()
     return controller
   }

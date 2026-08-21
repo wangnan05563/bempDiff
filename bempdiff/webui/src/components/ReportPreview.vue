@@ -7,10 +7,11 @@ import { colorizeReport, sevClassFromText } from '../lib/severity'
 const props = defineProps({ visible: { type: Boolean, default: false }, md: { type: String, default: null } })
 const emit = defineEmits(['close'])
 
-// 报告正文来源：优先用调用方传入的 md（AI 控制台预览某次任务报告），否则用全局 state.reportMd
-const src = computed(() => props.md || state.reportMd)
+// 报告正文来源：优先用调用方传入的 md（AI 控制台预览某次任务报告），否则用全局 state.reportMd。
+// 用 null 判断而非 `||`：避免传入空字符串时错误回退到全局报告（评审 P2 #14）
+const src = computed(() => props.md != null ? props.md : state.reportMd)
 // 报告预览标题：来自任务预览时标注「AI 分析」，全局时沿用原逻辑
-const srcIsTask = computed(() => !!props.md)
+const srcIsTask = computed(() => props.md != null)
 
 // 报告正文：渲染后做 AI 风险严重性着色（sev-* class）
 const html = computed(() => src.value ? colorizeReport(renderMarkdown(src.value)) : '')
@@ -68,7 +69,7 @@ function downloadMd() {
             <i class="bi bi-download"></i> 下载 .md
           </button>
           <button v-if="!srcIsTask" class="btn btn-outline-primary btn-sm" :disabled="!state.job || state.busy"
-                  @click="generateReport(state.config && state.config.aiEnabled)">
+                  @click="generateReport(state.reportAi, { category: state.reportAi ? state.reportCategory : undefined, force: true })">
             <i class="bi bi-arrow-clockwise"></i> 重新生成{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
           </button>
           <button class="btn btn-secondary btn-sm ms-auto" @click="emit('close')">关闭</button>

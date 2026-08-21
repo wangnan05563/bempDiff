@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { state, activeTab, generateReport, setAiPanelCollapsed, applyAiPanelResponsive } from '../store'
 import { renderMarkdown, extractSection } from '../lib/markdown'
 import AiConsole from './AiConsole.vue'
@@ -9,6 +9,38 @@ import AiConsole from './AiConsole.vue'
 const tab = computed({
   get: () => state.aiPanelTab,
   set: (v) => { state.aiPanelTab = v }
+})
+
+// 滚动位置记忆：file/global/break/audit 四个报告类子视图共用同一个 .ai-body 滚动容器，
+// 切换 tab 时若不缓存，各 tab 的 scrollTop 会互相串台（前一个 tab 的位置被后一个 tab 直接看到）。
+// 用 Map 按 tab key 缓存 scrollTop：切换前保存旧 tab 位置、切换后恢复新 tab 位置（无记忆则回顶）。
+// console tab 走 AiConsole 自管，不在此恢复（.ai-body 在 console 下 v-show 隐藏）。
+const aiBodyRef = ref(null)
+const aiScrollMap = new Map()
+let aiScrollRaf = 0
+function onAiBodyScroll() {
+  if (aiScrollRaf) return
+  aiScrollRaf = requestAnimationFrame(() => {
+    aiScrollRaf = 0
+    const t = state.aiPanelTab
+    if (t && t !== 'console' && aiBodyRef.value) {
+      aiScrollMap.set(t, aiBodyRef.value.scrollTop)
+    }
+  })
+}
+watch(() => state.aiPanelTab, (newTab, oldTab) => {
+  // 切换瞬间 DOM 仍是旧 tab 内容，先保存旧 tab 的滚动位置
+  if (oldTab && oldTab !== 'console' && aiBodyRef.value) {
+    aiScrollMap.set(oldTab, aiBodyRef.value.scrollTop)
+  }
+  // 新 tab 若是报告类视图，恢复其记忆位置；console 不在此恢复（由 AiConsole 处理）
+  if (newTab && newTab !== 'console') {
+    nextTick(() => {
+      if (aiBodyRef.value) {
+        aiBodyRef.value.scrollTop = aiScrollMap.has(newTab) ? aiScrollMap.get(newTab) : 0
+      }
+    })
+  }
 })
 
 // 智能分析栏收起状态改由共享 state.aiPanelCollapsed 驱动（与 DiffView 文件栏一键显隐联动）。
@@ -53,9 +85,10 @@ function fmtSize(b) {
 }
 
 // 点击守卫：no-job 提示已下沉到 store.generateReport 内部（统一 InfoPanel / ToolBar / 自动报告入口），
-// 此处仅负责把「是否启用 AI」传入，避免 AI 判定逻辑在多处重复（评审 A/D）。
-function onGenerateReport() {
-  generateReport(aiEnabled.value)
+// 此处仅负责把「是否启用 AI」与「分析项」传入，避免 AI 判定逻辑在多处重复（评审 A/D）。
+// 修复：生成报告携带对应分析项（破坏性→breaking / 审计→risk），使报告内容随所选维度变化。
+function onGenerateReport(category) {
+  generateReport(aiEnabled.value, category ? { category } : undefined)
 }
 </script>
 
@@ -83,7 +116,7 @@ function onGenerateReport() {
     </ul>
 
     <!-- 信息面板四个子视图：仅在未选中「控制台」时显示，以便控制台独占整块内容区高度 -->
-    <div class="ai-body" v-show="tab!=='console'">
+    <div class="ai-body" v-show="tab!=='console'" ref="aiBodyRef" @scroll="onAiBodyScroll">
       <!-- 单文件 -->
       <div v-show="tab==='file'">
         <div v-if="node" class="ai-card">
@@ -123,7 +156,7 @@ function onGenerateReport() {
             尚未生成报告。生成后此处自动展示「删除类 / 删除前端资源」等破坏性 API / 行为变更分析。
           </p>
           <button class="btn btn-sm btn-outline-primary" :disabled="state.busy || state.reporting"
-                  @click="onGenerateReport">
+                  @click="onGenerateReport('breaking')">
             <i class="bi bi-filetype-md"></i> 生成报告{{ aiLabelSuffix }}
           </button>
         </div>
@@ -138,7 +171,7 @@ function onGenerateReport() {
             报告生成后，此处展示合规审计结论（比对时间、版本标识、AI 接入情况）。
           </p>
           <button class="btn btn-sm btn-outline-primary" :disabled="state.busy || state.reporting"
-                  @click="onGenerateReport">
+                  @click="onGenerateReport('risk')">
             <i class="bi bi-filetype-md"></i> 生成报告{{ aiLabelSuffix }}
           </button>
         </div>

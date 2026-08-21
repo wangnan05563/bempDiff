@@ -27,6 +27,14 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
 /* ===== 三栏布局 ===== */
 .app-main { flex: 1; min-height: 0; display: flex; }
 .col-tree { width: 300px; flex: none; display: flex; flex-direction: column; border-right: var(--bs-border-color) solid 1px; }
+/* 差异文件树栏收起态：44px 极窄，仅留竖排标题与展开入口，把横向空间全部让给比对窗口。
+ * 「> :not(.tree-collapsed-bar)」隐藏除窄条外的全部子树（搜索/过滤/树体/属性弹窗），收起即专注比对。 */
+.col-tree.collapsed { width: 44px; min-width: 44px; border-right: var(--bs-border-color) solid 1px; background: var(--bs-tertiary-bg); }
+.col-tree.collapsed > :not(.tree-collapsed-bar) { display: none; }
+.col-tree.collapsed .tree-collapsed-bar { flex: 1; display: flex; flex-direction: column; align-items: center; padding: .75rem 0; gap: .5rem; cursor: pointer; user-select: none; }
+.col-tree.collapsed .tree-collapsed-bar:hover { background: var(--bs-secondary-bg); }
+.col-tree.collapsed .tree-collapsed-bar i { font-size: 1rem; color: var(--bs-body-color); }
+.col-tree.collapsed .tree-collapsed-label { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: .08em; font-size: .8rem; font-weight: 600; color: var(--bs-body-color); }
 .col-center { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 /* 智能分析栏：固定 380px，与中间 diff 用左边框 + 极淡阴影做层次分离（避免"叠加"观感）。
  * 收起态 44px 极窄，仅留竖排标题与展开入口，把横向空间全部让给对比窗口。 */
@@ -49,6 +57,19 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
   writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: .08em;
   font-size: .8rem; font-weight: 600; color: var(--bs-body-color);
 }
+
+/* ===== 左右栏拖拽分隔条 =====
+ * 默认透明细条（不新增可见分割线，沿用两侧栏自身 border）；悬浮/拖拽时显示主色小把手提示可拖拽。 */
+.vt-handle { flex: none; width: 6px; position: relative; cursor: col-resize; background: transparent; z-index: 2; }
+.vt-handle::after {
+  content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 2px; height: 28px; border-radius: 2px; background: transparent; transition: background .15s;
+}
+.vt-handle:hover::after { background: var(--bs-primary); }
+/* 拖拽中全局呈现 col-resize 光标并禁用文本选中：鼠标移到对比区也不丢失拖拽手感 */
+.resizing-col { cursor: col-resize !important; user-select: none; }
+/* 专注模式隐藏左右栏时，分隔条一并隐藏（!important 覆盖 v-show 内联 display） */
+.app-main.focus-mode .vt-handle { display: none !important; }
 
 /* ===== 专注模式（差异对比全屏放大） =====
  * App 给 .app-main 加 .focus-mode；隐藏左右栏，中间 diff 占满全部横向视野。
@@ -77,6 +98,8 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
 .filebar > * { min-width: 0; flex-shrink: 0; }
 .filebar > .path { flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filebar .path { font-family: var(--bs-font-monospace); }
+/* 路径栏（PathBar）：允许收缩占满剩余空间，长路径在栏内滚动/截断 */
+.filebar > .pathbar { flex-shrink: 1; flex-basis: 0; }
 
 .center-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--bs-secondary-color); flex-direction: column; gap: .5rem; text-align: center; padding: 2rem; }
 .center-empty .ico { font-size: 2rem; }

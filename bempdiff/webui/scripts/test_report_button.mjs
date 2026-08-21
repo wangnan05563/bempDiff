@@ -27,8 +27,9 @@ console.log('== 复现验证：破坏性/审计栏 生成报告按钮修复 ==')
 const infoSrc = read('components/InfoPanel.vue')
 const infoTpl = templateOf('components/InfoPanel.vue')
 
-// 1) 点击已绑定 onGenerateReport（修复核心：原缺陷是 :disabled 吞点击）
-check('T1 按钮 @click 绑定 onGenerateReport', infoTpl.includes('@click="onGenerateReport"'))
+// 1) 点击已绑定 onGenerateReport（修复核心：原缺陷是 :disabled 吞点击）。
+//    前缀匹配 + 恰好 2 处带参调用（破坏性→breaking / 审计→risk，分析项已接入报告生成）。
+check('T1 按钮 @click 绑定 onGenerateReport', infoTpl.includes('@click="onGenerateReport') && (infoTpl.match(/onGenerateReport\(/g) || []).length === 2)
 // 2) 禁用绑定不再含 !state.job（原缺陷根因：未比对时按钮被禁用→点击无反应）
 check('T2 禁用绑定不再含 !state.job', !infoTpl.includes('!state.job'))
 // 3) 禁用绑定保留 busy||reporting（防重复触发，仍生效）

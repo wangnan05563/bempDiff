@@ -1,9 +1,14 @@
 <script setup>
 import { computed, ref, watch, nextTick } from 'vue'
-import { state, startAiAnalysis, stopAiAnalysis, restartAiAnalysis, selectAiTask, closeAiTask, openReportPreview, AI_CATEGORIES } from '../store'
+import { state, setAiSelCategory, startAiAnalysis, stopAiAnalysis, restartAiAnalysis, selectAiTask, closeAiTask, openReportPreview, AI_CATEGORIES, toast } from '../store'
 import { renderMarkdown } from '../lib/markdown'
 
-const selCategory = ref('risk')
+// 分析项选择提升到共享 state.aiSelCategory：与工具栏「生成报告(AI)」联动，
+// 使报告生成接口能拿到所选分析项（修复：此前报告生成永远走默认分析，内容不随选择变化）。
+const selCategory = computed({
+  get: () => state.aiSelCategory,
+  set: (v) => setAiSelCategory(v)
+})
 const customPrompt = ref('')
 const showCustom = computed(() => selCategory.value === 'custom')
 const bodyRef = ref(null)
@@ -15,6 +20,10 @@ const runningCount = computed(() => state.aiTasks.filter(t => t.status === 'thin
 
 function newAnalysis() {
   if (!hasJob.value) return
+  if (selCategory.value === 'custom' && !customPrompt.value.trim()) {
+    toast('warning', '请输入自定义分析问题后再发起')
+    return
+  }
   if (selCategory.value === 'custom') startAiAnalysis('custom', customPrompt.value.trim())
   else startAiAnalysis(selCategory.value)
 }
@@ -33,6 +42,8 @@ function statusMeta(t) {
     default: return { cls: 'bi-circle', color: 'text-secondary' }
   }
 }
+// tab 图标样式一次拼接（避免模板中对 statusMeta 重复调用，评审 P2 #17）
+function tabCls(t) { const m = statusMeta(t); return m.cls + ' ' + m.color }
 const mdHtml = computed(() => (active.value && active.value.answer) ? renderMarkdown(active.value.answer) : '')
 
 // 自动滚底：监听当前任务 answer/thinking 长度变化
@@ -45,10 +56,74 @@ function scrollBottom() {
 }
 watch(() => (active.value ? active.value.answer.length + '|' + active.value.thinking.length : ''), scrollBottom)
 
+// 多任务滚动位置记忆：所有 AI 任务共用同一个 .console-body(bodyRef)，切换任务 tab 时
+// 若不缓存，scrollTop 会停留在切换前的随机位置（视觉上像「滚到一半」）。按 taskId 缓存：
+//  - 切换前保存旧任务的 scrollTop；
+//  - 切到正在生成(thinking/streaming)的任务 → 走 scrollBottom 跟流（与上面的 watch 协同，不被记忆覆盖）；
+//  - 切到已完成的任务 → 恢复其记忆位置（无记忆则回顶，便于从头查看报告）。
+// 关闭任务时同步清理其缓存，避免 Map 无限增长。
+const taskScrollMap = new Map()
+let taskScrollRaf = 0
+function onConsoleScroll() {
+  if (taskScrollRaf) return
+  taskScrollRaf = requestAnimationFrame(() => {
+    taskScrollRaf = 0
+    const id = state.aiActiveTaskId
+    if (id != null && bodyRef.value) {
+      taskScrollMap.set(id, bodyRef.value.scrollTop)
+    }
+  })
+}
+watch(() => state.aiActiveTaskId, (newId, oldId) => {
+  // 切换瞬间 DOM 仍是旧任务内容，先保存旧任务的滚动位置
+  if (oldId != null && bodyRef.value) {
+    taskScrollMap.set(oldId, bodyRef.value.scrollTop)
+  }
+  if (newId != null) {
+    const task = state.aiTasks.find(t => t.id === newId)
+    const isLive = task && (task.status === 'streaming' || task.status === 'thinking')
+    nextTick(() => {
+      if (!bodyRef.value) return
+      if (isLive) {
+        // 正在生成：跟流滚底，后续由上面的 scrollBottom watch 接管自动滚动
+        scrollBottom()
+      } else if (taskScrollMap.has(newId)) {
+        bodyRef.value.scrollTop = taskScrollMap.get(newId)
+      } else {
+        bodyRef.value.scrollTop = 0
+      }
+    })
+  }
+})
+// 关闭任务后清理其滚动缓存，避免 Map 残留无用 key
+watch(() => state.aiTasks.map(t => t.id), (newIds) => {
+  const live = new Set(newIds)
+  for (const k of [...taskScrollMap.keys()]) {
+    if (!live.has(k)) taskScrollMap.delete(k)
+  }
+})
+
 function previewReport() {
   if (active.value && active.value.answer) openReportPreview(active.value.answer)
 }
 function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
+
+/** 导出当前任务的分析结果为 Markdown 文件（本地下载，不经过后端）。 */
+function exportActive() {
+  const t = active.value
+  if (!t || !t.answer || !t.answer.length) return
+  const blob = new Blob([t.answer], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `bempdiff-ai-${(t.title || 'analysis').replace(/[\\/:*?"<>|]/g, '_')}.md`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  toast('success', 'AI 分析结果已导出为 Markdown')
+}
+function exportDisabled(t) { return !(t && t.answer && t.answer.length) }
 </script>
 
 <template>
@@ -65,7 +140,9 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
       </select>
       <input v-if="showCustom" class="form-control form-control-sm" style="max-width:220px"
              v-model="customPrompt" placeholder="输入你的分析问题…" :disabled="!hasJob">
-      <button class="btn btn-sm btn-primary" @click="newAnalysis" :disabled="!hasJob" title="发起一次新的 AI 分析（并行，不阻塞界面）">
+      <button class="btn btn-sm btn-primary" @click="newAnalysis"
+              :disabled="!hasJob || (showCustom && !customPrompt.value.trim())"
+              title="发起一次新的 AI 分析（并行，不阻塞界面）">
         <i class="bi bi-plus-lg"></i> 新建分析
       </button>
       <span v-if="!hasJob" class="text-secondary" style="font-size:.75rem">完成比对后可发起</span>
@@ -77,20 +154,24 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
     </div>
 
     <template v-else>
-      <!-- 并行任务 tab 栏：每个任务独立窗口 -->
+      <!-- 并行任务 tab 栏：每个任务独立窗口。
+           标签栏不再设 max-height（避免报告生成后 console-body 撑高，flex 收缩把标签栏压成 ~12px，
+           第 2 行及之后的标签被嵌套滚动条遮住，用户无法点击切换）。
+           标签数 > 单行容量时自然换行（典型 2~4 个并行分析仅 1~2 行）。 -->
       <div class="console-tabs d-flex flex-wrap gap-1">
         <button v-for="t in state.aiTasks" :key="t.id"
                 class="console-tab btn btn-sm"
                 :class="{ active: t.id === state.aiActiveTaskId }"
+                :title="t.title"
                 @click="selectAiTask(t.id)">
-          <i class="bi" :class="statusMeta(t).cls + ' ' + statusMeta(t).color"></i>
+          <i class="bi" :class="tabCls(t)"></i>
           <span class="tab-title">{{ t.title }}</span>
           <i class="bi bi-x tab-close" @click.stop="closeAiTask(t.id)" title="关闭此分析"></i>
         </button>
       </div>
 
       <!-- 当前任务控制台窗口 -->
-      <div class="console-body" ref="bodyRef">
+      <div class="console-body" ref="bodyRef" @scroll="onConsoleScroll">
         <div v-if="active.error" class="alert alert-danger py-2 mb-2" style="font-size:.82rem">
           <i class="bi bi-exclamation-triangle"></i> {{ active.error }}
         </div>
@@ -125,8 +206,8 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
         </div>
       </div>
 
-      <!-- 操作：中断 / 重新分析 / 预览报告 / 关闭 -->
-      <div class="console-foot d-flex align-items-center gap-2">
+      <!-- 操作：中断 / 重新分析 / 预览报告 / 导出 / 关闭（纯图标按钮，功能见悬浮提示） -->
+      <div class="console-foot d-flex align-items-center gap-1">
         <span class="me-auto text-secondary" style="font-size:.75rem">
           <span v-if="active.status==='streaming'"><i class="bi bi-arrow-repeat spin"></i> 分析中…</span>
           <span v-else-if="active.status==='thinking'"><i class="bi bi-arrow-repeat spin"></i> 准备中…</span>
@@ -135,17 +216,25 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
           <span v-else-if="active.status==='error'"><i class="bi bi-exclamation-triangle text-danger"></i> 失败</span>
         </span>
         <button v-if="active.status==='thinking' || active.status==='streaming'"
-                class="btn btn-outline-secondary btn-sm" @click="stopAiAnalysis(active.id)">
-          <i class="bi bi-stop-fill"></i> 中断
+                class="btn btn-outline-secondary btn-sm icon-only" title="中断当前分析"
+                @click="stopAiAnalysis(active.id)">
+          <i class="bi bi-stop-fill"></i>
         </button>
-        <button v-else class="btn btn-outline-secondary btn-sm" @click="restartAiAnalysis(active.id)" :disabled="!hasJob">
-          <i class="bi bi-arrow-clockwise"></i> 重新分析
+        <button v-else class="btn btn-outline-secondary btn-sm icon-only" title="重新分析"
+                @click="restartAiAnalysis(active.id)" :disabled="!hasJob">
+          <i class="bi bi-arrow-clockwise"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm" :disabled="previewDisabled(active)" @click="previewReport" title="在新窗口预览完整 Markdown 报告">
-          <i class="bi bi-filetype-md"></i> 预览报告
+        <button class="btn btn-outline-primary btn-sm icon-only" title="在新窗口预览完整 Markdown 报告"
+                :disabled="previewDisabled(active)" @click="previewReport">
+          <i class="bi bi-filetype-md"></i>
         </button>
-        <button class="btn btn-outline-secondary btn-sm" @click="closeAiTask(active.id)">
-          <i class="bi bi-x-lg"></i> 关闭
+        <button class="btn btn-outline-primary btn-sm icon-only" title="导出分析结果为 Markdown 文件"
+                :disabled="exportDisabled(active)" @click="exportActive">
+          <i class="bi bi-download"></i>
+        </button>
+        <button class="btn btn-outline-secondary btn-sm icon-only" title="关闭此分析"
+                @click="closeAiTask(active.id)">
+          <i class="bi bi-x-lg"></i>
         </button>
       </div>
     </template>
@@ -158,16 +247,29 @@ function previewDisabled(t) { return !(t && t.answer && t.answer.length) }
 .console-head { font-size: .8rem; font-weight: 600; color: var(--bs-secondary-color); display: flex; align-items: center; }
 .console-new { margin: .4rem 0; }
 .console-empty { font-size: .8rem; padding: .5rem 0; }
-.console-tabs { margin-bottom: .4rem; max-height: 7rem; overflow: auto; }
-.console-tab { --bs-btn-padding-y: .15rem; --bs-btn-padding-x: .5rem; font-size: .74rem; display: flex; align-items: center; gap: .3rem;
-  border: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg); color: var(--bs-body-color); }
+.console-tabs { margin-bottom: .4rem; }
+.console-tab { --bs-btn-padding-y: .15rem; --bs-btn-padding-x: .5rem; font-size: .74rem; display: inline-flex; align-items: center; gap: .3rem;
+  border: 1px solid var(--bs-border-color); background: var(--bs-tertiary-bg); color: var(--bs-body-color); flex: 0 0 auto; max-width: 100%; }
 .console-tab.active { border-color: var(--bs-primary); background: var(--bs-primary-bg-subtle); }
-.console-tab .tab-title { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.console-tab .tab-close { font-size: .7rem; opacity: .6; }
+.tab-title {
+  /* 标题完整显示（不再硬截断）：
+   *  - min-width:0：flex item 允许收缩到 0（默认 min-width:auto 对中文是最大不可断段，会撑爆布局）。
+   *  - white-space:normal + word-break:break-word：超长标题在 tab 内自然换行。
+   *  - 不依赖固定 max-width：按钮外层 max-width:100% 跟随面板宽度自适应，
+   *    不同 col-ai 断点（380/340/300/260）下标题换行宽度都贴合可用空间，不会溢出也不会浪费。
+   *  - 不再 text-overflow:ellipsis，标题文字总是可读。
+   * button 已带 :title="t.title"，鼠标悬浮可看到单行原文（极端长度兜底）。 */
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.3;
+}
+.console-tab .tab-close { font-size: .7rem; opacity: .6; flex: 0 0 auto; }
 .console-tab .tab-close:hover { opacity: 1; color: var(--bs-danger); }
 .console-body { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--bs-border-color);
   border-radius: 8px; padding: .6rem .75rem; background: var(--bs-body-bg); }
 .console-foot { margin-top: .4rem; }
+.console-foot .icon-only { --bs-btn-padding-x: .45rem; }
 
 /* 思考块：浅灰 + 微弱紫色左边框（呼应 AiAnalysisDialog 视觉），默认折叠 */
 .thinking-block { margin: 4px 0 10px; padding: 6px 10px; background: rgba(178,38,255,0.05);

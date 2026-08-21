@@ -1,6 +1,10 @@
 // 行内差异高亮：字符级或词级 LCS，返回片段数组 [{t:'eq'|'del'|'add', s}]。
-// 用于双栏 diff 的“词/字符级”高亮（对标 GitHub inline diff）。
-// n*m 上限保护：超长行（单行 minified 等）退化为整行高亮，避免 O(n*m) 卡 UI。
+// 用于双栏 diff 的“词/字符级”高亮（对标 Beyond Compare / GitHub inline diff）。
+//
+// 策略：
+//  1) 先裁剪确定未变的公共前缀/后缀（字符级），只对中段做 LCS ——
+//     长行上仅中段变化时高亮区间干净、不碎片化（BCompare 风格）；
+//  2) n*m 上限保护：超长中段（单行 minified 等）退化为整行高亮，避免 O(n*m) 卡 UI。
 //
 // mode: 'char'（默认，逐字符）| 'word'（按空白/符号分词后逐词）
 
@@ -35,12 +39,45 @@ function tokenize(s) {
   return s.match(/\s+|[^\s]+/g) || []
 }
 
+/** 合并相邻同类型片段（公共前后缀裁剪后可能出现 eq 相邻）。 */
+function mergeSegs(segs) {
+  if (segs.length < 2) return segs
+  const out = []
+  for (const s of segs) {
+    const last = out[out.length - 1]
+    if (last && last.t === s.t) last.s += s.s
+    else out.push({ t: s.t, s: s.s })
+  }
+  return out
+}
+
 export function inlineDiff(oldS, newS, mode = 'char') {
+  oldS = oldS || ''
+  newS = newS || ''
+  if (oldS === newS) return [{ t: 'eq', s: oldS }]
+  // 公共前后缀裁剪（字符级）
+  const n = oldS.length, m = newS.length
+  let p = 0
+  while (p < n && p < m && oldS[p] === newS[p]) p++
+  let s = 0
+  while (s < n - p && s < m - p && oldS[n - 1 - s] === newS[m - 1 - s]) s++
+  const pref = oldS.slice(0, p)
+  const suff = oldS.slice(n - s)
+  const oldMid = oldS.slice(p, n - s)
+  const newMid = newS.slice(p, m - s)
   const wordMode = mode === 'word'
-  const a = wordMode ? tokenize(oldS) : Array.from(oldS)
-  const b = wordMode ? tokenize(newS) : Array.from(newS)
+  const a = wordMode ? tokenize(oldMid) : Array.from(oldMid)
+  const b = wordMode ? tokenize(newMid) : Array.from(newMid)
   const max = wordMode ? 200000 : 40000
-  const segs = lcsTokens(a, b, max)
-  if (!segs) return [{ t: 'del', s: oldS }, { t: 'add', s: newS }]
-  return segs
+  const mid = lcsTokens(a, b, max)
+  const segs = []
+  if (pref) segs.push({ t: 'eq', s: pref })
+  if (mid) segs.push(...mid)
+  else {
+    // 中段超限（minified 超长行等）：整段 del/add
+    if (oldMid) segs.push({ t: 'del', s: oldMid })
+    if (newMid) segs.push({ t: 'add', s: newMid })
+  }
+  if (suff) segs.push({ t: 'eq', s: suff })
+  return mergeSegs(segs)
 }

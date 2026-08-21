@@ -25,12 +25,20 @@ function findReportBtn(wrapper) {
 beforeEach(() => {
   state.job = null
   state.reportMd = null
+  state.reportCache = {}
   state.busy = false
   state.busyText = ''
   state.reporting = false
   state.jobProgress = null
   state.config = { aiEnabled: false }
   state.toast = null
+  // 隔离补强：InfoPanel 挂载时 applyAiPanelResponsive 会按视口宽自动收起智能分析栏，
+  // 若上一用例已把 aiPanelCollapsed 置 true 且未重置，后续用例的 v-if 内容区不渲染 → 按钮丢失。
+  state.aiPanelCollapsed = false
+  state.aiPanelTab = 'file'
+  state.tabs = []
+  state.activeKey = null
+  try { localStorage.removeItem('bempdiff.analysisCollapsed') } catch (_) { /* jsdom 下正常 */ }
 })
 
 describe('破坏性/审计栏 生成报告按钮', () => {

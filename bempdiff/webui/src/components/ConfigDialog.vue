@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { state, saveConfig, testConnection, fetchModels } from '../store'
+import { state, saveConfig, testConnection, fetchModels, loadContextStatus } from '../store'
 import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
 
 const props = defineProps({ visible: { type: Boolean, default: false } })
@@ -30,8 +30,25 @@ watch(() => props.visible, (v) => {
   if (v) {
     Object.assign(form, JSON.parse(JSON.stringify(state.config || {})))
     prevProviderKey = form.aiProvider // 记录当前厂商，供首次切换时判断「是否未改过默认值」
+    // 打开配置中心即查询上下文索引状态（读缓存秒回；让用户一眼看到「是否已生效」）
+    if (form.projectContextEnabled && form.projectContextDir) loadContextStatus()
+    else state.aiContext = { loading: false, data: null, error: '' }
   }
 })
+
+// ---- 项目级上下文状态（配置中心可视化：加载中/已加载/失败 + 项目清单 + 重新扫描） ----
+const ctxLoading = computed(() => state.aiContext.loading)
+const ctxError = computed(() => state.aiContext.error)
+const ctxData = computed(() => state.aiContext.data)
+function fmtTime(ms) {
+  if (!ms) return '—'
+  const d = new Date(ms)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+async function onRefreshContext() {
+  await loadContextStatus(true)
+}
 
 function close() { emit('close') }
 
@@ -84,12 +101,14 @@ async function onTest() {
 
 // 保存：仅持久化配置，不关闭窗口（用户可能要切换到别的 Tab 继续填其他信息）。
 // 关闭窗口由 footer 的「关闭」按钮负责（emit close）。store.saveConfig 已弹「配置已保存」toast。
-function onSave() {
+async function onSave() {
   const out = JSON.parse(JSON.stringify(form))
   if (out.topK !== undefined && out.topK !== null && out.topK !== '') out.topK = Number(out.topK)
   if (out.stageBTopK !== undefined && out.stageBTopK !== null && out.stageBTopK !== '') out.stageBTopK = Number(out.stageBTopK)
   if (out.costGateWarnTokens !== undefined && out.costGateWarnTokens !== null && out.costGateWarnTokens !== '') out.costGateWarnTokens = Number(out.costGateWarnTokens)
-  saveConfig(out)
+  await saveConfig(out)
+  // 保存后立即重扫上下文目录（新目录/刚开启都立即生效并展示加载态）
+  if (out.projectContextEnabled && out.projectContextDir) await loadContextStatus(true)
 }
 </script>
 
@@ -262,6 +281,48 @@ function onSave() {
                   <button class="btn btn-outline-secondary" type="button" @click="pickContextDir" :disabled="!canPick" :title="pickTitle">
                     <i class="bi bi-folder2-open"></i>
                   </button>
+                </div>
+              </div>
+            </div>
+            <!-- 上下文加载状态（借鉴 IDE「索引加载」交互：加载中/完成态徽标 + 项目统计 + 手动刷新） -->
+            <div v-if="form.projectContextEnabled" class="card card-body py-2 mb-2 context-status" style="font-size:.76rem">
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <template v-if="ctxLoading">
+                  <span class="spinner-border spinner-border-sm text-primary" role="status"></span>
+                  <span class="text-secondary">正在递归识别项目，首次扫描约需数秒…</span>
+                </template>
+                <template v-else-if="ctxError">
+                  <i class="bi bi-exclamation-triangle-fill text-danger"></i>
+                  <span class="text-danger">上下文加载失败：{{ ctxError }}</span>
+                </template>
+                <template v-else-if="ctxData && ctxData.ok">
+                  <i class="bi bi-check-circle-fill text-success"></i>
+                  <span class="fw-semibold text-success">上下文已加载</span>
+                  <span class="text-secondary">
+                    · {{ ctxData.projectCount }} 个项目 · {{ ctxData.javaFileCount ?? 0 }} 个 Java 文件
+                    <span v-if="ctxData.fromCache" class="text-secondary"><i class="bi bi-database"></i> 缓存命中</span>
+                    <span v-else class="text-secondary"><i class="bi bi-arrow-repeat"></i> 已重新扫描</span>
+                    · 更新于 {{ fmtTime(ctxData.scannedAt) }}
+                  </span>
+                </template>
+                <template v-else>
+                  <i class="bi bi-dash-circle text-secondary"></i>
+                  <span class="text-secondary">尚未加载（保存配置后自动扫描）</span>
+                </template>
+                <button class="btn btn-outline-primary btn-sm ms-auto" type="button" :disabled="ctxLoading" @click="onRefreshContext" title="强制重新递归扫描上下文目录（忽略缓存）">
+                  <i class="bi bi-arrow-clockwise"></i> 重新扫描
+                </button>
+              </div>
+              <div v-if="ctxData && ctxData.projects && ctxData.projects.length" class="mt-2">
+                <div class="text-secondary mb-1"><i class="bi bi-diagram-3"></i> 识别到的项目（点击展开）</div>
+                <ul class="list-unstyled mb-0 ps-2 context-project-list" style="max-height:150px;overflow:auto">
+                  <li v-for="p in ctxData.projects" :key="p.relPath" class="d-flex gap-2 align-items-baseline text-nowrap" style="font-size:.74rem">
+                    <code class="text-body">{{ p.relPath }}</code>
+                    <span class="text-secondary">· {{ p.buildSystem }} · {{ p.moduleCount }} 模块 · {{ p.depCount }} 依赖 · {{ p.fileCount }} 文件</span>
+                  </li>
+                </ul>
+                <div class="form-text mt-1" style="font-size:.68rem">
+                  该目录下的项目已作为 AI 分析的背景上下文注入；关闭「启用项目级上下文增强」可停用。
                 </div>
               </div>
             </div>
