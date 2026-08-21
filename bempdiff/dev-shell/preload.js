@@ -17,6 +17,22 @@ contextBridge.exposeInMainWorld('bempdiff', {
     return ipcRenderer.invoke('bempdiff:pick-path', opts)
   },
   /**
+   * 差异树右键「打开」：用系统默认程序打开文件 / 打开文件夹。
+   * @param {string} p 绝对路径
+   * @returns {Promise<string>} 空串=成功；否则为错误信息
+   */
+  openPath(p) {
+    return ipcRenderer.invoke('bempdiff:open-path', p)
+  },
+  /**
+   * 差异树右键「在文件资源管理器中显示」：定位到资源管理器并选中。
+   * @param {string} p 绝对路径
+   * @returns {Promise<string>} 空串=成功；否则为错误信息
+   */
+  showInFolder(p) {
+    return ipcRenderer.invoke('bempdiff:show-in-folder', p)
+  },
+  /**
    * 注册「外部入口传入比对路径」监听（右键菜单 / 命令行参数）。
    * 主进程在收到文件参数时通过 webContents.send('bempdiff:shell-compare', paths) 推送；
    * 渲染进程（store.init）据此自动填路径并比对。

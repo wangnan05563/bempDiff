@@ -1,6 +1,15 @@
 @echo off
 chcp 936 >nul 2>&1
 setlocal EnableExtensions
+
+REM Silent background mode: relaunch self in a hidden console (ghost arg) so the main
+REM console closes immediately and no terminal log remains visible after startup.
+REM To stop, use tooling\scripts\stop-service.bat.
+if not "%~1"=="ghost" (
+  powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0_silent_start.ps1" start_service
+  exit /b 0
+)
+
 cd /d "%~dp0\..\.."
 
 set "PORT=18765"
@@ -174,6 +183,9 @@ if not "%OPEN_URL%"=="" (
     )
   )
 )
+
+REM ---------- 8a. Silent background: do not keep the console open; leave services running ----------
+if "%~1"=="ghost" exit /b 0
 
 REM ---------- 8. Prompt and wait for any key to close ----------
 echo.

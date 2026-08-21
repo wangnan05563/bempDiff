@@ -6,7 +6,7 @@
 // 仅作为原生窗口宿主 + 进程管理器，不打包任何业务代码。
 // 生产打包由 electron-builder 复用同一 main.js，区别仅在于资源根路径（resourcesPath）。
 
-const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -302,6 +302,28 @@ ipcMain.handle('bempdiff:pick-path', async (event, opts = {}) => {
   const result = await dialog.showOpenDialog(win, { properties })
   if (result.canceled || !result.filePaths.length) return null
   return opts.multiple ? result.filePaths : result.filePaths[0]
+})
+
+// ---------- 差异树右键菜单：系统文件操作桥（shell API） ----------
+// 仅接受绝对路径（渲染进程可能被注入），非法直接拒绝。
+ipcMain.handle('bempdiff:open-path', async (_event, p) => {
+  if (typeof p !== 'string' || !p.trim() || !path.isAbsolute(p)) return '非法路径'
+  try {
+    const err = await shell.openPath(p)
+    return err || '' // 空串 = 打开成功
+  } catch (e) {
+    return String(e && e.message ? e.message : e)
+  }
+})
+
+ipcMain.handle('bempdiff:show-in-folder', async (_event, p) => {
+  if (typeof p !== 'string' || !p.trim() || !path.isAbsolute(p)) return '非法路径'
+  try {
+    shell.showItemInFolder(p)
+    return ''
+  } catch (e) {
+    return String(e && e.message ? e.message : e)
+  }
 })
 
 // ---------- Shell 集成：单实例锁 + 文件参数（右键菜单 / 命令行 / 拖入） ----------

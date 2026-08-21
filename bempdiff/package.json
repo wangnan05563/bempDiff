@@ -13,6 +13,7 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
+    "electronVersion": "31.7.7",
     "appId": "com.bempdiff.app",
     "productName": "BempDiff",
     "copyright": "Copyright © 2026 BempDiff",
