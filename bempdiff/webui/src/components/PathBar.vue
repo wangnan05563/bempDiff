@@ -5,7 +5,7 @@
 //  - 悬浮提示：两种模式下 title 均为完整路径，长路径/溢出时鼠标悬浮即可查看。
 // 路径形态：相对 key（包内路径，如 WEB-INF/lib/x.jar 或归档复合键 outer!/inner）；
 // folder 模式可传 rootPath（磁盘根）→ 编辑框显示绝对路径。
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { state, selectEntry, toast, locateTreePrefix } from '../store'
 
 const props = defineProps({
@@ -91,6 +91,66 @@ function onEditKey(e) {
   if (e.key === 'Enter') commitEdit()
   else if (e.key === 'Escape') exitEdit()
 }
+
+// ======================================================================
+// 溢出反馈：解决「长路径被截断、用户不知道还能往哪边滚」的问题（纯展示增强）
+//  1) canLeft/canRight：按当前 scrollLeft 判定左右是否还有可滚动空间 → 驱动两侧渐隐遮罩，
+//     让「还可继续滚动」的提示可见；
+//  2) autoRevealCurrent：切换文件后把「当前文件段」自动滚入可视区右缘，保证用户第一眼
+//     就能看到当前所处层级，而不是被截断在最右。
+//  3) 触控反馈：滚动容器加 touch-action: pan-x，移动端可横向滑动查看完整路径。
+//  不改动任何点击 / 编辑 / 定位逻辑，避免破坏既有交互。
+// ======================================================================
+const crumbsRef = ref(null)
+const canLeft = ref(false)
+const canRight = ref(false)
+let pbResize = null
+
+function updateOverflow() {
+  const el = crumbsRef.value
+  if (!el) { canLeft.value = false; canRight.value = false; return }
+  // scrollLeft 有浮点精度波动，留 1px 容差判定是否还有空间
+  canLeft.value = el.scrollLeft > 1
+  canRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+}
+
+/** 把当前文件段（最后一个 .pb-current 节点）滚入可视区域右缘，避免当前层级被截断。 */
+function autoRevealCurrent() {
+  const el = crumbsRef.value
+  if (!el) return
+  const cur = el.querySelector('.pb-current')
+  if (!cur) return
+  // 仅当确实溢出时才滚动，避免小幅抖动
+  if (el.scrollWidth <= el.clientWidth + 1) return
+  el.scrollTo({ left: cur.offsetLeft + cur.offsetWidth - el.clientWidth, behavior: 'smooth' })
+  updateOverflow()
+}
+
+// 路径/段数变化（换文件）后：当前段自动入视；等 DOM 就绪后再量溢出
+const revealCb = () => nextTick(() => { autoRevealCurrent(); updateOverflow() })
+// 换文件（props.path 变化）或从编辑态切回面包屑时，重新定位当前段并刷新遮罩
+watch(() => [props.path, editing.value], revealCb)
+
+// 编辑态（input）/面包屑（crumbs）二选一：进入编辑态 crumbs 节点销毁、退出时挂载新节点，
+// 若只在 onMounted observe 一次，后续新节点不再被监听，容器尺寸变化时遮罩失效。
+// 用 watch(crumbsRef) 在节点变化时 disconnect+reobserve，保证遮罩始终跟随当前节点。
+watch(crumbsRef, (el, oldEl) => {
+  if (pbResize) {
+    if (oldEl) pbResize.unobserve(oldEl)
+    if (el) pbResize.observe(el)
+    else { pbResize.disconnect(); pbResize = null }
+  }
+})
+
+onMounted(() => {
+  updateOverflow()
+  revealCb()
+  if (typeof ResizeObserver !== 'undefined' && crumbsRef.value) {
+    pbResize = new ResizeObserver(updateOverflow)
+    pbResize.observe(crumbsRef.value)
+  }
+})
+onBeforeUnmount(() => { if (pbResize) pbResize.disconnect() })
 </script>
 
 <template>
@@ -99,7 +159,7 @@ function onEditKey(e) {
       <input v-if="editing" ref="inputRef" v-model="editText" class="pb-input"
              :title="fullPath" spellcheck="false" autocomplete="off"
              @keydown="onEditKey" @blur="exitEdit" @click.stop />
-      <div v-else class="pb-crumbs">
+      <div v-else ref="crumbsRef" class="pb-crumbs" @scroll.passive="updateOverflow">
         <button v-if="segments.length" type="button" class="pb-seg pb-root"
                 :title="rootTitle" @click.stop="onRootClick">
           <i class="bi" :class="isFolderMode ? 'bi-hdd' : 'bi-archive'"></i>{{ rootLabel }}
@@ -115,6 +175,10 @@ function onEditKey(e) {
         <span v-if="!segments.length" class="pb-empty">未选择文件</span>
       </div>
     </Transition>
+    <!-- 溢出渐隐遮罩：指示该方向还有可滚动内容（长路径不被截断后"看不见"）。
+         放在 Transition 之外，避免成为切换动画的过渡目标（Vue3 多根告警 + 动画交叉）。 -->
+    <span v-if="canLeft && !editing" class="pb-fade pb-fade-left"></span>
+    <span v-if="canRight && !editing" class="pb-fade pb-fade-right"></span>
   </div>
 </template>
 
@@ -123,6 +187,9 @@ function onEditKey(e) {
 .pathbar {
   display: inline-flex;
   align-items: center;
+  /* 相对定位 → 作为两侧溢出渐隐遮罩（.pb-fade）的定位基准 */
+  position: relative;
+  overflow: hidden;           /* 遮罩收敛在圆角内，避免溢出到外部 */
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
@@ -136,12 +203,26 @@ function onEditKey(e) {
 .pathbar:hover { border-color: var(--bs-secondary-color); }
 .pathbar:focus-within { border-color: var(--bs-primary); box-shadow: 0 0 0 .15rem rgba(var(--bs-primary-rgb), .18); }
 
-/* 面包屑区：横向可滚动（长路径不换行，滚动条细） */
+/* 溢出渐隐遮罩：柔和渐隐可滚动方向的边界，提示该侧还有内容可查看。
+   用 radial/linear 渐变从透明渐到底色，不拦截点击（pointer-events:none）。 */
+.pb-fade {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 1.1rem;
+  pointer-events: none;       /* 不拦截面包屑点击 */
+  z-index: 1;
+}
+.pb-fade-left { left: 0; background: linear-gradient(to right, var(--bs-body-bg), transparent); }
+.pb-fade-right { right: 0; background: linear-gradient(to left, var(--bs-body-bg), transparent); }
+
+/* 面包屑区：横向可滚动（长路径不换行，滚动条细）；pan-x 支持移动端横向滑动查看完整路径 */
 .pb-crumbs {
   display: flex;
   align-items: center;
   overflow-x: auto;
   scrollbar-width: thin;
+  touch-action: pan-x;        /* 触控反馈：只允许横向手势滚动，避免误触纵向页滚 */
   max-width: 100%;
 }
 /* 层级节点 */

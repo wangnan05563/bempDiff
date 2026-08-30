@@ -1,0 +1,113 @@
+# ============================================================================
+# BempDiff 真实 BempServer HTTP API 性能压测配置（配置驱动，零业务硬编码于引擎）
+# 被测：com.bempdiff.Main server（bempdiff.jar）HTTP 后端，端口 18799
+# 夹具：demo_v1.war / demo_v2.war（代表性 WAR 对）
+# ============================================================================
+mode: auto              # 无 JMeter -> 自动回退 Python 回放
+
+target:
+  base_url: "http://127.0.0.1:18799"
+  default_timeout_sec: 300   # 重计算/AI 端点首次计算可达数十秒，给足超时避免误计 000
+  ramp_stagger: true
+  fixed_headers: { "Accept": "application/json" }
+  auth:
+    type: none
+
+# SUT 由外部手工启动；sandbox 关闭。注意：process_match 必须留空，
+# 否则引擎退出时会把匹配 cmd_substr 的后端进程定向关停（误杀被测服务）。
+sandbox:
+  enabled: false
+  lifecycle:
+    never_global_kill: true
+
+defect_rules:
+  defect_codes: ["000", "405"]
+  defect_prefixes: ["5"]
+  expected_codes: ["401"]     # 无 API Key 时 AI 探测端点的 401 属预期，不计缺陷
+  assertion_mismatch_is_defect: false
+
+# 资源监控（由 scripts/monitor_sut.py 单独运行；只采样不杀进程）
+resource_monitor:
+  enabled: false
+  match:
+    mode: "cmd_substr"
+    cmd_substr: "bempdiff.jar"
+  sample_interval_sec: 2
+  duration_samples: 0
+  metrics: ["rss_mb", "private_mb", "cpu_percent"]
+  output_csv: "output/results/sut_resource.csv"
+  alert:
+    enabled: true
+    max_rss_mb: 4096
+    on_exceed: warn
+
+report:
+  formats: ["markdown"]
+  output_dir: "output/results"
+  percentiles: [50, 95, 99]
+  endpoint_table: true
+
+# ---------------------------------------------------------------------------
+# 场景（配置驱动生成 JMX）：fixtures 注入 jobId / 路径 / key
+# ---------------------------------------------------------------------------
+scenarios:
+  enabled: true
+  output_jmx_dir: "jmeter"
+  default_protocol: "http"
+  fixtures:
+    bolt:  "D:/code/otherProjects/18_comparePakage/tooling/verify_exe/demo_v1.war"
+    bnew:  "D:/code/otherProjects/18_comparePakage/tooling/verify_exe/demo_v2.war"
+    jobs:  "job-196001,job-196002,job-196003,job-196004,job-196005,job-196006,job-196007,job-196008"
+    keyDec: "WEB-INF%2Fclasses%2Fcom%2Fexample%2FService.class"
+    keyArc: "WEB-INF%2Flib%2Fdiff-lib.jar"
+  thread_profiles:
+    smoke:   { threads: 1,  ramp: 1,  duration: 60 }
+    load:    { threads: 10, ramp: 5,  duration: 90 }
+  list:
+    # ---- 快 / 读 / REST 端点 ----
+    - name: "bemp_api"
+      profile: "smoke"
+      samplers:
+        - { name: "compare-submit", path: "/api/session/compare", method: "POST",
+            body: '{"leftType":"package","leftPath":"{{bolt}}","rightPath":"{{bnew}}","expandAll":true}' }
+        - { name: "job-status", path: "/api/job/{{jobs.0}}/status", method: "GET" }
+        - { name: "job-unpack-report", path: "/api/job/{{jobs.0}}/unpack-report", method: "GET" }
+        - { name: "config-get", path: "/api/config", method: "GET" }
+        - { name: "ai-context", path: "/api/ai/context", method: "GET" }
+        - { name: "entry-children", path: "/api/entry/children", method: "GET",
+            params: { jobId: "{{jobs.6}}", key: "{{keyArc}}" } }
+        - { name: "entry-recursive", path: "/api/entry/recursive", method: "GET",
+            params: { jobId: "{{jobs.6}}", key: "{{keyArc}}" } }
+        - { name: "static-index", path: "/", method: "GET" }
+    # ---- 重计算 / AI / 导出 端点 ----
+    - name: "bemp_heavy"
+      profile: "smoke"
+      samplers:
+        - { name: "job-report", path: "/api/job/{{jobs.1}}/report", method: "POST", body: '{}' }
+        - { name: "job-export", path: "/api/job/{{jobs.2}}/export", method: "POST", body: '{}' }
+        - { name: "job-ai-classify", path: "/api/job/{{jobs.3}}/ai-classify", method: "POST", body: '{}' }
+        - { name: "job-ai-estimate", path: "/api/job/{{jobs.4}}/ai-estimate", method: "POST", body: '{}' }
+        - { name: "job-ai-analyze", path: "/api/job/{{jobs.5}}/ai-analyze", method: "POST",
+            body: '{"baseUrl":"http://127.0.0.1:1"}' }
+        - { name: "entry-decompile", path: "/api/entry/decompile", method: "GET",
+            params: { jobId: "{{jobs.6}}", key: "{{keyDec}}" } }
+        - { name: "config-put", path: "/api/config", method: "PUT", body: '{"filterSearch":""}' }
+        - { name: "ai-test-offline", path: "/api/ai/test", method: "POST",
+            body: '{"baseUrl":"http://127.0.0.1:1"}' }
+        - { name: "ai-models-offline", path: "/api/ai/models", method: "POST",
+            body: '{"baseUrl":"http://127.0.0.1:1"}' }
+
+# ---------------------------------------------------------------------------
+# 分阶段：基准(smoke) / 压力(load) / 稳定性(soak)
+# ---------------------------------------------------------------------------
+phases:
+  - { name: "smoke_api",     jmx: "jmeter/bemp_api.jmx",   enabled: true, threads_override: 1,  duration_override: 40 }
+  - { name: "load20_api",    jmx: "jmeter/bemp_api.jmx",   enabled: true, threads_override: 20, duration_override: 60 }
+  - { name: "soak_api",      jmx: "jmeter/bemp_api.jmx",   enabled: true, threads_override: 8,  duration_override: 120 }
+  - { name: "smoke_heavy",   jmx: "jmeter/bemp_heavy.jmx", enabled: true, threads_override: 1,  duration_override: 90 }
+  - { name: "load5_heavy",   jmx: "jmeter/bemp_heavy.jmx", enabled: true, threads_override: 5,  duration_override: 90 }
+  - { name: "soak_heavy",    jmx: "jmeter/bemp_heavy.jmx", enabled: true, threads_override: 2,  duration_override: 120 }
+
+# 基线对比（可选，无历史基线暂关闭）
+comparison:
+  enabled: false

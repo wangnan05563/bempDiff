@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
@@ -58,15 +59,26 @@ public final class Decompiler {
 
     private static final String JAVAP = "javap";
 
-    /** P1-1 反编译缓存：sha256(class bytes) → 源码，access-order LRU max 256，避免重复 CFR。 */
+    /** P1-1 反编译缓存：sha256(class bytes) → 源码，access-order LRU max 256，避免重复 CFR。
+     *  P0-A（性能测试报告 §8#1/§9-A）升级为 static「进程级 LRU」：
+     *  反编译结果仅由 class 字节决定，是内容寻址、确定性的，整个 JVM 内共享绝对安全；
+     *  BempServer 中 Decompiler 实例多为短命（computeUnitByKey/handleClassify 每请求 new 一个，
+     *  单类用完即丢），实例级缓存跨调用零命中、跨 job 只能落到磁盘——static 后同一 class 字节
+     *  在任意 Decompiler 实例、任意 job 之间命中同一份内存结果，跨实例复用不再依赖磁盘 IO。 */
     private static final int MAX_DECOMPILE_CACHE = 256;
-    private final Map<String, String> decompileCache =
+    private static final Map<String, String> decompileCache =
             Collections.synchronizedMap(new LinkedHashMap<String, String>(16, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
                     return size() > MAX_DECOMPILE_CACHE;
                 }
             });
+
+    /** P1-D 反编译全局并发闸门：限制同时进行的反编译计算数量，防高并发下 CPU/内存峰值（性能报告 §8#4）。
+     *  大小取 CPU 核数——进程内 CFR 为 CPU 密集；javap 子进程路径亦受此钳制（进程内 P0-A 已消除 cfr 子进程，
+     *  但降级子进程仍可能随请求膨胀）。缓存命中的短路径不消耗许可，故绝大多数读多场景不受影响。 */
+    private static final Semaphore DECOMPILE_GATE =
+            new Semaphore(Math.max(1, Runtime.getRuntime().availableProcessors()));
 
     /**
      * D5 跨会话持久化反编译缓存（2026-08-17，来源 docs/BempDiff_AI优化与竞品分析报告.md P0）。
@@ -212,10 +224,13 @@ public final class Decompiler {
             return diskCached;
         }
 
+        // P1-D：仅在真正计算（CFR/javap）前取闸门许可，缓存命中路径不消耗许可。
+        // acquireUninterruptibly 避免 InterruptedException 侵入仅声明 IOException 的签名。
+        DECOMPILE_GATE.acquireUninterruptibly();
         File tmp = File.createTempFile("bempdiff-cls-", ".class");
         // 注：finally 中已显式删除，无需 deleteOnExit（避免长生命周期 GUI 累积路径引用）。
-        Files.write(tmp.toPath(), classBytes);
         try {
+            Files.write(tmp.toPath(), classBytes);
             String result;
             if (inProcessCfrAvailable) {
                 try {
@@ -237,6 +252,7 @@ public final class Decompiler {
             return result;
         } finally {
             Files.delete(tmp.toPath());
+            DECOMPILE_GATE.release();
         }
     }
 
@@ -362,12 +378,23 @@ public final class Decompiler {
             } else {
                 engine = "cfr";
             }
-            return new DecompiledUnit(key, oldSrc, newSrc, diff, engine, "", true);
+            // 短哈希：原字节侧 SHA-1 前 7 hex；缺失侧 0000000
+            String oldHash = (oldBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
+            String newHash = (newBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+            return new DecompiledUnit(key, oldSrc, newSrc, diff, engine, "", true, oldHash, newHash);
         } catch (IOException e) {
-            return DecompiledUnit.fail(key, e.getMessage());
+            // 失败时也计算哈希：保留「字节指纹」便于定位，即使反编译失败仍能在 filebar 区分两侧
+            return failWithHash(key, oldBytes, newBytes, e.getMessage());
         } catch (Exception e) {
-            return DecompiledUnit.fail(key, e.toString());
+            return failWithHash(key, oldBytes, newBytes, e.toString());
         }
+    }
+
+    /** 失败也计算短哈希的统一封装，避免两处 catch 分支重复计算逻辑。 */
+    private static DecompiledUnit failWithHash(String key, byte[] oldBytes, byte[] newBytes, String err) {
+        String oldHash = (oldBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
+        String newHash = (newBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+        return new DecompiledUnit(key, null, null, "", "cfr", err, false, oldHash, newHash);
     }
 
     private byte[] readBytes(PackageSnapshot snap, LogicalEntry entry) throws IOException {

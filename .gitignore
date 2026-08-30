@@ -77,3 +77,38 @@ bempdiff/dev-shell/node_modules/
 # vite 在 dev/build 时生成的临时 config 副本，非源码
 vite.config.js.timestamp-*.mjs
 vitest.config.js.timestamp-*.mjs
+
+# ---------- 工作空间清理规则 (2026-08-28, workspace-cleanup) ----------
+# 本轮清理的品类均为可再生构建产物/缓存/运行时日志/临时垃圾，勿再入库。
+
+# 根目录堆放的无用垃圾（PowerShell 编译错误误重定向产物等）
+/Join-Path
+/_repro_dl.js
+/build_run.log
+
+# 前端 vite 构建输出（非打包必需，可由 npm run build 重生）
+bempdiff/webui/dist/
+
+# 各子项目 node_modules 依赖（可由 npm install 重生）
+bempdiff/dev-shell/node_modules/
+# 根 .gitignore 已有全局 node_modules/ 规则，会覆盖 bempdiff/node_modules、
+# bempdiff/webui/node_modules 及其它所有同名目录；此处单列 dev-shell 仅作明确备注。
+
+# 后端 javac 编译中间产物目录
+bempdiff/java_core/out/
+bempdiff/java_core/test_classes/
+bempdiff/java_core/test_out/
+bempdiff/java_core/vr_classes/
+
+# ---------- GitHub 入库前清理 (2026-08-31) ----------
+# 一次性验证/测试运行产物（可重跑生成，非源码）
+/.bpdtest_tmp/
+/_export_shots/
+/verify_exe/
+/output/
+/logs/
+bempdiff/.office_test/
+bempdiff/e2e_work/
+bempdiff/java_core/.e2e-tmp/
+bempdiff/java_core/.probe-tmp/
+bempdiff/verify_exe/

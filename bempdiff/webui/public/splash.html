@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <!--
+    启动图（Splash）页面：由 Tauri 桌面壳在「生产启动阶段」以本地 WebviewUrl::App 加载，
+    全程不依赖 Java 后端 —— 后端 sidecar 就绪前即可秒显，消除启动空窗/连接失败白屏。
+
+    交互：
+      - Rust 侧按真实的启动里程碑推送 `splash-progress` 事件（{ stage, percent }），
+        本页据此更新进度条宽度与阶段文案，保证「进度对应实际加载、不伪造」。
+      - 后端就绪后由 Rust 直接关闭本窗口并切到主窗口（无需本页做任何跳转）。
+      - 纯浏览器里打开本页（无 Tauri 运行时）时降级为不确定进度动画，便于 UI 预览。
+
+    资源：启动图为 ./splash-logo.png（复制自项目 bempdiff-logo.png，可替换）。
+    刻度映射见 src-tauri/src/lib.rs `launch_java` 中的 splash(...) 调用。
+  -->
+  <title>BempDiff — 启动中</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      /* 干净明亮的渐变背景：柔和薄荷青 → 淡蓝，契合产品轻量科技感 */
+      background: linear-gradient(150deg, #e8f7f3 0%, #eef4ff 55%, #f6f1fe 100%);
+      color: #2b3a4a;
+      overflow: hidden;
+    }
+
+    /* 居中容器：flex 纵向排布 logo → 文案 → 进度条 */
+    .splash {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 24px 32px;
+    }
+
+    /* 启动图：柔和阴影 + 轻微呼吸动画，增加品牌感又不刺眼 */
+    .logo {
+      width: 128px; height: 128px;
+      object-fit: contain;
+      border-radius: 24px;
+      background: #ffffffcc;
+      box-shadow: 0 12px 30px rgb(94 150 168 / 0.18);
+      padding: 14px;
+      animation: breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes breathe {
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.04); }
+    }
+
+    .brand { text-align: center; }
+    .brand h1 {
+      font-size: 22px; font-weight: 600;
+      letter-spacing: .5px;
+      color: #1f6f6a;
+    }
+    .brand p {
+      margin-top: 6px;
+      font-size: 13px; color: #7a8a99;
+    }
+
+    .stage {
+      font-size: 13px; color: #5b6b7a;
+      min-height: 18px;
+      transition: opacity .2s ease;
+    }
+
+    /* 圆角细进度条：薄荷绿高亮，底部浅灰轨道 */
+    .track {
+      width: 260px; height: 8px;
+      border-radius: 999px;
+      background: #dfe7ef;
+      overflow: hidden;
+    }
+    .bar {
+      height: 100%; width: 8%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #4fd1c5, #7aa7ff);
+      transition: width .28s ease;
+    }
+
+    /* 降级态：不确定进度（Rust 事件未连上时，浏览器预览也能展示动效） */
+    .bar.indeterminate {
+      width: 35% !important;
+      animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-110%); }
+      100% { transform: translateX(320%); }
+    }
+  </style>
+</head>
+<body>
+  <div class="splash">
+    <img class="logo" src="./splash-logo.png" alt="BempDiff" draggable="false" />
+    <div class="brand">
+      <h1>BempDiff</h1>
+      <p>差异化对比工具 · 正在启动…</p>
+    </div>
+    <div class="track"><div class="bar" id="bar"></div></div>
+    <div class="stage" id="stage">正在初始化…</div>
+  </div>
+
+  <script>
+    (function () {
+      var bar = document.getElementById('bar');
+      var stage = document.getElementById('stage');
+
+      // 阶段文案映射（与 lib.rs 的 stage 标识一致；未知阶段降级为通用文案）
+      var STAGES = {
+        resolving: '正在定位运行环境…',
+        spawning:  '正在启动后端服务…',
+        waiting:   '正在等待后端就绪…'
+      };
+
+      // 默认进度刻度：与 Rust 侧首档一致，监听器挂载前不至于停留在 0
+      setState(8, '正在初始化…');
+
+      // 有 Tauri 运行时：订阅 Rust 推进的真实进度
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('splash-progress', function (e) {
+          var d = e.payload || {};
+          setState(Number(d.percent) || 8, STAGES[d.stage] || d.stage || '正在初始化…');
+        });
+      } else {
+        // 无 Tauri（浏览器直接预览）：进入不确定进度动画
+        bar.classList.add('indeterminate');
+      }
+
+      function setState(percent, text) {
+        bar.classList.remove('indeterminate');
+        var v = Math.max(8, Math.min(100, percent));
+        bar.style.width = v + '%';
+        stage.textContent = text;
+      }
+    })();
+  </script>
+</body>
+</html>

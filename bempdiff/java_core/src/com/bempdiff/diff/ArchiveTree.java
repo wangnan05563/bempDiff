@@ -7,6 +7,7 @@ import com.bempdiff.model.FileClass;
 import com.bempdiff.model.LogicalEntry;
 import com.bempdiff.model.PackageSnapshot;
 import com.bempdiff.parse.PackageParser;
+import com.bempdiff.parse.PackageVersion;
 import com.bempdiff.server.CompareOptions;
 
 import java.io.ByteArrayOutputStream;
@@ -53,6 +54,11 @@ public final class ArchiveTree {
      * 目录以结构标记节点呈现（isDir=true，不可再展开；zip 条目扁平，目录内容由同层文件条目体现）。
      */
     public static List<Map<String, Object>> computeChildren(PackageSnapshot oldSnap, PackageSnapshot newSnap, String key) throws IOException {
+        return computeChildren(oldSnap, newSnap, key, null);
+    }
+
+    public static List<Map<String, Object>> computeChildren(PackageSnapshot oldSnap, PackageSnapshot newSnap, String key,
+                                                        java.util.List<String> ignoreExtensions) throws IOException {
         List<String> parts = splitCompound(key);
         Path oldArch = extractInnerArchive(oldSnap, parts, true);
         Path newArch = extractInnerArchive(newSnap, parts, false);
@@ -76,6 +82,9 @@ public final class ArchiveTree {
 
         List<Map<String, Object>> children = new ArrayList<>();
         for (String name : names) {
+            // 比对级忽略扩展名：嵌套归档内部条目（如 jar!/META-INF/MANIFEST.MF）同样跳过，
+            // 否则仅顶层过滤而嵌套内部 .MF 仍会出现在展开列表里（用户反馈的"嵌套不生效"根因）。
+            if (!name.endsWith("/") && isIgnoredExt(name, ignoreExtensions)) continue;
             boolean isDir = name.endsWith("/");
             boolean inOld = isDir ? oldDirs.containsKey(name) : oldMap.containsKey(name);
             boolean inNew = isDir ? newDirs.containsKey(name) : newMap.containsKey(name);
@@ -113,22 +122,28 @@ public final class ArchiveTree {
      * MAX_RECURSIVE_NODES 双重护栏约束。
      */
     public static Map<String, Object> recursiveUnpack(PackageSnapshot oldSnap, PackageSnapshot newSnap,
-                                                      String key) throws IOException {
+                                                  String key) throws IOException {
+        return recursiveUnpack(oldSnap, newSnap, key, null);
+    }
+
+    public static Map<String, Object> recursiveUnpack(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                                                  String key, java.util.List<String> ignoreExtensions) throws IOException {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("key", key);
-        root.put("children", buildRecursive(oldSnap, newSnap, key, 0, new AtomicInteger(0)));
+        root.put("children", buildRecursive(oldSnap, newSnap, key, 0, new AtomicInteger(0), ignoreExtensions));
         return root;
     }
 
     private static List<Map<String, Object>> buildRecursive(PackageSnapshot oldSnap, PackageSnapshot newSnap,
-                                                            String key, int depth, AtomicInteger counter) throws IOException {
+                                                            String key, int depth, AtomicInteger counter,
+                                                            java.util.List<String> ignoreExtensions) throws IOException {
         List<Map<String, Object>> out = new ArrayList<>();
         if (depth >= MAX_RECURSION_DEPTH) return out; // 触顶：不再下钻（节点保留，仍可手动展开）
-        List<Map<String, Object>> flat = computeChildren(oldSnap, newSnap, key);
+        List<Map<String, Object>> flat = computeChildren(oldSnap, newSnap, key, ignoreExtensions);
         for (Map<String, Object> child : flat) {
             if (counter.incrementAndGet() > MAX_RECURSIVE_NODES) return out; // 超节点上限：截断
             if (Boolean.TRUE.equals(child.get("expandable")) && !Boolean.TRUE.equals(child.get("isDir"))) {
-                child.put("children", buildRecursive(oldSnap, newSnap, (String) child.get("key"), depth + 1, counter));
+                child.put("children", buildRecursive(oldSnap, newSnap, (String) child.get("key"), depth + 1, counter, ignoreExtensions));
             }
             out.add(child);
         }
@@ -209,6 +224,11 @@ public final class ArchiveTree {
         return fc == FileClass.ARCHIVE || fc == FileClass.JAR;
     }
 
+    /** 判断条目名是否命中忽略扩展名集合（统一走 ParseConfig.ignoredExt，口径一致）。 */
+    private static boolean isIgnoredExt(String name, java.util.List<String> ignores) {
+        return com.bempdiff.config.ParseConfig.ignoredExt(name, ignores);
+    }
+
     /** 把 "a!/b!/c" 按 "!/" 拆成 ["a","b","c"]（兼容顶层无 "!/" 的 key）。 */
     public static List<String> splitCompound(String key) {
         List<String> parts = new ArrayList<>();
@@ -226,6 +246,13 @@ public final class ArchiveTree {
     static Path resolveTopArchive(PackageSnapshot snap, String topKey) throws IOException {
         if (snap == null) return null;
         LogicalEntry e = snap.getEntries().get(topKey);
+        // S2 修复：顶层归档 key 在该侧缺失、对侧是「同名不同版本」包（如 BEMP...M059.zip vs M061.zip）时，
+        // 若该侧恰有唯一的同基名不同版本条目，则用它替代——让两个版本包自动配对对比内部条目，
+        // 而非整包判为 DELETED/ADDED。
+        if (e == null) {
+            String alt = matchSameBaseVersion(snap, topKey);
+            if (alt != null) e = snap.getEntries().get(alt);
+        }
         if (e == null) return null;
         EntrySource src = e.getSrc();
         if (src != null && !src.isNested()) {
@@ -240,10 +267,53 @@ public final class ArchiveTree {
                 if (Files.isRegularFile(candidate)) return candidate;
             }
         }
-        // 包内条目（含嵌套归档）：从 snap.getFile() 读取字节落临时文件
+        // 包内条目（含嵌套归档）：从 snap.getFile() 读取落临时文件。
+        // 非嵌套条目：直接从外层包的 ZipFile 流式复制该条目到临时文件，不驻留整 byte[]——
+        // 大 war 内嵌的 zip 若整存内存再写盘，内存与磁盘峰值双高（磁盘空间不足时更易触顶）。
+        if (!e.getSrc().isNested()) {
+            Path fallback = writeEntryStreaming(snap.getFile(), e.getSrc().getOuterEntry());
+            if (fallback != null) return fallback;
+        }
         byte[] b = new PackageParser().readEntryBytes(snap, e);
         if (b == null) return null;
         return writeTemp(b);
+    }
+
+    /** 从外层 zip 流式把「条目名」复制到临时文件（返回 null 表示不适用/条目缺失，交由调用方退化为整读）。 */
+    private static Path writeEntryStreaming(Path archiveFile, String entryName) throws IOException {
+        if (archiveFile == null || entryName == null) return null;
+        if (!Files.isRegularFile(archiveFile)) return null;
+        try (ZipFile zf = new ZipFile(archiveFile.toFile())) {
+            ZipEntry ze = zf.getEntry(entryName);
+            if (ze == null) return null;
+            return writeTempStream(zf.getInputStream(ze), ze.getSize());
+        }
+    }
+
+    /** 流式写临时文件：从 InputStream 边读边写，不整存 byte[]（降低内存与磁盘峰值）。 */
+    private static Path writeTempStream(InputStream in, long declared) throws IOException {
+        if (in == null) return null;
+        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
+        try (InputStream is = in) {
+            Files.copy(is, tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            // 用后即删：避免运行期 %TEMP% 持续累积（磁盘泄漏）。
+            try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {}
+        }
+        return tmp;
+    }
+
+    /** 在快照条目中查找与 key「同名不同版本」的唯一归档条目；多候选返回 null（不冒险误配）。 */
+    private static String matchSameBaseVersion(PackageSnapshot snap, String key) {
+        String found = null;
+        for (String k : snap.getEntries().keySet()) {
+            if (k.equals(key)) continue;
+            if (PackageVersion.sameBaseDifferentVersion(key, k)) {
+                if (found != null) return null; // 多个候选 → 维持原状（DELETED/ADDED）
+                found = k;
+            }
+        }
+        return found;
     }
 
     /** 顺着复合键链 descent，落在最后一个分段所指的"归档"上（用于 children 枚举 / 嵌套归档反编译）。 */
@@ -274,10 +344,10 @@ public final class ArchiveTree {
     /** 把归档内某条目抽取到临时文件（供进一步打开/枚举）。条目缺失或过大返回 null。 */
     static Path extractEntryToTemp(Path archive, String entryPath) throws IOException {
         try (ZipFile zf = new ZipFile(archive.toFile())) {
-            ZipEntry ze = zf.getEntry(entryPath);
+            ZipEntry ze = resolveEntry(zf, entryPath);
             if (ze == null || ze.isDirectory()) return null;
             if (ze.getSize() > ENTRY_READ_CAP) return null;
-            byte[] b = readZipEntryBytes(archive, entryPath);
+            byte[] b = readZipEntryBytes(archive, ze.getName());
             if (b == null) return null;
             return writeTemp(b);
         }
@@ -286,7 +356,7 @@ public final class ArchiveTree {
     /** 读归档内某条目的全部字节（受 ENTRY_READ_CAP 约束）。 */
     static byte[] readZipEntryBytes(Path archive, String entryPath) throws IOException {
         try (ZipFile zf = new ZipFile(archive.toFile())) {
-            ZipEntry ze = zf.getEntry(entryPath);
+            ZipEntry ze = resolveEntry(zf, entryPath);
             if (ze == null || ze.isDirectory()) return null;
             if (ze.getSize() > ENTRY_READ_CAP) return null;
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -302,6 +372,28 @@ public final class ArchiveTree {
             }
             return bos.toByteArray();
         }
+    }
+
+    /**
+     * 在归档中定位条目：先精确路径匹配，缺失时尝试「同基名不同版本」唯一匹配
+     * （S2 修复：嵌套条目如 lib/x-1.0.jar vs x-2.0.jar 也自动配对）；多候选返回 null。
+     */
+    private static ZipEntry resolveEntry(ZipFile zf, String entryPath) {
+        ZipEntry ze = zf.getEntry(entryPath);
+        if (ze != null) return ze;
+        String alt = null;
+        Enumeration<? extends ZipEntry> en = zf.entries();
+        while (en.hasMoreElements()) {
+            ZipEntry cand = en.nextElement();
+            if (cand.isDirectory()) continue;
+            String cn = cand.getName();
+            if (cn.equals(entryPath)) continue;
+            if (PackageVersion.sameBaseDifferentVersion(entryPath, cn)) {
+                if (alt != null) return null; // 多个候选 → 不匹配
+                alt = cn;
+            }
+        }
+        return alt == null ? null : zf.getEntry(alt);
     }
 
     /** 枚举归档条目为 name → {size, crc}（CRC 用于判断同内容修改）。目录条目也纳入（空目录/结构变化可见）。 */

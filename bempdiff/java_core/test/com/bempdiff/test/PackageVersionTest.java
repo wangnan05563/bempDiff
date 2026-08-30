@@ -38,6 +38,27 @@ public final class PackageVersionTest {
                 PackageVersion.sameBaseDifferentVersion("a1.zip", "a2.zip"));
     }
 
+    public void testSameBaseDifferentVersion_diffComponent() {
+        // 回归：不同组件名（adapter vs cpesmq）即使共享长前缀 BEMP5.0- 也不得配对，
+        // 否则归档自动配对会在一侧命中多个候选（adapter/cpesmq/served/web）而放弃配对
+        Asserts.assertFalse("不同组件名不应配对",
+                PackageVersion.sameBaseDifferentVersion(
+                        "BEMP5.0-adapterV202301-02-036M059(20260703-1104).zip",
+                        "BEMP5.0-cpesmqV202301-02-036M061(20260707-1135).zip"));
+        Asserts.assertFalse("不同组件名不应配对(web vs adapter)",
+                PackageVersion.sameBaseDifferentVersion(
+                        "BEMP5.0-webV202301-02-036M059(20260703-1104).zip",
+                        "BEMP5.0-adapterV202301-02-036M061(20260707-1135).zip"));
+        Asserts.assertTrue("相同组件名不同版本仍应配对",
+                PackageVersion.sameBaseDifferentVersion(
+                        "BEMP5.0-adapterV202301-02-036M059(20260703-1104).zip",
+                        "BEMP5.0-adapterV202301-02-036M061(20260707-1135).zip"));
+        Asserts.assertTrue("web 包自身不同版本仍应配对",
+                PackageVersion.sameBaseDifferentVersion(
+                        "BEMP5.0-webV202301-02-036M059(20260703-1104).zip",
+                        "BEMP5.0-webV202301-02-036M061(20260707-1135).zip"));
+    }
+
     public void testCompare_buildStyleOrder() {
         // M061 > M059：F1 更新
         Asserts.assertTrue("F1 应新于 F2", PackageVersion.compare(F1, F2) > 0);
@@ -65,5 +86,23 @@ public final class PackageVersionTest {
         String[] other = PackageVersion.orderOldNew(F1, "unrelated.zip");
         Asserts.assertEquals("无关保持原顺序", F1, other[0]);
         Asserts.assertEquals("无关保持原顺序", "unrelated.zip", other[1]);
+    }
+
+    /**
+     * 回归（用户无组件段命名）：BEMP5.0V202301-02-036M059(20260703-1104).zip vs
+     * BEMP5.0V202301-02-036M061(20260707-1135).zip。
+     * 括号时间戳不得被 DOTTED 当作版本截断，版本应为完整构建号尾段，且同一包不同版本应能配对（旧→新）。
+     */
+    public void testExtract_noComponentBuildTail() {
+        String u1 = "BEMP5.0V202301-02-036M059(20260703-1104).zip";
+        String u2 = "BEMP5.0V202301-02-036M061(20260707-1135).zip";
+        Asserts.assertEquals("无组件段亦应取完整构建尾段",
+                "036M059(20260703-1104)", PackageVersion.extractFromFileName(u1));
+        Asserts.assertEquals("无组件段亦应取完整构建尾段",
+                "036M061(20260707-1135)", PackageVersion.extractFromFileName(u2));
+        Asserts.assertTrue("同一包不同版本应识别",
+                PackageVersion.sameBaseDifferentVersion(u1, u2));
+        Asserts.assertEquals("旧侧应为 M059", u1, PackageVersion.orderOldNew(u1, u2)[0]);
+        Asserts.assertEquals("新侧应为 M061", u2, PackageVersion.orderOldNew(u1, u2)[1]);
     }
 }

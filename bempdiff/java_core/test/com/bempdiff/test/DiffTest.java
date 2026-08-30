@@ -11,7 +11,10 @@ import com.bempdiff.model.Layer;
 import com.bempdiff.model.LogicalEntry;
 import com.bempdiff.model.PackageSnapshot;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +28,102 @@ public final class DiffTest {
 
     private static PackageSnapshot snap(Map<String, LogicalEntry> entries) {
         return new PackageSnapshot(Path.of("dummy"), null, null, entries);
+    }
+
+    /** 仅行尾(CRLF/LF)差异的文本(.sh)应视为无差异；内容确不同才判修改（与 diff 视图口径一致，避免误进导出/破坏性）。 */
+    public void testCompute_lineEndingOnlyShIsUnchanged() throws Exception {
+        java.nio.file.Path oldF = java.nio.file.Files.createTempFile("bempdiff-old-", ".sh");
+        java.nio.file.Path newF = java.nio.file.Files.createTempFile("bempdiff-new-", ".sh");
+        String body = "#!/bin/sh\necho hi\nexit 0\n";
+        java.nio.file.Files.write(oldF, body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.nio.file.Files.write(newF, body.replace("\n", "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        old.put("script/run.sh", new LogicalEntry("script/run.sh", Layer.L0, FileClass.CONFIG,
+                java.nio.file.Files.size(oldF), "sha_old_crlf", new EntrySource(oldF.toString(), null)));
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        now.put("script/run.sh", new LogicalEntry("script/run.sh", Layer.L0, FileClass.CONFIG,
+                java.nio.file.Files.size(newF), "sha_new_lf", new EntrySource(newF.toString(), null)));
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertContains("仅行尾差异→未变(不进导出/破坏性)",
+                r.get(DiffStatus.UNCHANGED).toString(), "script/run.sh");
+        Asserts.assertFalse("仅行尾差异不应判为修改",
+                r.get(DiffStatus.MODIFIED).contains("script/run.sh"));
+
+        // 内容确不同（新增一行）→ 应判修改
+        java.nio.file.Files.write(newF, (body + "echo extra\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Map<String, LogicalEntry> now2 = new LinkedHashMap<>();
+        now2.put("script/run.sh", new LogicalEntry("script/run.sh", Layer.L0, FileClass.CONFIG,
+                java.nio.file.Files.size(newF), "sha_new2", new EntrySource(newF.toString(), null)));
+        DiffResult r2 = new DiffEngine().compute(snap(old), snap(now2));
+        Asserts.assertContains("内容确不同→修改", r2.get(DiffStatus.MODIFIED).toString(), "script/run.sh");
+    }
+
+    public void testCompute_versionedNestedWarPairs() {
+        // 外层 zip 内嵌套 "同基名不同版本" 的 war（bemp-web-5....M.15.war ↔ M.17.war），
+        // 应为「一个容器（旧侧条目标记处理）」，而不是被各自误识别为删除/新增。
+        java.util.Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        java.util.Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        old.put("deliver.zip!/bemp-web-5.20230102036M.15.war",
+                new LogicalEntry("deliver.zip!/bemp-web-5.20230102036M.15.war", Layer.L0, FileClass.ARCHIVE, 0, "sha_html15", new EntrySource("x", null)));
+        now.put("deliver.zip!/bemp-web-5.20230102036M.17.war",
+                new LogicalEntry("deliver.zip!/bemp-web-5.20230102036M.17.war", Layer.L0, FileClass.ARCHIVE, 0, "sha_html17", new EntrySource("x", null)));
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertFalse("M.15.war 不应残留为删除",
+                r.get(DiffStatus.DELETED).contains("deliver.zip!/bemp-web-5.20230102036M.15.war"));
+        Asserts.assertFalse("M.17.war 不应残留为新增",
+                r.get(DiffStatus.ADDED).contains("deliver.zip!/bemp-web-5.20230102036M.17.war"));
+    }
+
+    public void testCompute_versionedOuterZipNestedWarPairs() {
+        // 两个版本化外层交付 zip（M059/M061），各自内含同基名不同版本 war（M.15/M.17）：
+        // 外层 zip 配对后，嵌套 war 应同样配对为一个容器（旧键保留、非删除/新增），其同哈希内部文件折叠为未变。
+        java.util.Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        java.util.Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        final String oz = "BEMP5.0V202301-02-036M059(20260703-1104).zip";
+        final String nz = "BEMP5.0V202301-02-036M061(20260707-1135).zip";
+        final String ow = oz + "!/bemp-web-5.20230102036M.15.war";
+        final String nw = nz + "!/bemp-web-5.20230102036M.17.war";
+        old.put(oz, new LogicalEntry(oz, Layer.L0, FileClass.ARCHIVE, 0, "sha_oz", new EntrySource("x", null)));
+        old.put(ow, new LogicalEntry(ow, Layer.L0, FileClass.ARCHIVE, 0, "sha_ow", new EntrySource("x", null)));
+        old.put(ow + "!/WEB-INF/classes/A.class", new LogicalEntry(ow + "!/WEB-INF/classes/A.class", Layer.L2, FileClass.CLASS, 0, "shaC", new EntrySource("x", null)));
+        now.put(nz, new LogicalEntry(nz, Layer.L0, FileClass.ARCHIVE, 0, "sha_nz", new EntrySource("x", null)));
+        now.put(nw, new LogicalEntry(nw, Layer.L0, FileClass.ARCHIVE, 0, "sha_nw", new EntrySource("x", null)));
+        now.put(nw + "!/WEB-INF/classes/A.class", new LogicalEntry(nw + "!/WEB-INF/classes/A.class", Layer.L2, FileClass.CLASS, 0, "shaC", new EntrySource("x", null)));
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertFalse("外层 zip 不应残留删除", r.get(DiffStatus.DELETED).contains(oz));
+        Asserts.assertFalse("嵌套 M.15.war 不应残留删除", r.get(DiffStatus.DELETED).contains(ow));
+        Asserts.assertFalse("嵌套 M.17.war 不应残留新增", r.get(DiffStatus.ADDED).contains(nw));
+        Asserts.assertFalse("同哈希内部 A.class 不应残留删除", r.get(DiffStatus.DELETED).contains(ow + "!/WEB-INF/classes/A.class"));
+    }
+
+    public void testCompute_versionAffixBoundary() {
+        // 版本等价判定的边界（回归钉住）：数字前夹带 ≥2 字母单词的段是「不同产品/词缀」而非版本增量——
+        // ① 产品名 web 与 adapter 互不视为版本等价：同内容 start.sh 各归各侧折叠，不被对方污染；
+        // ② 纯版本尾段 -rc1/-rc2 仍视为版本等价，折叠为未变；
+        // ③ logo → logo-login 因词缀不同不折叠，保留为删除/新增（正确视为改名）。
+        java.util.Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        java.util.Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        String webOld = "BEMP5.0-webV202301-02-036M059(20260703-1104).zip/scripts/start.sh";
+        String webNew = "BEMP5.0-webV202301-02-036M061(20260707-1135).zip/scripts/start.sh";
+        String adpOld = "BEMP5.0-adapterV202301-02-036M059(20260703-1104).zip/scripts/start.sh";
+        String adpNew = "BEMP5.0-adapterV202301-02-036M061(20260707-1135).zip/scripts/start.sh";
+        // 4 个 start.sh 字节全同（sha 相同）
+        old.put(webOld, le(webOld, Layer.L0, FileClass.CONFIG, "shaS"));
+        old.put(adpOld, le(adpOld, Layer.L0, FileClass.CONFIG, "shaS"));
+        now.put(webNew, le(webNew, Layer.L0, FileClass.CONFIG, "shaS"));
+        now.put(adpNew, le(adpNew, Layer.L0, FileClass.CONFIG, "shaS"));
+        // ② -rc1/-rc2 同内容 → 应折叠为未变
+        old.put("app/foo-rc1.txt", le("app/foo-rc1.txt", Layer.L0, FileClass.CONFIG, "shaR"));
+        now.put("app/foo-rc2.txt", le("app/foo-rc2.txt", Layer.L0, FileClass.CONFIG, "shaR"));
+        // ③ logo 与 logo-login 词缀不同 → 不应折叠
+        old.put("img/logo.dce2e9f.png", le("img/logo.dce2e9f.png", Layer.L0, FileClass.STATIC, "shaL"));
+        now.put("img/logo-login.dce2e9f.png", le("img/logo-login.dce2e9f.png", Layer.L0, FileClass.STATIC, "shaL"));
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertFalse("web start.sh 应折叠为未变（不被 adapter 同内容污染）", r.get(DiffStatus.DELETED).contains(webOld));
+        Asserts.assertFalse("adapter start.sh(old) 应折叠为未变", r.get(DiffStatus.DELETED).contains(adpOld));
+        Asserts.assertFalse("adapter start.sh(new) 应折叠为未变", r.get(DiffStatus.ADDED).contains(adpNew));
+        Asserts.assertFalse("-rc1 → -rc2 版本等价应折叠为未变", r.get(DiffStatus.DELETED).contains("app/foo-rc1.txt"));
+        Asserts.assertTrue("logo → logo-login 词缀不同应保留为删除", r.get(DiffStatus.DELETED).contains("img/logo.dce2e9f.png"));
     }
 
     public void testCompute_statuses() {
@@ -44,6 +143,75 @@ public final class DiffTest {
         Asserts.assertEquals("删除=1", 1, r.get(DiffStatus.DELETED).size());
         Asserts.assertContains("m 应为修改", r.get(DiffStatus.MODIFIED).toString(), "m.class");
         Asserts.assertContains("d 应为删除", r.get(DiffStatus.DELETED).toString(), "d.class");
+    }
+
+    /** 同名不同版本归档（如 lib/app-1.0.zip → app-2.0.zip）应配对对齐：容器及内部文件不再全判删除+新增。 */
+    public void testCompute_pairsVersionRenamedArchive() {
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        String zip = "WEB-INF/lib/";
+        // 旧版本归档及其内部文件
+        old.put(zip + "app-1.0.zip", le(zip + "app-1.0.zip", Layer.L0, FileClass.ARCHIVE, "zipOld"));
+        old.put(zip + "app-1.0.zip!/config/application.properties", le("p", Layer.L0, FileClass.CONFIG, "SHA_SAME"));
+        old.put(zip + "app-1.0.zip!/code/A.class", le("cls", Layer.L1, FileClass.CLASS, "oldCode"));
+        // 新版本归档：内部 properties 内容一致（同 sha），class 内容发生变化
+        now.put(zip + "app-2.0.zip", le(zip + "app-2.0.zip", Layer.L0, FileClass.ARCHIVE, "zipNew"));
+        now.put(zip + "app-2.0.zip!/config/application.properties", le("p", Layer.L0, FileClass.CONFIG, "SHA_SAME"));
+        now.put(zip + "app-2.0.zip!/code/A.class", le("cls", Layer.L1, FileClass.CLASS, "newCode"));
+
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertEquals("版本配对后不再有删除", 0, r.get(DiffStatus.DELETED).size());
+        Asserts.assertEquals("版本配对后不再有新增", 0, r.get(DiffStatus.ADDED).size());
+        Asserts.assertContains("容器应判为修改(字节不同)", r.get(DiffStatus.MODIFIED).toString(), zip + "app-1.0.zip");
+        Asserts.assertNotContains("容器不再新增 app-2.0.zip", r.get(DiffStatus.ADDED).toString(), "app-2.0.zip");
+        Asserts.assertContains("内容一致的内部 properties 应为未变", r.get(DiffStatus.UNCHANGED).toString(),
+                zip + "app-1.0.zip!/config/application.properties");
+        Asserts.assertContains("内容变化的内部 class 应为修改", r.get(DiffStatus.MODIFIED).toString(),
+                zip + "app-1.0.zip!/code/A.class");
+    }
+
+    /** 整包交付件对比：根目录随版本改名（…M059 → …M061）导致全量键不相等。
+     *  大部分内容一致的普通文件/内层 jar 内部类应归为 UNCHANGED；仅真实增删与容器变化保留差异。 */
+    public void testCompute_versionedRootPackageLayout() {
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        String R59 = "BEMP5.0V202301-02-036M059(20260703-1104)/";
+        String R61 = "BEMP5.0V202301-02-036M061(20260707-1135)/";
+        String z59 = "BEMP5.0-webV202301-02-036M059(20260703-1104).zip";
+        String z61 = "BEMP5.0-webV202301-02-036M061(20260707-1135).zip";
+        // 版本化根下：内容一致的普通文件
+        old.put(R59 + "bemp-home/src/main/resources/all/acctrecord/hnnxbank/acctrecord.xml",
+                le("a", Layer.L0, FileClass.CONFIG, "SHA_SAME"));
+        now.put(R61 + "bemp-home/src/main/resources/all/acctrecord/hnnxbank/acctrecord.xml",
+                le("a", Layer.L0, FileClass.CONFIG, "SHA_SAME"));
+        old.put(R59 + "detail/detail-BEMP5.0V202301-02-036M058(20260618-1334).xls",
+                le("d", Layer.L0, FileClass.CONFIG, "SHA_SAME"));
+        now.put(R61 + "detail/detail-BEMP5.0V202301-02-036M058(20260618-1334).xls",
+                le("d", Layer.L0, FileClass.CONFIG, "SHA_SAME"));
+        // 内层归档同名不同版本（容器字节变化）
+        old.put(R59 + z59, le("zip", Layer.L0, FileClass.ARCHIVE, "Z_OLD"));
+        now.put(R61 + z61, le("zip", Layer.L0, FileClass.ARCHIVE, "Z_NEW"));
+        old.put(R59 + z59 + "!/WEB-INF/classes/biz/A.class",
+                le("cls", Layer.L1, FileClass.CLASS, "C_SAME"));
+        now.put(R61 + z61 + "!/WEB-INF/classes/biz/A.class",
+                le("cls", Layer.L1, FileClass.CLASS, "C_SAME"));
+        // 真实新增（新版本引入 detail-M060）与真实删除（旧版本独有 config）
+        now.put(R61 + "detail/detail-BEMP5.0V202301-02-036M060(20260703-1819).xls",
+                le("d2", Layer.L0, FileClass.CONFIG, "SHA_NEW"));
+        old.put(R59 + "config/legacy.xml", le("c", Layer.L0, FileClass.CONFIG, "SHA_OLD"));
+
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertEquals("版本化根目录下大部分文件不再误判新增", 1, r.get(DiffStatus.ADDED).size());
+        Asserts.assertContains("真实新增保留", r.get(DiffStatus.ADDED).toString(), "036M060(20260703-1819)");
+        Asserts.assertEquals("版本化根目录下不再误判删除", 1, r.get(DiffStatus.DELETED).size());
+        Asserts.assertContains("真实删除保留", r.get(DiffStatus.DELETED).toString(), "config/legacy.xml");
+        Asserts.assertContains("容器判为修改(版本化)", r.get(DiffStatus.MODIFIED).toString(), R59 + z59);
+        Asserts.assertNotContains("新容器不再新增", r.get(DiffStatus.ADDED).toString(), z61);
+        // 内容一致的文件归为未变
+        Asserts.assertContains("普通文件内容一致→未变", r.get(DiffStatus.UNCHANGED).toString(), "acctrecord.xml");
+        Asserts.assertContains("内层同内容 class→未变", r.get(DiffStatus.UNCHANGED).toString(),
+                R59 + z59 + "!/WEB-INF/classes/biz/A.class");
+        Asserts.assertContains("detail-M058 内容一致→未变", r.get(DiffStatus.UNCHANGED).toString(), "036M058(20260618-1334)");
     }
 
     public void testStats_bizVsJar() {
@@ -91,6 +259,28 @@ public final class DiffTest {
         Asserts.assertNotContains("不应含 jar", cands.toString(), "x.jar");
     }
 
+    /** 大批量版本改名折叠（回归护栏）：整包扁平化后可达几万条类文件，仅因根/内层版本段异构而键不等。
+     *  折叠必须近 O(N) 完成（sha 索引，非同 sha 全双重遍历），否则本用例会拖死整个测试套件。 */
+    public void testCompute_scaleVersionedFoldNotQuadratic() {
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        String R59 = "BEMP5.0-webV202301-02-036M059(20260703-1104).zip/WEB-INF/classes/biz/";
+        String R61 = "BEMP5.0-webV202301-02-036M061(20260707-1135).zip/WEB-INF/classes/biz/";
+        int n = 15_000; // 每侧 1.5 万条唯一内容类：O(n²)=2.25 亿次路径比较，回退即卡顿可感
+        for (int i = 0; i < n; i++) {
+            String name = "Cls" + i + ".class";
+            old.put(R59 + name, le(R59 + name, Layer.L1, FileClass.CLASS, "SHA" + i));
+            now.put(R61 + name, le(R61 + name, Layer.L1, FileClass.CLASS, "SHA" + i)); // 内容唯一且一致
+        }
+        long t0 = System.currentTimeMillis();
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        long ms = System.currentTimeMillis() - t0;
+        Asserts.assertEquals("1.5 万版本改名文件应全部折叠为未变", n, r.get(DiffStatus.UNCHANGED).size());
+        Asserts.assertEquals("不应残留新增", 0, r.get(DiffStatus.ADDED).size());
+        Asserts.assertEquals("不应残留删除", 0, r.get(DiffStatus.DELETED).size());
+        Asserts.assertTrue("近 O(N) 完成（阈值宽松，仅挡 O(n²) 卡死）", ms < 5_000);
+    }
+
     /** 超大文件（LCS 单元格超限）→ 退化为线性 diff：不 OOM、输出有界、含增删行。 */
     public void testLineDiff_hugeInputFallsBackToLinear() {
         StringBuilder oldB = new StringBuilder(), newB = new StringBuilder();
@@ -104,5 +294,83 @@ public final class DiffTest {
         Asserts.assertContains("应含删除行", diff, "- line0");
         Asserts.assertContains("应含新增行", diff, "+ LINE0");
         Asserts.assertTrue("不应因 LCS 内存爆炸返回空/抛异常", diff.length() > 0);
+    }
+
+    /** 构建噪声折叠（回归护栏）：版本化整包（M059/M061）下嵌套 jar/war 内部仅「构建元数据」差异的文件
+     *  （Maven MANIFEST 的 Timestamp、pom.properties 日期注释、MANIFEST.xml 部署清单 md5/size/版本路径）
+     *  应折叠为未变——消除「二层嵌套 jar/war 内部文件被误识别为新增/删除」的假阳；
+     *  真实内容差异（前端 chunk 逻辑改动）必须保留为差异。 */
+    public void testCompute_foldBuildNoiseAcrossVersionedNested() throws Exception {
+        String R59 = "BEMP5.0V202301-02-036M059(20260703-1104).zip/";
+        String R61 = "BEMP5.0V202301-02-036M061(20260707-1135).zip/";
+        // ① jar 内 MANIFEST.MF：仅 Timestamp 行不同 → 折叠
+        byte[] mfOld = "Manifest-Version: 1.0\nImplementation-Version: 5.20230102036M.4\nTimestamp: 2026-07-03T03:05:38Z\n"
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] mfNew = "Manifest-Version: 1.0\nImplementation-Version: 5.20230102036M.4\nTimestamp: 2026-07-07T03:35:41Z\n"
+                .getBytes(StandardCharsets.UTF_8);
+        String mfKey = "bemp-adapter/WEB-INF/lib/bemp-fw-dao-5.20230102036M.4.jar/META-INF/MANIFEST.MF";
+        // ② pom.properties：仅日期注释行不同 → 折叠
+        byte[] pomOld = "#Fri Jul 03 11:06:08 CST 2026\nversion=5.20230102036M.4\n".getBytes(StandardCharsets.UTF_8);
+        byte[] pomNew = "#Tue Jul 07 11:36:11 CST 2026\nversion=5.20230102036M.4\n".getBytes(StandardCharsets.UTF_8);
+        String pomKey = "bemp-adapter/WEB-INF/lib/bemp-channel-api-5.20230102036M.1.jar/META-INF/maven/com.h/b/pom.properties";
+        // ③ MANIFEST.xml 部署清单：path 版本 + md5/size 变化 → 折叠
+        byte[] manOld = ("<application product_version=\"BEMP5.0-adapterV202301.02.036M059(20260703.1104)\">\n"
+                + "<file  path=\"BEMP5.0-adapterV202301-02-036M059(20260703-1104)/x.jar\" size = \"123\" md5 = \"aaaa\"  />\n"
+                + "</application>\n").getBytes(StandardCharsets.UTF_8);
+        byte[] manNew = ("<application product_version=\"BEMP5.0-adapterV202301.02.036M061(20260707.1135)\">\n"
+                + "<file  path=\"BEMP5.0-adapterV202301-02-036M061(20260707-1135)/x.jar\" size = \"124\" md5 = \"bbbb\"  />\n"
+                + "</application>\n").getBytes(StandardCharsets.UTF_8);
+        String manKey = "META-INF/MANIFEST.xml";
+        // ④ 真实变化：前端 JS watch 逻辑改动（无版本 token）→ 不折叠
+        byte[] jsOld = "chunk();watch:{totalAmt:function(){}};methods:{}\n".getBytes(StandardCharsets.UTF_8);
+        byte[] jsNew = "chunk();watch:{};methods:{changeSettleDate:function(){}}\n".getBytes(StandardCharsets.UTF_8);
+        String jsOldKey = "bemp-web-5.20230102036M.15.war/banks/q/quoteRebuyInput.14da1892.js";
+        String jsNewKey = "bemp-web-5.20230102036M.17.war/banks/q/quoteRebuyInput.b03d20a7.js";
+        // ⑤ 纯数字配置差异（port 8080→9090）不是版本噪声 → 不折叠（防误伤）
+        byte[] portOld = "server.port=8080\n".getBytes(StandardCharsets.UTF_8);
+        byte[] portNew = "server.port=9090\n".getBytes(StandardCharsets.UTF_8);
+        String portKey = "conf/application.properties";
+
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        putFile(old, R59 + mfKey, FileClass.CONFIG, mfOld);
+        putFile(now, R61 + mfKey, FileClass.CONFIG, mfNew);
+        putFile(old, R59 + pomKey, FileClass.CONFIG, pomOld);
+        putFile(now, R61 + pomKey, FileClass.CONFIG, pomNew);
+        putFile(old, R59 + manKey, FileClass.CONFIG, manOld);
+        putFile(now, R61 + manKey, FileClass.CONFIG, manNew);
+        putFile(old, R59 + jsOldKey, FileClass.JS, jsOld);
+        putFile(now, R61 + jsNewKey, FileClass.JS, jsNew);
+        putFile(old, R59 + portKey, FileClass.CONFIG, portOld);
+        putFile(now, R61 + portKey, FileClass.CONFIG, portNew);
+
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertContains("MANIFEST.MF 时间戳差异→未变", r.get(DiffStatus.UNCHANGED).toString(), R59 + mfKey);
+        Asserts.assertFalse("MANIFEST.MF 不应残留删除", r.get(DiffStatus.DELETED).contains(R59 + mfKey));
+        Asserts.assertFalse("MANIFEST.MF 不应残留新增", r.get(DiffStatus.ADDED).contains(R61 + mfKey));
+        Asserts.assertContains("pom.properties 日期注释差异→未变", r.get(DiffStatus.UNCHANGED).toString(), R59 + pomKey);
+        Asserts.assertContains("MANIFEST.xml 部署清单差异→未变", r.get(DiffStatus.UNCHANGED).toString(), R59 + manKey);
+        // 真实前端变化保留为删除+新增
+        Asserts.assertContains("JS 真变化→保留删除", r.get(DiffStatus.DELETED).toString(), R59 + jsOldKey);
+        Asserts.assertContains("JS 真变化→保留新增", r.get(DiffStatus.ADDED).toString(), R61 + jsNewKey);
+        // 纯数字配置差异不折叠（不是版本噪声）
+        Asserts.assertContains("port 配置变化→保留删除", r.get(DiffStatus.DELETED).toString(), R59 + portKey);
+        Asserts.assertContains("port 配置变化→保留新增", r.get(DiffStatus.ADDED).toString(), R61 + portKey);
+    }
+
+    /** 把字节写入临时文件并登记为快照条目（供构建噪声折叠测试用真实内容做 sha 判定）。 */
+    private static void putFile(Map<String, LogicalEntry> m, String key, FileClass fc, byte[] data) throws Exception {
+        Path p = Files.createTempFile("bpdiff-", ".bin");
+        Files.write(p, data);
+        p.toFile().deleteOnExit();
+        m.put(key, new LogicalEntry(key, Layer.L0, fc, data.length, shaHex(data), new EntrySource(p.toString(), null)));
+    }
+
+    private static String shaHex(byte[] data) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        byte[] h = md.digest(data);
+        StringBuilder sb = new StringBuilder(h.length * 2);
+        for (byte b : h) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 }

@@ -52,6 +52,8 @@ const STATUS_LABEL = { ADDED: '新增', DELETED: '删除', MODIFIED: '修改', U
 // AI 是否启用：集中判定，供「生成报告」标签后缀与点击传参共用，避免 AI 判定逻辑在多处重复（评审 A/D）。
 const aiEnabled = computed(() => !!(state.config && state.config.aiEnabled))
 const aiLabelSuffix = computed(() => aiEnabled.value ? '(AI)' : '')
+// 宽度经 prop 传入（App 拖拽调宽），根节点显式绑定，与 DiffTree 采用一致方式
+const props = defineProps({ panelWidth: { type: Number, default: null } })
 
 // node / decompile 都从当前激活的 tab 取；对应「DiffView 顶部 tab 栏选哪一个这里就显示哪一个」。
 const node = computed(() => {
@@ -62,7 +64,9 @@ const dec = computed(() => {
   const at = activeTab()
   return at ? at.decompile : null
 })
-const s = computed(() => (state.job && state.job.stats) ? state.job.stats : null)
+const s = computed(() => (state.job && state.job.stats) || null)
+// 全量统计（含 bizChanged/jarChanged）；差异数字统一以后端全量 stats 为准
+const fullStats = computed(() => state.job && state.job.stats ? state.job.stats : null)
 
 // 从已生成报告中抽取「六、破坏性变更」与「七/八、审计摘要」章节并渲染为 HTML。
 const breakHtml = computed(() => {
@@ -93,9 +97,10 @@ function onGenerateReport(category) {
 </script>
 
 <template>
-  <div class="col-ai" :class="{ collapsed: state.aiPanelCollapsed }">
+  <div class="col-ai" :class="{ collapsed: state.aiPanelCollapsed }"
+       :style="props.panelWidth != null && !state.aiPanelCollapsed ? { width: props.panelWidth + 'px' } : undefined">
     <div v-if="!state.aiPanelCollapsed" class="pane-head">
-      <i class="bi bi-cpu"></i> 智能分析
+      <i class="bi bi-cpu" role="img" title="智能分析" aria-label="智能分析"></i> 智能分析
       <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0" title="收起智能分析，扩大比对视野"
               @click="setAiPanelCollapsed(true)">
         <i class="bi bi-layout-sidebar-inset-reverse"></i>
@@ -103,7 +108,7 @@ function onGenerateReport(category) {
     </div>
     <div v-else class="ai-collapsed-bar" title="展开智能分析" @click="setAiPanelCollapsed(false)">
       <i class="bi bi-chevron-left"></i>
-      <span class="ai-collapsed-label">智能分析</span>
+      <i class="bi bi-cpu" role="img" aria-label="智能分析" title="智能分析"></i>
     </div>
 
     <template v-if="!state.aiPanelCollapsed">
@@ -126,7 +131,7 @@ function onGenerateReport(category) {
           <div class="kv">大小：<b>{{ fmtSize(node.size) }}</b></div>
           <div class="kv">反编译引擎：<b>{{ dec ? dec.engine : '—' }}</b></div>
           <div v-if="dec && !dec.ok" class="text-danger mt-2" style="font-size:.8rem">
-            该文件无法反编译（引擎：{{ dec.engine }}）
+            {{ dec.error || ('该文件无法反编译（引擎：' + dec.engine + '）') }}
           </div>
         </div>
         <div v-else class="text-secondary" style="font-size:.85rem">
@@ -141,8 +146,8 @@ function onGenerateReport(category) {
           <div class="kv">包版本：<b>{{ state.job.oldVersion }} → {{ state.job.newVersion }}</b></div>
           <div class="kv">新增 <b class="text-success">{{ s.added }}</b> · 删除 <b class="text-danger">{{ s.deleted }}</b> ·
             修改 <b class="text-warning">{{ s.modified }}</b> · 未变 {{ s.unchanged }}</div>
-          <div class="kv">业务码变更 <b>{{ s.bizChanged }}</b> · jar 级变更 <b>{{ s.jarChanged }}</b></div>
-          <div class="kv">条目总数 <b>{{ s.total }}</b></div>
+          <div class="kv">业务码变更 <b>{{ fullStats.bizChanged }}</b> · jar 级变更 <b>{{ fullStats.jarChanged }}</b></div>
+          <div class="kv">条目总数 <b>{{ fullStats.total }}</b></div>
         </div>
         <div v-else class="text-secondary" style="font-size:.85rem">尚未比对。</div>
       </div>

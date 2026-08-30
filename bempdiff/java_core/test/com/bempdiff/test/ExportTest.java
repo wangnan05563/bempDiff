@@ -14,8 +14,10 @@ import com.bempdiff.parse.PackageParser;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -118,5 +120,181 @@ public final class ExportTest {
         }
         // Top-K=2 -> 2 个 .java + 1 个 MANIFEST.txt = 3
         Asserts.assertEquals("zip 应包含 2 源码 + 1 清单", 3, entries);
+    }
+
+    /** ④ 整体导出：最终下载 zip 应同时包含 diff-classes/、diff-jars/ 与 decompiled-sources.zip，
+     *  不再只下发反编译源码包（此前差异 class/jar 目录被遗漏，仅剩 MANIFEST.txt）。 */
+    public void testExportFinalZip_containsAllProducts() throws IOException {
+        Path war = TestFixtures.writePackage(TestFixtures.makeWar(warWithThirdParty(), "1"), "exp-final");
+        PackageParser parser = new PackageParser();
+        PackageSnapshot snap = parser.parse(war, new ParseConfig(), false);
+        LogicalEntry a = snap.getEntries().get("WEB-INF/classes/com/internal/A.class");
+        LogicalEntry tp = snap.getEntries().get("WEB-INF/lib/third-party.jar");
+
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        r.put(DiffStatus.MODIFIED, "WEB-INF/classes/com/internal/A.class");
+        r.put(DiffStatus.MODIFIED, "WEB-INF/lib/third-party.jar");
+        Map<String, LogicalEntry> m = new LinkedHashMap<>();
+        m.put("WEB-INF/classes/com/internal/A.class", a);
+        m.put("WEB-INF/lib/third-party.jar", tp);
+        PackageSnapshot oldSnap = new PackageSnapshot(war, snap.getType(), null, m);
+        PackageSnapshot newSnap = new PackageSnapshot(war, snap.getType(), null, m);
+
+        Path outDir = Files.createTempDirectory("bdexp-final");
+        AssetExporter exporter = new AssetExporter();
+        exporter.exportDiffClasses(r, oldSnap, newSnap, outDir);
+        exporter.exportDiffJars(r, oldSnap, newSnap, outDir);
+        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
+        decompiled.put("b.class", new DecompiledUnit("b.class", "o", "n", "db", "cfr", "", true));
+        exporter.exportDecompiledSources(decompiled, outDir, 5);
+        Path finalZip = exporter.zipTree(outDir, outDir.resolve("final.zip"));
+
+        boolean hasClass = false, hasJar = false, hasZip = false;
+        try (ZipFile zf = new ZipFile(finalZip.toFile())) {
+            for (ZipEntry ze : Collections.list(zf.entries())) {
+                String n = ze.getName();
+                if (n.startsWith("diff-classes/") && n.endsWith(".class")) hasClass = true;
+                if (n.startsWith("diff-jars/") && n.endsWith(".jar")) hasJar = true;
+                if (n.equals("decompiled-sources.zip")) hasZip = true;
+            }
+        }
+        Asserts.assertTrue("最终 zip 应含 diff-classes 差异 class", hasClass);
+        Asserts.assertTrue("最终 zip 应含 diff-jars 差异 jar", hasJar);
+        Asserts.assertTrue("最终 zip 应含反编译源码包", hasZip);
+    }
+
+    /** ⑤ 增量资产导出（exportIncrement）：increment/ 应包含新包资源/其他层文件并保持原始相对路径，
+     *  deleted/ 应单独归类新包被删文件（读老包字节），两者均为源包原始字节（非反编译源码/差异片段）。 */
+    public void testExportIncrement_dirsAndPaths() throws IOException {
+        Map<String, byte[]> war = new LinkedHashMap<>();
+        war.put("WEB-INF/classes/com/internal/A.class",
+                TestFixtures.compileClass("com.internal.A", TestFixtures.SRC_A_V1));
+        // 普通资源（非 class、位于 L1 之外的层）——必须进入 increment/ 且保持路径
+        war.put("WEB-INF/classes/META-INF/app.yml",
+                "server:\n  port: 8080\n".getBytes(StandardCharsets.UTF_8));
+        Map<String, byte[]> tp = new LinkedHashMap<>();
+        tp.put("org/apache/T.class", TestFixtures.compileClass("org.apache.T", TestFixtures.SRC_T));
+        war.put("WEB-INF/lib/third-party.jar", TestFixtures.makeZip(tp));
+        Path file = TestFixtures.writePackage(TestFixtures.makeWar(war, "1"), "exp-inc");
+
+        PackageParser parser = new PackageParser();
+        PackageSnapshot snap = parser.parse(file, new ParseConfig(), false);
+        LogicalEntry yml = snap.getEntries().get("WEB-INF/classes/META-INF/app.yml");
+        LogicalEntry jar = snap.getEntries().get("WEB-INF/lib/third-party.jar");
+        Asserts.assertNotNull("资源 yml 应被解析为条目", yml);
+        Asserts.assertNotNull("lib jar 应被解析为条目", jar);
+
+        // 新增：app.yml（新包）；修改：third-party.jar（新包）；删除：A.class（读老包字节）
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        r.put(DiffStatus.ADDED, "WEB-INF/classes/META-INF/app.yml");
+        r.put(DiffStatus.MODIFIED, "WEB-INF/lib/third-party.jar");
+        r.put(DiffStatus.DELETED, "WEB-INF/classes/com/internal/A.class");
+        Map<String, LogicalEntry> nm = new LinkedHashMap<>();
+        nm.put("WEB-INF/classes/META-INF/app.yml", yml);
+        nm.put("WEB-INF/lib/third-party.jar", jar);
+        nm.put("WEB-INF/classes/com/internal/A.class",
+                snap.getEntries().get("WEB-INF/classes/com/internal/A.class"));
+        PackageSnapshot oldSnap = new PackageSnapshot(file, snap.getType(), null, nm);
+        PackageSnapshot newSnap = new PackageSnapshot(file, snap.getType(), null, nm);
+
+        Path outDir = Files.createTempDirectory("bdexp-inc");
+        AssetExporter exporter = new AssetExporter();
+        exporter.exportIncrement(r, oldSnap, newSnap, outDir);
+
+        Asserts.assertTrue("increment 应含新增资源并保持路径",
+                Files.exists(outDir.resolve("increment/WEB-INF/classes/META-INF/app.yml")));
+        Asserts.assertTrue("increment 应含修改 jar 并保持路径",
+                Files.exists(outDir.resolve("increment/WEB-INF/lib/third-party.jar")));
+        Asserts.assertTrue("deleted 应含被删类（读老包字节）并保持路径",
+                Files.exists(outDir.resolve("deleted/WEB-INF/classes/com/internal/A.class")));
+    }
+
+    /** ⑤b 文件夹对比会把目录节点计入差异：FOLDER 节点无字节内容，应被跳过而非抛异常。 */
+    public void testExportIncrement_skipsFolderNodes() throws IOException {
+        Path war = TestFixtures.writePackage(TestFixtures.makeWar(warWithThirdParty(), "1"), "exp-foldnode2");
+        PackageParser parser = new PackageParser();
+        PackageSnapshot snap = parser.parse(war, new ParseConfig(), false);
+        LogicalEntry a = snap.getEntries().get("WEB-INF/classes/com/internal/A.class");
+        LogicalEntry folder = new LogicalEntry("config/", Layer.L1, FileClass.FOLDER,
+                a.getSize(), a.getSha256(), a.getSrc());
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        r.put(DiffStatus.ADDED, "config/");
+        Map<String, LogicalEntry> m = new LinkedHashMap<>();
+        m.put("config/", folder);
+        PackageSnapshot newSnap = new PackageSnapshot(war, snap.getType(), null, m);
+        Path outDir = Files.createTempDirectory("bdexp-foldnode2");
+        new AssetExporter().exportIncrement(r, newSnap, newSnap, outDir);
+        Asserts.assertFalse("FOLDER 节点不应生成文件",
+                Files.exists(outDir.resolve("increment/config/")));
+    }
+
+    /** ⑤c 最终打包 zip：应同时包含 increment/ 与 deleted/ 两个增量目录，不再有 diff-classes/diff-all。 */
+    public void testExportFinalZip_containsIncrementDirs() throws IOException {
+        Path war = TestFixtures.writePackage(TestFixtures.makeWar(warWithThirdParty(), "1"), "exp-final2");
+        PackageParser parser = new PackageParser();
+        PackageSnapshot snap = parser.parse(war, new ParseConfig(), false);
+        LogicalEntry a = snap.getEntries().get("WEB-INF/classes/com/internal/A.class");
+        LogicalEntry tp = snap.getEntries().get("WEB-INF/lib/third-party.jar");
+        // 老包独有、新包缺失的条目 → DELETED（deleted/ 需有真实文件，空目录不会写入 zip）
+        LogicalEntry b = new LogicalEntry("WEB-INF/classes/com/internal/B.class", Layer.L1, FileClass.CLASS,
+                a.getSize(), a.getSha256(), a.getSrc());
+
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        r.put(DiffStatus.MODIFIED, "WEB-INF/classes/com/internal/A.class");
+        r.put(DiffStatus.MODIFIED, "WEB-INF/lib/third-party.jar");
+        r.put(DiffStatus.DELETED, "WEB-INF/classes/com/internal/B.class");
+        Map<String, LogicalEntry> om = new LinkedHashMap<>();
+        om.put("WEB-INF/classes/com/internal/A.class", a);
+        om.put("WEB-INF/lib/third-party.jar", tp);
+        om.put("WEB-INF/classes/com/internal/B.class", b);
+        Map<String, LogicalEntry> nm = new LinkedHashMap<>();
+        nm.put("WEB-INF/classes/com/internal/A.class", a);
+        nm.put("WEB-INF/lib/third-party.jar", tp);
+        PackageSnapshot oldSnap = new PackageSnapshot(war, snap.getType(), null, om);
+        PackageSnapshot newSnap = new PackageSnapshot(war, snap.getType(), null, nm);
+
+        Path outDir = Files.createTempDirectory("bdexp-final2");
+        AssetExporter exporter = new AssetExporter();
+        exporter.exportIncrement(r, oldSnap, newSnap, outDir);
+        Path finalZip = exporter.zipTree(outDir, outDir.resolve("final.zip"));
+
+        boolean hasInc = false, hasDelFile = false, hasLegacy = false;
+        try (ZipFile zf = new ZipFile(finalZip.toFile())) {
+            for (ZipEntry ze : Collections.list(zf.entries())) {
+                String n = ze.getName();
+                if (n.startsWith("increment/")) hasInc = true;
+                if (n.startsWith("deleted/") && n.endsWith(".class")) hasDelFile = true;
+                if (n.startsWith("diff-classes/") || n.startsWith("diff-all/")
+                        || n.equals("decompiled-sources.zip")) hasLegacy = true;
+            }
+        }
+        Asserts.assertTrue("最终 zip 应含 increment/ 目录", hasInc);
+        Asserts.assertTrue("最终 zip 应含 deleted/ 被删文件", hasDelFile);
+        Asserts.assertFalse("最终 zip 不应再有旧 diff-classes/diff-all/decompiled-sources 产物", hasLegacy);
+    }
+
+    /** 导出规模估算 + 「大包」判定（同步/异步分流依据，Java 服务端纯函数）。 */
+    public void testExportEstimateAndLarge() {
+        try {
+            java.util.Map<String, LogicalEntry> old = new java.util.LinkedHashMap<>();
+            java.util.Map<String, LogicalEntry> now = new java.util.LinkedHashMap<>();
+            EntrySource ns = new EntrySource("x", null);
+            old.put("WEB-INF/lib/a.jar", new LogicalEntry("a", Layer.L1, FileClass.CLASS, 100, "shaA", ns));
+            old.put("WEB-INF/classes/d.class", new LogicalEntry("d", Layer.L1, FileClass.CLASS, 50, "shaD", ns));
+            now.put("WEB-INF/lib/a.jar", new LogicalEntry("a", Layer.L1, FileClass.CLASS, 120, "shaA2", ns));
+            now.put("WEB-INF/classes/c.class", new LogicalEntry("c", Layer.L1, FileClass.CLASS, 30, "shaC", ns));
+            PackageSnapshot os = new PackageSnapshot(java.nio.file.Paths.get("old.zip"), com.bempdiff.model.PackageType.WAR, "1", old);
+            PackageSnapshot nw = new PackageSnapshot(java.nio.file.Paths.get("new.zip"), com.bempdiff.model.PackageType.WAR, "1", now);
+            DiffResult r = new com.bempdiff.diff.DiffEngine().compute(os, nw);
+            java.util.Map<String, Object> est = com.bempdiff.server.BempServer.exportEstimate(r, old, now);
+            Asserts.assertEquals("files=修改+新增+删除", 3L, ((Number) est.get("files")).longValue());
+            Asserts.assertEquals("bytes=120+30+50", 200L, ((Number) est.get("bytes")).longValue());
+            // 大包判定：文件数/字节任意超限即异步
+            Asserts.assertFalse("小包不应判为大包", com.bempdiff.server.BempServer.isLargeExport(200, 5L * 1024 * 1024));
+            Asserts.assertTrue("文件数超限应判大包", com.bempdiff.server.BempServer.isLargeExport(20001, 10));
+            Asserts.assertTrue("字节超限应判大包", com.bempdiff.server.BempServer.isLargeExport(10, 300L * 1024 * 1024));
+        } catch (Exception ex) {
+            Asserts.fail("导出估算测试失败: " + ex);
+        }
     }
 }

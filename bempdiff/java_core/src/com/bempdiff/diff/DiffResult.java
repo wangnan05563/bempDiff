@@ -3,6 +3,7 @@ package com.bempdiff.diff;
 import com.bempdiff.model.LogicalEntry;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +22,14 @@ public final class DiffResult {
 
     public void put(DiffStatus s, String key) {
         byStatus.get(s).add(key);
+    }
+
+    /**
+     * 一次性用新集合替换某状态下的 key 列表。
+     * 供版本对齐在计算完成后统一重建 DELETED/ADDED，避免循环内对 List 反复 remove（O(N)）造成整体 O(N²)。
+     */
+    public void replaceList(DiffStatus s, Collection<String> keys) {
+        byStatus.put(s, new ArrayList<>(keys));
     }
 
     public Map<DiffStatus, List<String>> getByStatus() {

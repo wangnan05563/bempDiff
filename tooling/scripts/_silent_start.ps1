@@ -12,9 +12,13 @@
 param([string]$Mode = 'start_service')
 
 if ($Mode -eq 'desktop_shell') {
-    # Forces the backend launcher into Electron-shell mode so it opens the
+    # Force the backend launcher into Electron-shell mode so it opens the
     # native window instead of a browser.
     $env:BEMPDIFF_SHELL = 'electron'
+    # Use the packaged frontend (backend serves webui\dist) instead of a vite
+    # dev server: electron's vite spawn leaks a visible cmd window on Windows,
+    # which is exactly what silent mode is meant to avoid.
+    $env:BEMPDIFF_FRONTEND = 'build'
 }
 
 # name = 启动服务  (built from code points to keep this source ASCII-safe)

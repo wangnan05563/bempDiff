@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch, nextTick } from 'vue'
-import { state, setAiSelCategory, startAiAnalysis, stopAiAnalysis, restartAiAnalysis, selectAiTask, closeAiTask, openReportPreview, AI_CATEGORIES, toast } from '../store'
+import { state, setAiSelCategory, startAiAnalysis, stopAiAnalysis, restartAiAnalysis, selectAiTask, closeAiTask, openReportPreview, AI_CATEGORIES, toast, isUnpacking } from '../store'
 import { renderMarkdown } from '../lib/markdown'
 
 // 分析项选择提升到共享 state.aiSelCategory：与工具栏「生成报告(AI)」联动，
@@ -14,12 +14,14 @@ const showCustom = computed(() => selCategory.value === 'custom')
 const bodyRef = ref(null)
 
 const hasJob = computed(() => !!(state.job && state.job.status === 'DONE'))
+const unpacking = computed(() => isUnpacking())
 const active = computed(() => state.aiTasks.find(t => t.id === state.aiActiveTaskId) || null)
 const hasTasks = computed(() => state.aiTasks.length > 0)
 const runningCount = computed(() => state.aiTasks.filter(t => t.status === 'thinking' || t.status === 'streaming').length)
 
 function newAnalysis() {
   if (!hasJob.value) return
+  if (unpacking.value) { toast('warning', '正在逐层解包，完成后方可发起 AI 分析'); return }  // 解包未完成禁止分析，避免漏判
   if (selCategory.value === 'custom' && !customPrompt.value.trim()) {
     toast('warning', '请输入自定义分析问题后再发起')
     return
@@ -141,11 +143,12 @@ function exportDisabled(t) { return !(t && t.answer && t.answer.length) }
       <input v-if="showCustom" class="form-control form-control-sm" style="max-width:220px"
              v-model="customPrompt" placeholder="输入你的分析问题…" :disabled="!hasJob">
       <button class="btn btn-sm btn-primary" @click="newAnalysis"
-              :disabled="!hasJob || (showCustom && !customPrompt.value.trim())"
-              title="发起一次新的 AI 分析（并行，不阻塞界面）">
+              :disabled="!hasJob || unpacking || (showCustom && !customPrompt.value.trim())"
+              title="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面">
         <i class="bi bi-plus-lg"></i> 新建分析
       </button>
-      <span v-if="!hasJob" class="text-secondary" style="font-size:.75rem">完成比对后可发起</span>
+      <span v-if="unpacking" class="text-warning" style="font-size:.75rem"><i class="bi bi-boxes"></i> 正在逐层解包，完成后方可分析</span>
+      <span v-else-if="!hasJob" class="text-secondary" style="font-size:.75rem">完成比对后可发起</span>
     </div>
 
     <!-- 无任务占位 -->

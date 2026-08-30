@@ -3,6 +3,7 @@ package com.bempdiff.ai;
 import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.config.AiConfig;
 import com.bempdiff.diff.DiffResult;
+import com.bempdiff.diff.DiffStats;
 import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.FileClass;
 
@@ -67,6 +68,31 @@ public interface AiAnalyzer {
     /** 阶段A（聚焦类别增强）。 */
     default StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
         return stageA(diff, decompiled, cfg, ctx);
+    }
+
+    /** 搭建阶段A prompt（权威类别增强）：显式 category 为分类结论 schema 的唯一事实源，default 委托 5 参聚焦版本。
+     *  实现类（Mock/Http）如已重写 5 参版本，本方法也会自动获得正确行为；分析项主路径走本重载。 */
+    default String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                     ProjectContext ctx, String focus, String category) {
+        return buildStageAPrompt(diff, decompiled, cfg, ctx, focus);
+    }
+
+    /** 阶段A（权威类别增强）：显式 category 为分类结论 schema 的唯一事实源，default 委托 5 参聚焦版本。 */
+    default StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                 ProjectContext ctx, String focus, String category) {
+        return stageA(diff, decompiled, cfg, ctx, focus);
+    }
+
+    /** 阶段A（权威类别增强 + 顶层统计口径）：头部聚合数用 topStats（与折叠树一致）；default 委托 6 参版本。 */
+    default StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                 ProjectContext ctx, String focus, String category, DiffStats topStats) {
+        return stageA(diff, decompiled, cfg, ctx, focus, category);
+    }
+
+    /** 阶段A prompt（聚焦 + 顶层统计口径，供成本预估）：default 委托 5 参聚焦版本。 */
+    default String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                     ProjectContext ctx, String focus, DiffStats topStats) {
+        return buildStageAPrompt(diff, decompiled, cfg, ctx, focus);
     }
 
     /** 阶段B（聚焦类别增强）。 */

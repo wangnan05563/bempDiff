@@ -76,8 +76,15 @@ public final class ArchiveDiff {
             } else {
                 diff = LineDiff.unified(oldListing, newListing, DiffRules.DEFAULT);
             }
+            // 短哈希：归档（zip/jar/war/ear）元数据拼串。无文件 mtime 可用，仅 path+size，区别两侧身份
+            String oldHash = (oldPath != null)
+                    ? com.bempdiff.util.ShortHash.ofPathAndSize(key, java.nio.file.Files.size(oldPath))
+                    : "0000000";
+            String newHash = (newPath != null)
+                    ? com.bempdiff.util.ShortHash.ofPathAndSize(key, java.nio.file.Files.size(newPath))
+                    : "0000000";
             return new DecompiledUnit(key, oldListing, newListing, diff,
-                    "archive-listing", "", true);
+                    "archive-listing", "", true, oldHash, newHash);
         } catch (Exception e) {
             // 损坏/非 zip 结构/IO 错误：返回失败而不是抛异常冒泡到调用方
             // （否则前端 spinner 会一直转，违反"不再卡死"承诺）。

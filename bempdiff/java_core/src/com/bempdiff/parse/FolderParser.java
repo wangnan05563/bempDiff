@@ -45,6 +45,7 @@ public final class FolderParser {
         if (dir == null || !Files.isDirectory(dir)) {
             throw new IOException("不是有效目录（无法解析文件夹）: " + dir);
         }
+        setActiveIgnores(cfg.getIgnoreExtensions()); // 比对级忽略扩展名：收集阶段统一启用
         Map<String, LogicalEntry> entries = new LinkedHashMap<>();
         java.util.Set<String> dirs = new java.util.LinkedHashSet<>();
         Path root = dir.toAbsolutePath().normalize();
@@ -110,7 +111,15 @@ public final class FolderParser {
         }
     }
 
+    // 比对级忽略扩展名：由 parse(..) 时暂存，null 表示未启用
+    private java.util.List<String> activeIgnores = null;
+    private void setActiveIgnores(java.util.List<String> v) { this.activeIgnores = v; }
+    private boolean ignoredKey(String key) {
+        return com.bempdiff.config.ParseConfig.ignoredExt(key, activeIgnores);
+    }
+
     private void addFile(Path file, String key, Map<String, LogicalEntry> out) throws IOException {
+        if (ignoredKey(key)) return; // 比对级忽略扩展名：命中则该文件不入表，不参与差异比对
         long size = Files.size(file);
         if (size > HARD_CAP) {
             // 超长文件：仅记元数据（不计算 sha，避免单次比对耗时过长），标记为 OTHER 兜底

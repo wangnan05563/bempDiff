@@ -50,6 +50,9 @@ describe('包对比模式（无磁盘路径）的可用性', () => {
       expect(disabledReason(id, FILE_NODE, PKG_CTX), id).toBeNull()
     }
   })
+  it('文件夹对象：AI功能总结禁用（无内容差异，后端单文件管线会拒绝）', () => {
+    expect(disabledReason('aiSummary', FOLDER_NODE, PKG_CTX)).toContain('请选择具体文件')
+  })
 })
 
 describe('文件夹对比模式（有磁盘路径）', () => {

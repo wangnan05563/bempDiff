@@ -1,6 +1,7 @@
 package com.bempdiff.test;
 
 import com.bempdiff.ai.FileAnalysis;
+import com.bempdiff.ai.CategoryConclusion;
 import com.bempdiff.ai.StageASummary;
 import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.diff.DiffResult;
@@ -154,6 +155,72 @@ public final class ReportTest {
         Asserts.assertNotContains("不应含项目级上下文章节", md, "### 项目级上下文");
     }
 
+    /** 方案B：分类感知渲染——专项只聚焦本维度，整体（risk）全面并附优化建议；各类别均附优化改造建议。 */
+    public void testRender_categoryConclusion_focusVersusOverall() {
+        String mb = renderWithCategory("breaking");
+        Asserts.assertContains("breaking 应有专项小节", mb, "### 破坏性变更专项结论");
+        Asserts.assertContains("breaking 应列出变更条目", mb, "删除方法");
+        Asserts.assertContains("breaking 应含兼容性结论", mb, "兼容性结论");
+        Asserts.assertNotContains("breaking 不应渲染影响范围小节", mb, "### 影响范围专项结论");
+        Asserts.assertNotContains("breaking 不应渲染测试要点小节", mb, "### 测试要点专项结论");
+        Asserts.assertContains("breaking 应附优化改造建议", mb, "### 优化改造建议");
+
+        String mi = renderWithCategory("impact");
+        Asserts.assertContains("impact 应有专项小节", mi, "### 影响范围专项结论");
+        Asserts.assertContains("impact 应含受影响模块", mi, "计费域");
+        Asserts.assertNotContains("impact 不应渲染破坏性小节", mi, "### 破坏性变更专项结论");
+        Asserts.assertContains("impact 应附优化改造建议", mi, "### 优化改造建议");
+
+        String mt = renderWithCategory("testpoints");
+        Asserts.assertContains("testpoints 应有专项小节", mt, "### 测试要点专项结论");
+        Asserts.assertContains("testpoints 应含用例思路", mt, "压测 100 并发");
+        Asserts.assertNotContains("testpoints 不应渲染破坏性小节", mt, "### 破坏性变更专项结论");
+        Asserts.assertContains("testpoints 应附优化改造建议", mt, "### 优化改造建议");
+
+        String mr = renderWithCategory("risk");
+        Asserts.assertContains("risk 应有整体风险小节", mr, "### 整体风险结论");
+        Asserts.assertContains("risk 应含风险判定依据", mr, "风险判定依据");
+        Asserts.assertContains("risk 应含回滚预案", mr, "回滚预案");
+        Asserts.assertContains("risk 应含降级预案", mr, "降级预案");
+        Asserts.assertNotContains("risk 不应渲染专项小节标题", mr, "专项结论");
+        Asserts.assertContains("risk 应附优化改造建议", mr, "### 优化改造建议");
+    }
+
+    /** 用给定分析类别渲染一次含分类结论的 AI 章节（summary 含该类别独立 schema 数据）。 */
+    private String renderWithCategory(String category) {
+        MarkdownReport rep = new MarkdownReport(15);
+        StageASummary s = new StageASummary();
+        s.setOverallRisk("HIGH");
+        s.setCategory(category);
+        CategoryConclusion c = new CategoryConclusion();
+        CategoryConclusion.BreakingChange b = new CategoryConclusion.BreakingChange();
+        b.setFile("com/x/Billing.class");
+        b.setChangeType("删除方法");
+        b.setChange("移除对外方法 charge()");
+        b.setCompatImpact("外部调用方编译失败");
+        b.setSeverity("HIGH");
+        b.setMigrationSuggestion("改用新的 chargeV2()");
+        c.setBreakingChanges(new java.util.ArrayList<>(Arrays.asList(b)));
+        c.setCompatibilityVerdict("存在 1 处对外契约不兼容，需协调调用方升级");
+        c.setAffectedModules("计费域、结算域");
+        c.setAffectedApis("POST /billing/charge");
+        c.setDiffusion("经由 MQ 同步到结算域");
+        c.setRiskRationale("涉及对外契约与调用链，整体风险偏高");
+        c.setRollbackPlan("保留老包可一键回滚");
+        c.setDegradationPlan("启用限流与降级开关");
+        CategoryConclusion.TestPoint t = new CategoryConclusion.TestPoint();
+        t.setItem("计费幂等性验证");
+        t.setFile("com/x/BillingController.class");
+        t.setScenario("并发重复提交");
+        t.setCaseIdea("压测 100 并发");
+        t.setVerifyFocus("不产生重复订单");
+        c.setTestPoints(new java.util.ArrayList<>(Arrays.asList(t)));
+        c.setSuggestions("建议灰度发布并结合项目上下文补齐契约回归用例");
+        s.setConclusion(c);
+        return rep.render(snap("1.0"), snap("2.0"), buildDiff(), buildStats(),
+                makeDecompiled(), EMPTY, s, null, null);
+    }
+
     public void testRender_topKLimit() {
         MarkdownReport rep = new MarkdownReport(2);
         Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
@@ -181,6 +248,49 @@ public final class ReportTest {
     private static int countOccurrences(String s, String sub) {
         int c = 0, i = 0;
         while ((i = s.indexOf(sub, i)) >= 0) { c++; i += sub.length(); }
+        return c;
+    }
+
+    /** 数字一致性断言（本文档锁定的契约）：
+     *  报告的「差异统计 / 差异文件树清单 / 破坏性清单」必须与 DiffStats / DiffResult 完全一致，
+     *  防止某处把报告数字写死、取错值或剪裁清单（如漏列新增/删除）而界面与实际不符。 */
+    public void testRender_numbersMatchGlobalsAndDiff() {
+        MarkdownReport rep = new MarkdownReport(15);
+        String md = rep.render(snap("1.0"), snap("2.0"), buildDiff(), buildStats(), EMPTY, EMPTY);
+
+        // ① 差异统计章节数字 == DiffStats（新增1/删除1/修改1/未变0）
+        Asserts.assertContains("报告统计应取自 DiffStats",
+                md, "- 新增 **1** · 删除 **1** · 修改 **1** · 未变 0");
+
+        // ② 差异文件树（全量清单）行数 == ADDED+MODIFIED+DELETED = 3，且逐条列出
+        String tree = between(md, "## 二、差异文件树", "## 三、");
+        Asserts.assertEquals("差异文件树清单行数应等于 ADD+MOD+DEL=3",
+                3, countBulletLines(tree));
+        Asserts.assertContains("清单含新增 b.class", tree, "b.class");
+        Asserts.assertContains("清单含修改 a.class", tree, "a.class");
+        Asserts.assertContains("清单含删除 c.class", tree, "c.class");
+
+        // ③ 破坏性变更清单行数 == DELETED = 1，且列出被删文件
+        String breaking = between(md, "## 六、破坏性变更清单", "## 七、");
+        Asserts.assertEquals("破坏性变更清单行数应等于 DELETED=1",
+                1, countBulletLines(breaking));
+        Asserts.assertContains("破坏性清单含被删文件 c.class", breaking, "c.class");
+    }
+
+    /** 取两段标题之间的内容（含开始标题，不含结束标题）。 */
+    private static String between(String s, String start, String end) {
+        int i = s.indexOf(start);
+        if (i < 0) return "";
+        int j = s.indexOf(end, i);
+        return (j < 0) ? s.substring(i) : s.substring(i, j);
+    }
+
+    /** 统计段落内以 "- " 开头的列表行数。 */
+    private static int countBulletLines(String section) {
+        int c = 0;
+        for (String line : section.split("\n")) {
+            if (line.trim().startsWith("- ")) c++;
+        }
         return c;
     }
 }

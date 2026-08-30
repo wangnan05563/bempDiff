@@ -44,20 +44,57 @@ public final class PackageVersion {
         if (fileName == null) return null;
         String stem = stripExtension(fileName);
         Matcher dm = DOTTED.matcher(stem);
-        if (dm.find()) return dm.group(1);
-        // 构建号式：find() 从左往右，取最后一个匹配（最右端的版本段）
+        if (dm.find()) {
+            // 点分式匹配若紧跟在 '(' 之后（如 …036M059(20260703-1104)），说明那只是括号内的构建时间戳，
+            // 并非独立的点分版本；真正的版本是前置的构建号尾段（036M059(20260703-1104)）。
+            // 若不跳过 DOTTED，版本会被截断成时间戳，剥离尾段后同一包的两侧基名（M059/M061）不同，
+            // 被判为不同包——自动排序与状态栏版本识别随之失效（用户 BEMP5.0V202301-02-036M0xx 场景）。
+            int gs = dm.start();
+            if (gs == 0 || stem.charAt(gs - 1) != '(') {
+                return dm.group(1);
+            }
+            String build = lastBuildTail(stem);
+            return (build != null) ? build : dm.group(1); // 罕见无构建尾段时回退旧行为
+        }
+        return lastBuildTail(stem);
+    }
+
+    /** 取最右端（最后）命中 BUILD_TAIL 的版本尾段；无命中返回 null。 */
+    private static String lastBuildTail(String stem) {
         Matcher bm = BUILD_TAIL.matcher(stem);
         String best = null;
         while (bm.find()) best = bm.group(1);
         return best;
     }
 
-    /** 两个文件名是否为「同一包的不同版本」（同基名 + 版本尾段不同）。 */
+    /**
+     * 两个文件名是否为「同一包的不同版本」。
+     *
+     * <p>判定比纯公共前缀法更严格：先各自提取最右端版本尾段，剥离后**基名必须完全相同**。
+     * 仅凭公共前缀 ≥4 字符会把不同组件名误判为同基名——例如
+     * {@code BEMP5.0-adapterV202301-02-036M059(20260703-1104).zip} 与
+     * {@code BEMP5.0-cpesmqV202301-02-036M061(20260707-1135).zip} 共享前缀 {@code BEMP5.0-}（≥4 字符），
+     * 但组件名（adapter/cpesmq）不同，属于不同包；若被误判，归档自动配对时会在一侧命中多个候选而放弃配对。
+     * 只有版本尾段不同且其余基名完全一致，才视为同一包的不同版本。</p>
+     */
     public static boolean sameBaseDifferentVersion(String fileA, String fileB) {
         if (fileA == null || fileB == null || fileA.equals(fileB)) return false;
         String sa = stripExtension(fileName(fileA));
         String sb = stripExtension(fileName(fileB));
         if (sa.equals(sb)) return false;
+        // 版本提取须基于原始文件名（含扩展名），由 extractFromFileName 内部剥离扩展名；
+        // 若传已去扩展名的主干串（如 BEMP5.0-...），其内部的点号会被误判为扩展名边界，
+        // 导致版本被截断（如提取成 "5"），从而误判不配对。
+        String va = extractFromFileName(fileA);
+        String vb = extractFromFileName(fileB);
+        if (va != null && vb != null) {
+            if (va.equals(vb)) return false;
+            String baseA = stripVersionTail(sa, va);
+            String baseB = stripVersionTail(sb, vb);
+            return baseA != null && baseB != null
+                    && baseA.length() >= MIN_COMMON_PREFIX && baseA.equals(baseB);
+        }
+        // 版本段提取失败（罕见形态）：回退公共前缀法，保持原有保守行为
         String lcp = longestCommonPrefix(sa, sb);
         if (lcp.length() < MIN_COMMON_PREFIX) return false;
         String ra = sa.substring(lcp.length());
@@ -65,6 +102,12 @@ public final class PackageVersion {
         if (ra.isEmpty() || rb.isEmpty()) return false;
         if (!looksVersionTail(ra) || !looksVersionTail(rb)) return false;
         return !ra.equals(rb);
+    }
+
+    /** 从串尾剥离版本段 v；v 不在末尾返回 null（无法安全剥离，不冒险配对）。 */
+    static String stripVersionTail(String s, String v) {
+        if (s.endsWith(v)) return s.substring(0, s.length() - v.length());
+        return null;
     }
 
     /**

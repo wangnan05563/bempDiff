@@ -29,6 +29,7 @@
     "resources": {
       "../dist_input/app/bempdiff.jar": "app/bempdiff.jar",
       "../dist_input/app/cfr.jar": "app/cfr.jar",
+      "../dist_input/app/lib": "app/lib",
       "../dist_input/jre": "jre",
       "../dist_input/webui": "webui"
     },

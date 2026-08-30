@@ -2,12 +2,13 @@
 //
 // 设计动机：左树点击触发反编译会覆盖之前的对比页。改成 tab 后，多个反编译可并存，
 // 用户在 tab 之间切换不会丢失上下文。每个 tab 形状：
-//   { key, node, decompile, busy, error }
+//   { key, node, decompile, busy, error, pinned }
 //   key       - 树节点 key（job 内唯一）
 //   node      - 该 key 对应的树节点快照（避免组件二次 find 树）
 //   decompile - 反编译结果，null 表示还没好；{ ok:false, ... } 表示不可反编译
 //   busy      - true 表示反编译请求中（即便 decompile 仍为 null）
 //   error     - 反编译抛异常的 message
+//   pinned    - 是否固定（右键「固定」置顶 + 关闭类操作跳过保留）；关闭当前仍可主动关
 
 /**
  * 打开/激活一个 tab。
@@ -23,7 +24,7 @@ export function activateTab(tabs, activeKey, key, node) {
   const existing = tabs.find(t => t.key === key)
   if (existing) return { tabs, activeKey: key, opened: false }
   return {
-    tabs: [...tabs, { key, node, decompile: null, busy: true, error: null }],
+    tabs: [...tabs, { key, node, decompile: null, busy: true, error: null, pinned: false }],
     activeKey: key,
     opened: true
   }
@@ -45,6 +46,44 @@ export function closeTabReducer(tabs, activeKey, key) {
   if (!wasActive) return { tabs: next, activeKey }
   const after = next[i] || next[i - 1] || null
   return { tabs: next, activeKey: after ? after.key : null }
+}
+
+/**
+ * 切换「固定/取消固定」：pinned 置顶排列；关闭类操作会跳过 fixed tab。
+ * @returns {{tabs: Array, activeKey: string|null}}
+ */
+export function pinTabReducer(tabs, activeKey, key) {
+  const i = tabs.findIndex(t => t.key === key)
+  if (i < 0) return { tabs, activeKey }
+  const next = tabs.slice()
+  next[i] = { ...next[i], pinned: !next[i].pinned }
+  // 固定置顶：pinned 的排在前（稳定排序，保持原有相对顺序）
+  next.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    return 0
+  })
+  return { tabs: next, activeKey }
+}
+
+/**
+ * 关闭除指定 key 之外的所有 tab（保留 fixed + 指定 key）。
+ * @returns {{tabs: Array, activeKey: string|null}}
+ */
+export function closeOtherTabsReducer(tabs, activeKey, keepKey) {
+  const keep = tabs.filter(t => t.pinned || t.key === keepKey)
+  // 若当前激活被关闭（非 pinned 且非 keepKey）→ 激活保留项或 null
+  const nextActive = keep.some(t => t.key === activeKey) ? activeKey
+    : keep.length ? keep[0].key : null
+  return { tabs: keep, activeKey: nextActive }
+}
+
+/**
+ * 关闭全部 tab（保留 fixed）。
+ * @returns {{tabs: Array, activeKey: string|null}}
+ */
+export function closeAllTabsReducer(tabs, activeKey) {
+  const keep = tabs.filter(t => t.pinned)
+  return { tabs: keep, activeKey: keep.length ? keep[0].key : null }
 }
 
 /**

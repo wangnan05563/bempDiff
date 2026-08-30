@@ -90,12 +90,16 @@ $DistInput = Join-Path $Proto 'dist_input'
 $AppDir    = Join-Path $DistInput 'app'
 $JreOut    = Join-Path $DistInput 'jre'
 $Classes   = Join-Path $DistInput 'classes'
+$DevClasses= Join-Path $DistInput 'dev_classes'
 $CfrSrc    = Join-Path $Proto 'cfr.jar'
 $BempJar   = Join-Path $AppDir 'bempdiff.jar'
 $CfrJar    = Join-Path $AppDir 'cfr.jar'
 $JavaSrc   = Join-Path (Join-Path $Proto 'java_core') 'src'
 $WebuiDist = Join-Path $Webui 'dist'
 $Logo      = Join-Path $Proto 'bempdiff-logo.png'
+# 三方依赖 jar（目前为解析旧版二进制 .xls 的 Apache POI 及其传递依赖）：编译 classpath 与
+# 运行时 dist_input/app/lib 均来自此目录，桌面壳 main.js 按该目录拼服务端 classpath。
+$PoiLib    = Join-Path $Proto 'toolchain\lib'
 
 # 项目作用域构建目录：覆盖可能存在于全局环境的 CARGO_TARGET_DIR（如曾指向 D:\tmp_install\cargo_release），
 # 使 cargo / tauri 构建产物落到 bempdiff/src-tauri/target（已被 gitignore），不再污染 D:\ 根目录。
@@ -109,14 +113,25 @@ try { Set-Content -Path $BuildLog -Value ("=== BempDiff build @ " + (Get-Date -F
 
 # 最小 JRE 模块（jdeps 实测静态最小集为 java.base,java.logging,jdk.httpserver；
 # 显式补 jdk.crypto.ec/jdk.crypto.mscapi 以支撑 HTTPS 调 AI（原 jpackage TLS 事故根因），
-# jdk.jdeps 保留 javap 降级能力）。
-$Modules = 'java.base,java.logging,jdk.httpserver,jdk.crypto.ec,jdk.crypto.mscapi,jdk.jdeps'
+# jdk.jdeps 保留 javap 降级能力。
+# java.xml 必加：OfficeTextDiff 用 JAXP（DocumentBuilderFactory）解析 docx/xlsx/pptx 内部 XML，
+# 缺失时点击 Office 文档抛 ClassNotFoundException -> "该文件无法反编译（引擎：none）" / 卡在加载态。
+# java.desktop 必含：POI 的 DataFormatter 依赖 java.beans.PropertyChangeSupport（属 java.desktop），
+# 缺它点击 .xls 会在线程内抛 NoClassDefFoundError 且无响应，前端永久停在加载态。
+$Modules = 'java.base,java.logging,jdk.httpserver,jdk.crypto.ec,jdk.crypto.mscapi,jdk.jdeps,java.xml,java.desktop'
 
-# JDK21 工具链：优先 $env:JAVA21_HOME，否则用内置 Zulu 工具链。
-if ($env:JAVA21_HOME -and (Test-Path (Join-Paths $env:JAVA21_HOME 'bin' 'javac.exe'))) {
-  $JDK = $env:JAVA21_HOME
-} else {
-  $JDK = Join-Paths $Proto 'toolchain' 'zulu21.52.15-ca-jdk21.0.12-win_x64'
+# 工具链（JDK）：按优先级探测可用 javac.exe，首取 $env:JAVA21_HOME，其次 $env:JAVA_HOME，
+# 再内置 Zulu；内置 Zulu 若损坏/缺失（历史上 bin 曾被清空只剩 server），降级到本机常见 JDK，
+# 避免仅因工具链缺失就中断打包。取第一个 bin\javac.exe 可用的候选为本次构建 JDK。
+$jdkCandidates = @()
+if ($env:JAVA21_HOME) { $jdkCandidates += $env:JAVA21_HOME }
+if ($env:JAVA_HOME)   { $jdkCandidates += $env:JAVA_HOME }
+$jdkCandidates += (Join-Paths $Proto 'toolchain' 'zulu21.52.15-ca-jdk21.0.12-win_x64')
+# 本机常用 JDK 兜底（缺环境变量时的备选）
+$jdkCandidates += 'D:\code\Java\jdk-25.0.1'
+$JDK = $jdkCandidates | Where-Object { $_ -and (Test-Path (Join-Paths $_ 'bin' 'javac.exe')) } | Select-Object -First 1
+if (-not $JDK) {
+  throw "未找到可用 JDK（javac.exe）。请设置 JAVA21_HOME 指向完整 JDK 后重试。"
 }
 $Javac = Join-Paths $JDK 'bin' 'javac.exe'
 $Jar   = Join-Paths $JDK 'bin' 'jar.exe'
@@ -207,14 +222,21 @@ foreach ($bin in @($Javac, $Jar, $Jlink, $CfrSrc)) {
   if (-not (Test-Path $bin)) { throw "缺少必要文件：$bin" }
 }
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
+# POI 解析 .xls 所需的三方 jar：编译阶段必须有（javac -cp），否则无法编译 HSSF 代码。
+if (-not (Test-Path $PoiLib)) { throw "缺少三方依赖目录：$PoiLib（需含 poi-*.jar 等，用于 .xls 解析）" }
 
-# ---------- 1~2. 编译 java_core + 复制 cfr.jar ----------
+# ---------- 1~2. 编译 java_core + 复制 cfr.jar + 分发三方 lib ----------
 if (-not $SkipJava) {
   Write-Step "编译 java_core → bempdiff.jar"
   Remove-Tree $Classes
+  # 同步清理兜底编译产物 dev_classes（main.js ensureClasspath 生成）：避免陈旧 class 混入打包源，
+  # 若开发态再需要，main.js 会在无产物时按源码重新生成。
+  Remove-Tree $DevClasses
   New-Item -ItemType Directory -Force -Path $Classes | Out-Null
   $sources = (Get-ChildItem -Recurse -Filter *.java $JavaSrc).FullName
-  $rc = Invoke-Native { & $Javac -d $Classes -cp $CfrSrc @sources }
+  # 编译 classpath = cfr.jar + POI lib(通配符)。通配符由 javac 展开，需各 jar 位于同一目录。
+  $jcp = "$CfrSrc;$PoiLib\*"
+  $rc = Invoke-Native { & $Javac -d $Classes -cp $jcp @sources }
   if ($rc -ne 0) { throw "javac 失败" }
   $rc = Invoke-Native { & $Jar cfe $BempJar com.bempdiff.Main -C $Classes . }
   if ($rc -ne 0) { throw "jar 失败" }
@@ -223,6 +245,12 @@ if (-not $SkipJava) {
   Write-Step "复制 cfr.jar"
   Copy-Item -Force $CfrSrc $CfrJar
   Write-Host "  -> $CfrJar"
+
+  Write-Step "分发三方依赖 lib → dist_input/app/lib"
+  $LibOut = Join-Path $AppDir 'lib'
+  New-Item -ItemType Directory -Force -Path $LibOut | Out-Null
+  Copy-Item -Force (Join-Path $PoiLib '*') $LibOut
+  Write-Host "  -> $($(Get-ChildItem $LibOut -Filter '*.jar').Count) 个 jar 已复制"
 } else {
   Write-Host "跳过 Java 编译（复用已有 dist_input/app）"
   if (-not (Test-Path $BempJar)) { throw "bempdiff.jar 不存在，请去掉 -SkipJava 先编译" }
@@ -318,6 +346,24 @@ if (-not (Test-Path (Join-Path $IconsDir 'icon.ico')) -and (Test-Path $Logo)) {
 
 # ---------- 5.5 MSVC/SDK 链接环境自检（cargo 链接必需） ----------
 Ensure-VcEnv
+
+# ---------- 5.6 产物新鲜度自检（防 Skip 误用把旧内容打包进安装包） ----------
+# 仅当通过 -Skip* 复用了旧产物时才需要校验：若源码比复用的 jar 新，说明打包的是旧后端，直接中止。
+function Assert-InputFresh {
+  if (-not $SkipJava -and -not $SkipFrontend) { return }   # 本次全量重编，天然新鲜，无需校验
+  if ($SkipJava) {
+    $newestSrc = (Get-ChildItem -Recurse -Filter *.java $JavaSrc | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+    $jarT = (Get-Item $BempJar -ErrorAction SilentlyContinue).LastWriteTime
+    if ($jarT -isnot [datetime]) { throw "bempdiff.jar 不存在，无法打包（-SkipJava 空跑）" }
+    if ($jarT -lt $newestSrc) {
+      throw "SkipJava 复用旧 jar（$jarT）早于最新源码（$newestSrc），会打包旧后端。请去掉 -SkipJava 重新编译。"
+    }
+  }
+  if ($SkipFrontend -and -not (Test-Path (Join-Path $DistInput 'webui\index.html'))) {
+    throw "SkipFrontend 复用但 dist_input/webui 前端缺失，会打包空/旧前端。请去掉 -SkipFrontend。"
+  }
+}
+Assert-InputFresh
 
 # ---------- 6. cargo tauri build ----------
 if (-not $SkipCargo) {

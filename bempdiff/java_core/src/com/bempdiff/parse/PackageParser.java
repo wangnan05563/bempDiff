@@ -37,8 +37,9 @@ public final class PackageParser {
     private static final Logger LOG = Logger.getLogger(PackageParser.class.getName());
     private static final String CLASS_EXT = ".class";
 
-    /** 硬上限：单条目字节上限，防御 zip bomb（声明 size 与实际读取均受此约束）。 */
-    private static final long HARD_CAP = 64L * 1024 * 1024;
+    /** 硬上限：单条目字节上限，防御 zip bomb（声明 size 与实际读取均受此约束）。
+     *  与 NestedUnpacker/ParseConfig 共用同一来源，避免"顶层大 war 被解析丢弃、嵌套却放行"的口径分裂。 */
+    private static final long HARD_CAP = com.bempdiff.config.ParseConfig.DEFAULT_ENTRY_CAP_BYTES;
 
     /** 承载 detectPrefixes 返回的类路径与前缀信息。 */
     private static final class Prefixes {
@@ -135,6 +136,7 @@ public final class PackageParser {
     }
 
     public PackageSnapshot parse(Path file, ParseConfig cfg, boolean expandAll) throws IOException {
+        setActiveIgnores(cfg.getIgnoreExtensions()); // 比对级忽略扩展名：解析收集阶段统一启用
         PackageType type = detectType(file);
         try (ZipFile zf = new ZipFile(file.toFile())) {
             Map<String, LogicalEntry> entries = new LinkedHashMap<>();
@@ -188,6 +190,7 @@ public final class PackageParser {
                     if (!je.isDirectory()) {
                         String inner = sanitizeKey(je.getName());
                         String key = jarPath + "/" + inner;
+                        if (ignoredKey(key)) continue; // 比对级忽略扩展名：嵌套 jar 内部条目同样过滤
                         // P1-2：流式算内部类 hash，避免整条目 byte[] 驻留
                         String h = sha256Stream(jz, je);
                         out.put(key, new LogicalEntry(key, Layer.L1, classify(inner),
@@ -275,10 +278,18 @@ public final class PackageParser {
     private void addFromZip(ZipFile zf, ZipEntry e, String key, Layer layer,
                             Map<String, LogicalEntry> out) throws IOException {
         key = sanitizeKey(key);
+        if (ignoredKey(key)) return; // 比对级忽略扩展名：命中则整体跳过该条目，不参与差异比对
         // P1-2：流式计算 sha256（边读边 digest），不把整条目 byte[] 驻留内存，降低大包解析内存峰值。
         long size = e.getSize();
         String h = sha256Stream(zf, e);
         out.put(key, new LogicalEntry(key, layer, classify(key), size, h, new EntrySource(key, null)));
+    }
+
+    // 忽略集合由 parse(..) 时暂存到字段；null 表示未启用比对级过滤
+    private java.util.List<String> activeIgnores = null;
+    private void setActiveIgnores(java.util.List<String> v) { this.activeIgnores = v; }
+    private boolean ignoredKey(String key) {
+        return com.bempdiff.config.ParseConfig.ignoredExt(key, activeIgnores);
     }
 
     /** 从 EntrySource 取回 class 字节（prototype: _extract_bytes）。
@@ -286,6 +297,15 @@ public final class PackageParser {
      *  直接 Files.readAllBytes——修复 folder 模式下点开文本/class 一律「拒绝访问」（此前 ZipFile 打开目录必然失败）。 */
     public byte[] readEntryBytes(PackageSnapshot snap, LogicalEntry entry) throws IOException {
         EntrySource src = entry.getSrc();
+        // 内存态原子（NestedUnpacker 小文件优化）：直接返回内存字节，不落盘、不打开归档。
+        if (src != null && src.isMemoryBacked()) return src.getMemoryBytes();
+        // 物理平铺解包/文件夹模式的磁盘文件条目：outerEntry 即真实磁盘文件绝对路径，直接整读。
+        // 需置于 ZipFile 分支前，否则 zip 模式的条目名（如 WEB-INF/lib/a.jar）被误当磁盘路径；
+        // 相对名不可能命中 isRegularFile（不含盘符/绝对前缀），故判定安全。
+        if (src != null && !src.isNested() && src.getOuterEntry() != null) {
+            Path disk = Paths.get(src.getOuterEntry());
+            if (Files.isRegularFile(disk)) { return Files.readAllBytes(disk); }
+        }
         Path file = snap.getFile();
         if (Files.isDirectory(file)) {
             // 文件夹模式：条目即磁盘文件（outerEntry=绝对路径），直接整读
@@ -431,7 +451,7 @@ public final class PackageParser {
                 || name.endsWith(".wsdl") || name.endsWith(".xsl") || name.endsWith(".xslt")
                 || name.endsWith(".dtd") || name.endsWith(".vm") || name.endsWith(".ftl")
                 || name.endsWith(".ini") || name.endsWith(".toml") || name.endsWith(".txt")
-                || name.endsWith(".csv")) return FileClass.CONFIG;
+                || name.endsWith(".csv") || lower.endsWith(".sh")) return FileClass.CONFIG;
         // Office 文档（OpenXML zip 与旧版二进制 OLE）：由 OfficeTextDiff 解析内容做文本 diff。
         // 与 CONFIG 并列在 JSP/前端源码判定之前，避免 .xlsx 等被 STATIC 抢走仅做 sha 比对。
         if (lower.endsWith(".docx") || lower.endsWith(".docm") || lower.endsWith(".dotx")

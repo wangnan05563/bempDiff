@@ -12,9 +12,14 @@ public final class DecompiledUnit {
     private final String engine;      // "cfr" / "javap" / "none"
     private final String error;       // 失败原因
     private final boolean ok;
+    // 7 位短哈希（类比 git rev-parse --short=7），缺失侧为 "0000000"，供 filebar 渲染 oldHash↔newHash 徽标
+    private final String oldHash;
+    private final String newHash;
 
+    /** 9 参主构造器：含短哈希字段。 */
     public DecompiledUnit(String key, String oldSource, String newSource, String diffText,
-                          String engine, String error, boolean ok) {
+                          String engine, String error, boolean ok,
+                          String oldHash, String newHash) {
         this.key = key;
         this.oldSource = oldSource;
         this.newSource = newSource;
@@ -22,6 +27,15 @@ public final class DecompiledUnit {
         this.engine = engine;
         this.error = error;
         this.ok = ok;
+        // null/空串统一回退 0000000，避免前端拿到 undefined/空字符串时徽标不渲染
+        this.oldHash = (oldHash == null || oldHash.isEmpty()) ? "0000000" : oldHash;
+        this.newHash = (newHash == null || newHash.isEmpty()) ? "0000000" : newHash;
+    }
+
+    /** 兼容旧 7 参构造器：哈希字段默认为 "0000000"。新代码请直接传 9 参。 */
+    public DecompiledUnit(String key, String oldSource, String newSource, String diffText,
+                          String engine, String error, boolean ok) {
+        this(key, oldSource, newSource, diffText, engine, error, ok, "0000000", "0000000");
     }
 
     public String getKey() { return key; }
@@ -31,8 +45,11 @@ public final class DecompiledUnit {
     public String getEngine() { return engine; }
     public String getError() { return error; }
     public boolean isOk() { return ok; }
+    public String getOldHash() { return oldHash; }
+    public String getNewHash() { return newHash; }
 
     public static DecompiledUnit fail(String key, String error) {
-        return new DecompiledUnit(key, null, null, "", "none", error, false);
+        // 失败时也保留 0000000 占位，便于前端 filebar 仍能渲染哈希徽标（虽然 0/0 视觉无变化但布局稳定）
+        return new DecompiledUnit(key, null, null, "", "none", error, false, "0000000", "0000000");
     }
 }

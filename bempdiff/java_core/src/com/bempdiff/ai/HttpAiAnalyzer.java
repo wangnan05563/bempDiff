@@ -3,6 +3,7 @@ package com.bempdiff.ai;
 import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.config.AiConfig;
 import com.bempdiff.diff.DiffResult;
+import com.bempdiff.diff.DiffStats;
 import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.FileClass;
 import com.bempdiff.server.Json;
@@ -283,6 +284,20 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         return PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
     }
 
+    /** 成本预估用（聚焦 + 顶层统计口径）：prompt 头部聚合数与折叠树一致。 */
+    @Override
+    public String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                    ProjectContext ctx, String focus, DiffStats topStats) {
+        return topStats == null
+                ? buildStageAPrompt(diff, decompiled, cfg, ctx, focus)
+                : PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus, "", topStats);
+    }
+
+    @Override
+    public String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus, String category) {
+        return PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus, category);
+    }
+
     @Override
     public String buildStageBPrompt(String key, DecompiledUnit unit, FileClass fc, AiConfig cfg, ProjectContext ctx, String focus) {
         return PromptBuilders.buildStageB(key, unit, fc, cfg, ctx, focus);
@@ -294,6 +309,31 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         String json = callChat(prompt, 0.2);
         boolean withCtx = ctx != null && !ctx.isEmpty();
         return MockAiAnalyzer.parseStageAStatic(json, withCtx);
+    }
+
+    @Override
+    public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus, String category) {
+        String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus, category);
+        String json = callChat(prompt, 0.2);
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        StageASummary s = MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        if (category != null) {
+            s.setCategory(category);
+        }
+        return s;
+    }
+
+    /** 阶段A（权威类别增强 + 顶层统计口径）：头部聚合数与折叠树一致（diff 深读仍覆盖内层）。 */
+    @Override
+    public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                ProjectContext ctx, String focus, String category, DiffStats topStats) {
+        if (topStats == null) return stageA(diff, decompiled, cfg, ctx, focus, category);
+        String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus, category, topStats);
+        String json = callChat(prompt, 0.2);
+        boolean withCtx = ctx != null && !ctx.isEmpty();
+        StageASummary s = MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        if (category != null) s.setCategory(category);
+        return s;
     }
 
     @Override

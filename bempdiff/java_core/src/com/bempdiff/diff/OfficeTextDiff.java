@@ -19,6 +19,13 @@ import java.util.zip.ZipInputStream;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -35,7 +42,9 @@ import org.w3c.dom.NodeList;
  *   <li>.xlsx/.xlsm/.xltx — 提取工作表单元格（共享字符串/内联字符串/数值），按行拼为
  *       {@code Row N: A1=值 | B1=值 | ...}，可读且行级 diff 有语义；</li>
  *   <li>.pptx/.pptm — 提取幻灯片 {@code ppt/slides/slide*.xml} 的文本；</li>
- *   <li>.doc/.xls/.ppt — 旧版二进制 OLE 格式，无法直接解析，明确提示另存为 OpenXML。</li>
+ *   <li>.xls/.xlsm（旧版二进制）— 用 Apache POI HSSF 解析工作表单元格，按行拼为
+ *       {@code Row N: A1=值 | B1=值 | ...}，与 xlsx 输出结构一致；</li>
+ *   <li>.doc/.ppt（旧版二进制 OLE）— 现有解析器未覆盖，明确提示暂不支持（可另存为 OpenXML 后再比对）。</li>
  * </ul>
  *
  * <p>与 {@link FrontendTextDiff} 同构：返回 {@link DecompiledUnit}（oldSource/newSource/diffText/engine），
@@ -108,7 +117,12 @@ public final class OfficeTextDiff {
             } else {
                 diff = LineDiff.unified(oldText, newText, rules);
             }
-            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true);
+            // 短哈希：Office 文档提取后字节可能不可重复（POI 解析受版本影响），用原始字节更稳
+            String oldHash = (oldBytes != null)
+                    ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
+            String newHash = (newBytes != null)
+                    ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true, oldHash, newHash);
         } catch (Exception e) {
             return DecompiledUnit.fail(key, safeMsg(e));
         }
@@ -138,12 +152,22 @@ public final class OfficeTextDiff {
         return (m != null && !m.isEmpty()) ? m : e.getClass().getSimpleName();
     }
 
-    /** 按文件类型提取文档可读文本。非 OpenXML（旧版 OLE）给出明确错误信息。 */
+    /**
+     * 按文件类型提取文档可读文本。
+     * - OpenXML（zip 容器）：按内部条目名判定 docx/xlsx/pptx；
+     * - 旧版二进制 OLE（以 D0CF11E0A1B11AE1 魔数开头）：用 POI HSSF 解析 .xls，
+     *   .doc/.ppt 仍不支持，给出明确转格式提示。
+     */
     public static String extract(byte[] data, FileClass fc) {
         if (data == null) return null;
         if (!isZip(data)) {
+            if (isOle(data)) {
+                // OLE 容器统一交给 HSSF 尝试：真正的 .xls 能被解析，.doc/.ppt 会抛异常，
+                // 在 extractXls 内部转成「请另存为 .xlsx/.docx」的明确提示。
+                return extractXls(data);
+            }
             throw new IllegalArgumentException(
-                    "旧版二进制 Office 格式（.doc/.xls/.ppt）不支持内容解析，请另存为 .docx/.xlsx 后重试");
+                    "无法识别的文件格式（既非 OpenXML zip，也非旧版二进制 OLE），无法解析文档内容");
         }
         // M1 修复：改为枚举 zip 条目名判定文档类型，避免对整包字节做 UTF-8 decode（数十 MB 文档
         // 会生成更大 String 并全量扫描）。zip 局部文件头中的条目名是明文存储，直接列表比对即可。
@@ -158,6 +182,16 @@ public final class OfficeTextDiff {
             return extractPptx(data);
         }
         throw new IllegalArgumentException("未能识别 Office 文档内部结构（缺少 word/document.xml / xl/worksheets / ppt/slides），可能不是标准 OpenXML 文件");
+    }
+
+    /** 判断字节是否为旧版二进制 OLE 容器（header 魔数 D0CF11E0A1B11AE1，.doc/.xls/.ppt 共用）。 */
+    private static boolean isOle(byte[] data) {
+        if (data == null || data.length < 8) return false;
+        byte[] magic = { (byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1 };
+        for (int i = 0; i < 8; i++) {
+            if (data[i] != magic[i]) return false;
+        }
+        return true;
     }
 
     /** 判断条目名集合是否含任一目标子串（用于文档类型判定）。 */
@@ -199,6 +233,57 @@ public final class OfficeTextDiff {
             if (!line.isEmpty()) sb.append(line).append('\n');
         }
         return trimTrailingBlank(sb.toString());
+    }
+
+    // ----------------------------- xls (OLE/HSSF) -----------------------------
+
+    /**
+     * 提取旧版二进制 .xls 文本：用 POI HSSF 打开工作表，按行与单元格格式化输出，
+     * 与 xlsx 的 {@code Row N: A1=值 | B1=值 | ...} 结构保持一致，走统一 diff 渲染。
+     * .doc/.ppt 同为 OLE 容器，其根流结构 HSSF 不识别会抛异常，转成明确转格式提示。
+     */
+    public static String extractXls(byte[] data) {
+        try (InputStream in = new ByteArrayInputStream(data);
+             Workbook wb = new HSSFWorkbook(in)) {
+            DataFormatter fmt = new DataFormatter(); // POI 内置：数值/日期/文本按显示格式格式化
+            StringBuilder sb = new StringBuilder();
+            for (int s = 0; s < wb.getNumberOfSheets(); s++) {
+                Sheet sheet = wb.getSheetAt(s);
+                String sheetName = sheet.getSheetName();
+                if (sheetName == null || sheetName.isEmpty()) sheetName = "Sheet" + (s + 1);
+                sb.append("===== ").append(sheetName).append(" =====\n");
+                for (int r = sheet.getFirstRowNum(); r <= sheet.getLastRowNum(); r++) {
+                    Row row = sheet.getRow(r);
+                    if (row == null) continue; // 稀疏行：无单元格跳过
+                    StringBuilder line = new StringBuilder("Row ").append(r + 1).append(": ");
+                    List<String> cells = new ArrayList<>();
+                    for (int c = row.getFirstCellNum(); c < row.getLastCellNum(); c++) {
+                        Cell cell = row.getCell(c);
+                        if (cell == null) continue;
+                        String ref = cell.getAddress().formatAsString(); // 如 A1
+                        String value = fmt.formatCellValue(cell);
+                        if (value == null) value = "";
+                        // 与 xlsx 一致：值也可能为空字符串（空单元格会 formatCellValue 返回 ""，跳过降低噪声）
+                        if (value.isEmpty()) continue;
+                        cells.add(ref + "=" + value);
+                    }
+                    if (cells.isEmpty()) continue;
+                    sb.append(line).append(String.join(" | ", cells)).append('\n');
+                }
+            }
+            String out = sb.toString();
+            if (out.trim().isEmpty()) {
+                throw new IllegalArgumentException(".xls 未解析到任何工作表内容（可能为空或非标准 .xls）");
+            }
+            return trimTrailingBlank(out);
+        } catch (IllegalArgumentException e) {
+            // 结构校验错误直接上抛，保留具体原因
+            throw e;
+        } catch (Exception e) {
+            // HSSF 打不开 OLE 根流 = 大概率是 .doc/.ppt（Word/PPT 二进制格式），给出转格式提示。
+            // 用原异常信息兜底，避免误判（某些损坏/加密 .xls 也会走到这里）。
+            throw new IllegalArgumentException("无法解析该旧版二进制 Office 文件（如为 .doc/.ppt 请另存为 .docx/.pptx；如为 .xls 请确认未被加密或损坏）：" + safeMsg(e));
+        }
     }
 
     // ----------------------------- xlsx -----------------------------

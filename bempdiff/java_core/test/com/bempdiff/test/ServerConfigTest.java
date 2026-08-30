@@ -104,4 +104,49 @@ public final class ServerConfigTest {
             throw new AssertionError("重启后 key 已从磁盘移除，hasApiKey 应为 false");
         Files.deleteIfExists(f);
     }
+
+    /** 比对级忽略扩展名（ignoreExtensions）必须跨重启持久化：保存的 .mf 在 GET(toJson) 中应原样返回。 */
+    public void testIgnoreExtensionsSurvivesRestart() throws Exception {
+        Path f = tempFile();
+        ServerConfig a = new ServerConfig(f);
+        Map<String, Object> m = new LinkedHashMap<>();
+        java.util.List<String> exts = new java.util.ArrayList<>();
+        exts.add(".mf");
+        exts.add("properties");
+        m.put("ignoreExtensions", exts);
+        a.updateFrom(m);
+
+        ServerConfig b = new ServerConfig(f); // 模拟重启：读磁盘
+        Object j = b.toJson().get("ignoreExtensions");
+        if (!(j instanceof java.util.List)) throw new AssertionError("toJson 应输出 ignoreExtensions 数组");
+        java.util.List<?> got = (java.util.List<?>) j;
+        if (!got.contains(".mf") || !got.contains("properties"))
+            throw new AssertionError("ignoreExtensions 重启后丢失: " + got);
+        Files.deleteIfExists(f);
+    }
+
+    /** 自动逐层解包配置（unpackNested/Threads/MaxDepth）必须跨重启持久化，且默认开启。 */
+    public void testUnpackNestedSurvivesRestart() throws Exception {
+        Path f = tempFile();
+        // 默认值：自动解包默认开启（默认行为变化对本功能至关重要，须守护默认态）
+        ServerConfig d = new ServerConfig(f);
+        if (!Boolean.TRUE.equals(d.toJson().get("unpackNested")))
+            throw new AssertionError("unpackNested 默认应为开启（true）");
+        // 关闭并自定义线程/深度
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("unpackNested", false);
+        m.put("unpackThreads", 8);
+        m.put("unpackMaxDepth", 3);
+        d.updateFrom(m);
+
+        ServerConfig b = new ServerConfig(f); // 模拟重启：读磁盘
+        java.util.Map<String, Object> j = b.toJson();
+        if (Boolean.TRUE.equals(j.get("unpackNested")))
+            throw new AssertionError("unpackNested=false 未持久化，重启后被还原");
+        if (!Integer.valueOf(8).equals(j.get("unpackThreads")))
+            throw new AssertionError("unpackThreads 重启后丢失/不符: " + j.get("unpackThreads"));
+        if (!Integer.valueOf(3).equals(j.get("unpackMaxDepth")))
+            throw new AssertionError("unpackMaxDepth 重启后丢失/不符: " + j.get("unpackMaxDepth"));
+        Files.deleteIfExists(f);
+    }
 }

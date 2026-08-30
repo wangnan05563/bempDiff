@@ -130,4 +130,61 @@ public final class ParseTest {
         Asserts.assertEquals("开启 expandAllForPlainJar 后应为 L1", Layer.L1,
                 snapExpand.getEntries().get("otherpkg/Y.class").getLayer());
     }
+
+    public void testIgnoreExtensions_filteredFromEntries() throws IOException {
+        // 含 App.log：设置忽略扩展名后，解析收集阶段应整体跳过该条目（不含于快照 entries）
+        Map<String, byte[]> e = warEntries();
+        e.put("WEB-INF/classes/app.log", "2026-01-01 INFO\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        e.put("WEB-INF/classes/keep.class", TestFixtures.compileClass("com.internal.Keep",
+                "package com.internal; public class Keep { }"));
+        Path p = TestFixtures.writePackage(TestFixtures.makeWar(e, "1.0"), "igext");
+
+        // 默认（不忽略）应解析出 app.log
+        PackageSnapshot defSnap = parser.parse(p, new ParseConfig(), false);
+        Asserts.assertNotNull("默认应含 app.log", defSnap.getEntries().get("WEB-INF/classes/app.log"));
+
+        // 忽略 .log 后 app.log 消失，keep.class 与路径内嵌的 class 仍在
+        ParseConfig cfg = new ParseConfig();
+        cfg.setIgnoreExtensions(java.util.Arrays.asList(".log", "TMP"));
+        PackageSnapshot snap = parser.parse(p, cfg, false);
+        Asserts.assertNull("忽略 .log 后 app.log 不应在结果中", snap.getEntries().get("WEB-INF/classes/app.log"));
+        Asserts.assertNotNull("忽略 .log 不应误伤 class", snap.getEntries().get("WEB-INF/classes/keep.class"));
+        Asserts.assertNotNull("忽略 .log 不应误伤内部 lib 展开类",
+                snap.getEntries().get("WEB-INF/lib/internal-core.jar/com/internal/B.class"));
+        // 无扩展名归一：小写会话 "TMP" → 应归一为 .tmp
+        e.put("WEB-INF/classes/tmpfile.TMP", "x".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Path p2 = TestFixtures.writePackage(TestFixtures.makeWar(e, "1.0"), "igext2");
+        PackageSnapshot snap2 = parser.parse(p2, cfg, false);
+        Asserts.assertNull("忽略规则应不分大小写(TMP/.tmp)", snap2.getEntries().get("WEB-INF/classes/tmpfile.TMP"));
+
+        // 多段扩展名：忽略 ".min.js" 能命中 "app/static/app.min.js"（M1 修复点）
+        e.put("WEB-INF/classes/static/app.min.js", "var a=1;\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        ParseConfig cfg2 = new ParseConfig();
+        cfg2.setIgnoreExtensions(java.util.Arrays.asList(".min.js"));
+        Path p3 = TestFixtures.writePackage(TestFixtures.makeWar(e, "1.0"), "igext3");
+        PackageSnapshot snap3 = parser.parse(p3, cfg2, false);
+        Asserts.assertNull("忽略 .min.js 应命中 app.min.js（多段扩展名）",
+                snap3.getEntries().get("WEB-INF/classes/static/app.min.js"));
+    }
+
+    /** 用户反馈：自定义后缀 .MF 保存（被归一为 .mf）后，MANIFEST.MF 仍被比对出来。
+     *  复现：把 .mf 加入忽略集合，真实 WAR 顶层的 MANIFEST.MF 应被解析阶段拦截。 */
+    public void testIgnoreExtensions_dotMF_matchesManifest() throws IOException {
+        // 普通 jar（顶层若含 META-INF/MANIFEST.MF）——makeWar 会带 MANIFEST；这里显式制造一个 .MF 条目验证
+        Map<String, byte[]> e = new LinkedHashMap<>();
+        e.put("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        e.put("com/x/A.class", TestFixtures.compileClass("com.internal.A", TestFixtures.SRC_A_V1));
+        Path p = TestFixtures.writePackage(TestFixtures.makeZip(e), "igmf");
+
+        PackageSnapshot defSnap = parser.parse(p, new ParseConfig(), false);
+        Asserts.assertNotNull("默认应含 MANIFEST.MF", defSnap.getEntries().get("META-INF/MANIFEST.MF"));
+
+        // 用户在 UI 输入 .MF → 前端归一为 .mf 存盘
+        ParseConfig cfg = new ParseConfig();
+        cfg.setIgnoreExtensions(java.util.Arrays.asList(".mf"));
+        PackageSnapshot snap = parser.parse(p, cfg, false);
+        Asserts.assertNull("忽略 .mf 后 MANIFEST.MF 不应在结果中（大小写不敏感）",
+                snap.getEntries().get("META-INF/MANIFEST.MF"));
+        Asserts.assertNotNull("忽略 .mf 不应误伤 class", snap.getEntries().get("com/x/A.class"));
+    }
 }

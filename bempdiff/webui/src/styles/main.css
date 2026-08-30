@@ -53,10 +53,6 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
 }
 .col-ai.collapsed .ai-collapsed-bar:hover { background: var(--bs-secondary-bg); }
 .col-ai.collapsed .ai-collapsed-bar i { font-size: 1rem; color: var(--bs-body-color); }
-.col-ai.collapsed .ai-collapsed-label {
-  writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: .08em;
-  font-size: .8rem; font-weight: 600; color: var(--bs-body-color);
-}
 
 /* ===== 左右栏拖拽分隔条 =====
  * 默认透明细条（不新增可见分割线，沿用两侧栏自身 border）；悬浮/拖拽时显示主色小把手提示可拖拽。 */
@@ -93,13 +89,40 @@ body { margin: 0; font-size: 13px; font-family: var(--app-font); }
 .legend { display: flex; gap: .6rem; flex-wrap: wrap; font-size: .75rem; color: var(--bs-secondary-color); padding: .4rem .75rem; border-bottom: var(--bs-border-color) solid 1px; }
 .legend i { width: .55rem; height: .55rem; border-radius: 2px; display: inline-block; margin-right: .25rem; vertical-align: middle; }
 
-/* ===== 中部双栏 diff（核心样式见 DiffView.vue 的 scoped 块） ===== */
-.filebar { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; border-bottom: var(--bs-border-color) solid 1px; background: var(--bs-tertiary-bg); font-size: 12px; overflow: hidden; min-width: 0; }
+/* ===== 中部双栏 diff（核心样式见 DiffView.vue 的 scoped 块） =====
+   IDE 化（参照 VS Code / JetBrains）：磨砂玻璃 filebar + 整行加色 + 折叠圆点 + 当前行双层描边。
+   backdrop-filter 需要浏览器支持（Electron Chromium 满足），降级到普通半透明不影响功能。 */
+.filebar {
+  display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem;
+  border-bottom: var(--bs-border-color) solid 1px;
+  /* 磨砂玻璃：半透明 + 模糊。浅色主题更透，深色主题更稳。 */
+  background: color-mix(in srgb, var(--bs-tertiary-bg) 78%, transparent);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  font-size: 12px; min-width: 0;
+  /* 响应式换行：当左右栏展开把对比窗口挤压变窄时，单行放不下的信息（面包屑/统计/功能按钮）
+     按实际内容宽度逐项换行，而不是被 overflow 整体裁剪、不可见。 */
+  flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 5;
+}
 .filebar > * { min-width: 0; flex-shrink: 0; }
 .filebar > .path { flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filebar .path { font-family: var(--bs-font-monospace); }
-/* 路径栏（PathBar）：允许收缩占满剩余空间，长路径在栏内滚动/截断 */
-.filebar > .pathbar { flex-shrink: 1; flex-basis: 0; }
+/* 路径栏（PathBar）：弹性占剩余空间；窄屏触发换行时占满整行，保证面包屑/功能按钮均可见。
+   基准 14rem + min-width 8rem 让其在宽屏占据合理剩余宽度、窄屏完整换行，而非被压成 0。 */
+.filebar > .pathbar { flex: 1 1 14rem; min-width: 8rem; }
+/* 右侧信息+操作区：包成整块 flex，filebar 换行时整块跳行并靠右，第二行不散落。
+   内部也允许换行（flex-wrap）：极窄屏 buttons 过多时在 actions 内部折行，而非溢出被裁。 */
+.filebar > .filebar-actions {
+  display: flex; align-items: center; gap: .5rem;
+  margin-left: auto;          /* 靠右贴齐（宽屏与换行后均右对齐） */
+  min-width: 0;
+  flex-shrink: 1;
+  flex-wrap: wrap;            /* 内部按钮过多时折行，保证全部可见 */
+  justify-content: flex-end;  /* 折行后每组右对齐，保持视觉一致 */
+}
+/* 子项不收缩（按钮文字不可被压扁），溢出由父级 flex-wrap 折行解决 */
+.filebar > .filebar-actions > * { flex-shrink: 0; }
 
 .center-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--bs-secondary-color); flex-direction: column; gap: .5rem; text-align: center; padding: 2rem; }
 .center-empty .ico { font-size: 2rem; }
@@ -166,3 +189,82 @@ ul.tight li { margin: .2rem 0; }
 .risk-banner.rb-med { background: rgba(255,193,7,.14); border-color: #ffc107; }
 .risk-banner.rb-low { background: rgba(25,135,84,.12); border-color: #198754; }
 .risk-banner.rb-none { background: rgba(108,117,125,.12); border-color: #6c757d; }
+
+/* =====================================================================
+ * 扁平无边框按钮主题（去描边 · 简约风格）
+ * 需求：所有按钮移除描边/边框，改为扁平填充/无边框样式，保留主次语义。
+ * 实现：用更高特异性的 `.btn.btn-outline-*` 覆盖 bootstrap 5.3 的
+ *   outline 变量组（--bs-btn-*），从而不必逐处改动组件模板。
+ *   - 次级按钮(secondary)：默认透明无边框，hover 浅灰底、active 主色淡底，
+ *     以「填充深浅」而非「描边」传达可点击与选中语义。
+ *   - 强调按钮(primary)：默认透明主色文字，hover 主色淡底，active 主色实底，
+ *     突出主要动作。
+ *   - 危险按钮(danger)：默认透明，hover/active 危险色淡底，语义靠颜色传达。
+ *   主按钮(btn-primary 实底)与本主题无关，保持原样。
+ * ===================================================================== */
+.btn.btn-outline-secondary {
+  --bs-btn-color: var(--bs-secondary-color);
+  --bs-btn-border-color: transparent;
+  --bs-btn-hover-color: var(--bs-body-color);
+  --bs-btn-hover-bg: var(--bs-secondary-bg);
+  --bs-btn-hover-border-color: transparent;
+  --bs-btn-focus-shadow-rgb: 108, 117, 125;
+  --bs-btn-active-color: var(--bs-body-color);
+  --bs-btn-active-bg: var(--bs-secondary-bg);
+  --bs-btn-active-border-color: transparent;
+  --bs-btn-active-shadow: none;
+  --bs-btn-disabled-color: var(--bs-secondary-color);
+  --bs-btn-disabled-bg: transparent;
+  --bs-btn-disabled-border-color: transparent;
+  --bs-btn-gradient: none;
+}
+/* 激活/选中态（如分段控件、风险过滤按钮）：用主色淡底 + 主色文字替代描边 */
+.btn.btn-outline-secondary:not(:disabled):active,
+.btn.btn-outline-secondary.active {
+  color: var(--bs-primary);
+  background-color: var(--bs-primary-bg-subtle);
+}
+
+.btn.btn-outline-primary {
+  --bs-btn-color: var(--bs-primary);
+  --bs-btn-border-color: transparent;
+  --bs-btn-hover-color: var(--bs-primary);
+  --bs-btn-hover-bg: var(--bs-primary-bg-subtle);
+  --bs-btn-hover-border-color: transparent;
+  --bs-btn-focus-shadow-rgb: 13, 110, 253;
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: var(--bs-primary);
+  --bs-btn-active-border-color: var(--bs-primary);
+  --bs-btn-active-shadow: none;
+  --bs-btn-disabled-color: var(--bs-primary);
+  --bs-btn-disabled-bg: transparent;
+  --bs-btn-disabled-border-color: transparent;
+  --bs-btn-gradient: none;
+}
+
+.btn.btn-outline-danger {
+  --bs-btn-color: var(--bs-danger);
+  --bs-btn-border-color: transparent;
+  --bs-btn-hover-color: var(--bs-danger);
+  --bs-btn-hover-bg: var(--bs-danger-bg-subtle);
+  --bs-btn-hover-border-color: transparent;
+  --bs-btn-focus-shadow-rgb: 220, 53, 69;
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: var(--bs-danger);
+  --bs-btn-active-border-color: var(--bs-danger);
+  --bs-btn-active-shadow: none;
+  --bs-btn-disabled-color: var(--bs-danger);
+  --bs-btn-disabled-bg: transparent;
+  --bs-btn-disabled-border-color: transparent;
+  --bs-btn-gradient: none;
+}
+/* 键盘聚焦保留细主色圆环（无障碍），不使用描边式宽边框 */
+.btn.btn-outline-secondary,
+.btn.btn-outline-primary,
+.btn.btn-outline-danger { box-shadow: none; }
+.btn.btn-outline-secondary:focus-visible,
+.btn.btn-outline-primary:focus-visible,
+.btn.btn-outline-danger:focus-visible {
+  box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--bs-primary) 25%, transparent) !important;
+  outline: none;
+}

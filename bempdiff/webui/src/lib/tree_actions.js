@@ -86,7 +86,10 @@ export function disabledReason(id, node, ctx = {}) {
     case 'copyName':
     case 'copyPath':
     case 'copyRelPath':
+      return null
     case 'aiSummary':
+      // 文件夹无内容差异，后端单文件管线会直接拒绝——前置禁用避免用户走完闸门后才失败（评审 H2）
+      if (type === 'folder' || type === 'baseFolder') return '文件夹无内容差异，请选择具体文件'
       return null
     default:
       return null

@@ -1,4 +1,8 @@
 @echo off
+REM Switch console to UTF-8: the PS1 helper scripts emit Chinese via stdout; without this,
+REM cmd would decode those UTF-8 bytes as GBK and the info lines turn into mojibake.
+REM NOTE: this batch itself MUST be pure ASCII (CRLF) - avoid non-ASCII chars here entirely.
+chcp 65001 >nul
 setlocal EnableExtensions
 cd /d "%~dp0\..\..\bempdiff"
 
@@ -10,8 +14,19 @@ echo ============================================
 echo   BempDiff Build (Electron + Web UI + Java sidecar)
 echo ============================================
 echo Steps: check java artifacts -^> install builder -^> build webui -^> electron-builder [NSIS]
-echo Output: dist\BempDiff-*-setup.exe  (project root 18_comparePakage\dist)
+echo Output: release\BempDiff-*-setup.exe  (project root 18_comparePakage\release)
 echo.
+
+REM ---------- 0. Version bump: unique patch = (yyyyMMdd).(daily seq), written to root package.json.
+REM          Runs before any build step so every artifact shares one version.
+echo [STEP] Bumping patch version (yyyyMMdd + daily seq) ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\..\bempdiff\scripts\bump_patch.ps1" -Root "%~dp0..\..\bempdiff"
+if errorlevel 1 (
+  echo "[ERROR] patch version bump failed"
+  pause
+  exit /b 1
+)
+echo [OK] Patch version bumped.
 
 REM ---------- 0. Prerequisite: Java backend artifacts ----------
 if not exist "dist_input\jre\bin\javaw.exe" (
@@ -36,7 +51,10 @@ echo [OK] Java backend artifacts present.
 
 REM ---------- 1. Install electron-builder (here, in bempdiff/) ----------
 echo [STEP] Installing electron-builder ...
-call npm install --no-audit --no-fund
+REM Use PowerShell to call npm.cmd instead of bare "call npm": under cmd, npm 11 can intermittently
+REM mis-parse --no-fund into "'o-fund' is not recognized" (a fund cleanup child spawned by install gets
+REM its args re-split via cmd /c). The same command run under PowerShell never reproduces this.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Push-Location '%CD%'; npm.cmd install --no-audit --no-fund; $code=$LASTEXITCODE; Pop-Location; exit $code"
 if errorlevel 1 (
   echo "[ERROR] npm install failed"
   pause
@@ -47,7 +65,8 @@ REM ---------- 2. Ensure dev-shell Electron runtime is installed ----------
 if not exist "dev-shell\node_modules\.bin\electron.cmd" (
   echo [STEP] Installing Electron runtime into dev-shell ...
   pushd dev-shell
-  call npm install --no-audit --no-fund
+  REM Same as step 1: use PowerShell to avoid the intermittent cmd "'o-fund' is not recognized"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "npm.cmd install --no-audit --no-fund; exit $LASTEXITCODE"
   popd
   if errorlevel 1 (
     echo "[ERROR] electron install failed"
@@ -61,7 +80,8 @@ if not exist "dev-shell\node_modules\.bin\electron.cmd" (
 REM ---------- 3. Build webui (produces webui/dist served by backend --webroot) ----------
 echo [STEP] Building webui (vite build) ...
 pushd webui
-call npm install --no-audit --no-fund
+REM Same as step 1: use PowerShell to avoid the intermittent cmd "'o-fund' is not recognized"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "npm.cmd install --no-audit --no-fund; exit $LASTEXITCODE"
 if errorlevel 1 (
   echo "[ERROR] webui npm install failed"
   pause
@@ -76,22 +96,90 @@ if errorlevel 1 (
 popd
 echo [OK] webui/dist ready.
 
+REM ---------- 4. Unified assemble: force rebuild Java jar/classes + refresh dist_input/webui ----------
+REM   Reuses build_tauri_app.ps1 (Tauri) assemble logic so BOTH packagers share ONE refreshed dist_input.
+echo [STEP] Assembling dist_input (recompile jar, refresh webui) ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\build_tauri_app.ps1" -AssembleOnly
+if errorlevel 1 (
+  echo [ERROR] assemble failed - check bempdiff\build_native.log
+  pause
+  exit /b 1
+)
+echo [OK] dist_input refreshed.
+
 REM ---------- 5. Package with electron-builder (NSIS) ----------
 echo [STEP] Running electron-builder (NSIS) ...
+REM Persist the NSIS disk-space-precheck patch in-repo: overwrite the node_modules template before
+REM packaging (idempotent, reproducible). Fixes false "insufficient disk space" from GetDiskFreeSpaceEx
+REM under NTFS quota / compressed folder / AV filter driver / virtualization redirect environments.
+echo [STEP] Applying NSIS disk-space precheck patch ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\patch_nsis_spacecheck.ps1"
+if errorlevel 1 (
+  echo "[ERROR] NSIS disk-space precheck patch failed"
+  pause
+  exit /b 1
+)
+REM electron-builder / NSIS self-extract and 7z compression write temp files into %TMP% (usually C:).
+REM If that drive is full, only a ~200KB stub setup.exe remains yet electron-builder reports success.
+REM Redirect TMP/TEMP to the release drive (D) during packaging, then restore them afterwards.
+REM In rare shells %TMP%/%TEMP% may be empty; on restore fall back to the system default so we
+REM never leave TMP=TEMP cleared for the rest of the script (e.g. the dist_verify step below).
+if not exist "..\release\.buildtmp" mkdir "..\release\.buildtmp"
+set "_orig_tmp=%TMP%"
+if "%_orig_tmp%"=="" set "_orig_tmp=%SystemRoot%\Temp"
+set "_orig_temp=%TEMP%"
+if "%_orig_temp%"=="" set "_orig_temp=%_orig_tmp%"
+set "TMP=%CD%\..\release\.buildtmp"
+set "TEMP=%CD%\..\release\.buildtmp"
 call npm run dist
 set "_dist_err=%errorlevel%"
-if "%_dist_err%"=="0" goto dist_ok
-REM electron-builder 退出非 0：可能是 sandbox safe-delete 清理中间文件失败（产物已生成）。
-REM 检查安装包是否实际产出，若已产出则视为成功（仅清理步骤被沙箱拦截，不影响安装包）。
-if exist "..\dist\BempDiff-*-setup.exe" (
-  echo [WARN] electron-builder exited %_dist_err% but installer was produced - sandbox safe-delete cleanup skipped, installer is valid
-  goto dist_ok
-)
-echo "[ERROR] electron-builder failed, see output above"
+set "TMP=%_orig_tmp%"
+set "TEMP=%_orig_temp%"
+if "%_dist_err%"=="0" goto dist_check_size
+REM electron-builder exit != 0 may be sandbox safe-delete failing to clean temp files.
+REM We do NOT blindly trust "installer exists": a disk-full can leave a truncated stub .exe.
+echo "[ERROR] electron-builder exited %_dist_err% (see output above)"
 pause
 exit /b 1
-:dist_ok
+:dist_check_size
+REM Guard against a truncated/stub installer: a disk-full can leave a ~200KB stub .exe
+REM that still "exists" yet is useless. The REAL version source is dev-shell/package.json
+REM (electron-builder reads it because build.directories.app = dev-shell). Match the exact
+REM version so we never mistake an OLD release for this build, and never rely on a time window
+REM (large app / slow disk can take longer than any fixed fresh-check threshold would allow).
+for /f "delims=" %%v in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Get-Content 'dev-shell\package.json' -Raw | ConvertFrom-Json; $p.version"') do set "_ver=%%v"
+if not defined _ver (
+  echo "[ERROR] Unable to read version from dev-shell\package.json"
+  pause
+  exit /b 1
+)
+REM Require the exact fresh installer (>= 50MB) named after $_ver.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path '..\release' ('BempDiff-{0}-setup.exe' -f $env:_ver); if (Test-Path $f) { $len = (Get-Item $f).Length; if ($len -ge 52428800) { Write-Output $f } else { Write-Output ('STUB:' + $f) } }" > "..\release\.last_valid_exe"
+set /p "_valid_exe=" < "..\release\.last_valid_exe"
+if not defined _valid_exe (
+  echo "[ERROR] No installer produced for version %_ver% - disk space issue or build failure. Check C:\ space."
+  pause
+  exit /b 1
+)
+if "%_valid_exe:~0,5%"=="STUB:" (
+  echo [ERROR] Installer for version %_ver% is a truncated stub ^(smaller than 50MB^) - disk full. Check C:\ space.
+  pause
+  exit /b 1
+)
+echo [OK] Valid installer produced: %_valid_exe%
+del /q "..\release\.last_valid_exe" >nul 2>&1
+goto dist_verify
+
+REM ---------- 6. Sanity: packaged jar hash must match the freshly assembled jar ----------
+:dist_verify
+echo [STEP] Verifying packaged jar hash == fresh dist_input jar ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%CD%\..\release\win-unpacked\resources\bempdiff\dist_input\app\bempdiff.jar'; $f='%CD%\dist_input\app\bempdiff.jar'; $hp=Get-FileHash $p -ErrorAction SilentlyContinue; $hf=Get-FileHash $f -ErrorAction SilentlyContinue; if($hp -and $hf -and $hp.Hash -eq $hf.Hash){ echo [OK] packaged jar matches fresh build } else { echo [ERROR] packaged jar is STALE/differs - do NOT distribute this installer; exit 1 }"
+if errorlevel 1 (
+  echo [ERROR] Stale jar detected in installer - build aborted
+  pause
+  exit /b 1
+)
 
 echo.
 echo [DONE] Build complete.
-echo   Installer: dist\BempDiff-*-setup.exe  (project root 18_comparePakage\dist)
+echo   Installer: release\BempDiff-*-setup.exe  (project root 18_comparePakage\release)

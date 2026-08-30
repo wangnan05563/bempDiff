@@ -29,19 +29,24 @@ const PRELOAD = path.join(__dirname, 'preload.js')
 const LOGO = path.join(__dirname, '..', 'bempdiff-logo.png')
 
 let children = [] // sidecar 子进程，退出时回收
+let backendPid = null // Java 后端主进程 PID（记录用于退出时 taskkill /T 树杀）
 
 // ---------- 资源根路径 ----------
 // 开发态：bempdiff/dev-shell -> 项目根（../../）
 // 生产态：electron-builder extraResources 落地在 process.resourcesPath 下
 function resolveRoot() {
-  const devRoot = path.resolve(__dirname, '..', '..')
-  if (fs.existsSync(path.join(devRoot, 'bempdiff'))) return devRoot
   const res = process.resourcesPath
+  // 生产态优先 resourcesPath：asar 环境下 __dirname 指向 .asar，基于它的 devRoot 会算错，
+  // 可能导致「后端 classpath 找不到 → 只弹启动页不弹主窗」。先落一份运行时探测到 shell.log 便于定位。
   if (res) {
-    if (fs.existsSync(path.join(res, 'bempdiff'))) return res
+    if (fs.existsSync(path.join(res, 'bempdiff', 'dist_input'))) {
+      return res
+    }
     if (fs.existsSync(path.join(res, 'dist_input'))) return res
   }
-  return devRoot
+  const devRoot = path.resolve(__dirname, '..', '..')
+  if (fs.existsSync(path.join(devRoot, 'bempdiff'))) return devRoot
+  return res || devRoot
 }
 
 function appendLog(file, ...args) {
@@ -49,6 +54,43 @@ function appendLog(file, ...args) {
     if (!fs.existsSync(LOGDIR)) fs.mkdirSync(LOGDIR, { recursive: true })
     fs.appendFileSync(file, args.join(' ') + '\n')
   } catch (_) {}
+}
+
+// 启动崩溃诊断：任何未捕获异常/未处理的 Promise 拒绝都落到 SHELL 日志，便于排查
+// electron 启动即静默退出的根因（主进程 JS 异常通常不会打印到无控制台的 Start-Process 场景）。
+const SHELL_LOG = path.join(LOGDIR, 'shell.log')
+const SHELL_LOG_MAX = 2 * 1024 * 1024 // 单文件上限 2MB，超出轮转（.old）防止长期膨胀 + 阻塞主进程
+function rotateAppend(file, text) {
+  try {
+    if (!fs.existsSync(LOGDIR)) fs.mkdirSync(LOGDIR, { recursive: true })
+    if (fs.existsSync(file)) {
+      const st = fs.statSync(file)
+      if (st.size > SHELL_LOG_MAX) {
+        try { fs.renameSync(file, file + '.old') } catch (_) { /* 重命名失败则继续追加 */ }
+      }
+    }
+    fs.appendFileSync(file, text)
+  } catch (_) { /* 日志失败绝不阻断主进程 */ }
+}
+process.on('uncaughtException', (e) => {
+  rotateAppend(SHELL_LOG, `[uncaughtException] ${e && e.stack ? e.stack : String(e)}\n`)
+})
+process.on('unhandledRejection', (r) => {
+  rotateAppend(SHELL_LOG, `[unhandledRejection] ${r && r.stack ? r.stack : String(r)}\n`)
+})
+
+// 打开追加写日志句柄。electron-builder 的 extraResources 不会打包 logs 目录
+// （安装目录下不存在 <install>/resources/bempdiff/logs），fs.openSync 会抛 ENOENT，
+// 进而让 async 启动流程里未捕获的异常把 `app.whenReady().then(...)` 整体中断——
+// result：createWindow 永不执行 → 双击无窗口"打不开"。这里先建目录，打开失败降级 'ignore'，
+// 保证日志问题绝不阻断后端/前端 sidecar 与窗口的启动。
+function openLog(file) {
+  try {
+    if (!fs.existsSync(LOGDIR)) fs.mkdirSync(LOGDIR, { recursive: true })
+    return fs.openSync(file, 'a')
+  } catch (_) {
+    return 'ignore'
+  }
 }
 
 // ---------- 端口探测 ----------
@@ -78,6 +120,38 @@ function killPort(port) {
     spawnSync('powershell', ['-NoProfile', '-Command',
       `$p=${port};try{$id=(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue|Select-Object -First 1).OwningProcess;if($id -ne $null){Stop-Process -Id $id -Force -ErrorAction SilentlyContinue;Write-Host ('[STOP] port '+$p+' PID='+$id)}}catch{}`],
       { stdio: 'ignore' })
+  } catch (_) {}
+}
+
+// 强杀指定 PID 的整个进程树（含子进程），根治 Windows 下 detached 子进程被 SIGTERM 无效而残留。
+// /F 强制 /T 连同子进程树 /PID 指定根。PID 无效时 taskkill 报错，静默忽略不阻断退出。
+function killTreePid(pid) {
+  if (!pid) return
+  try {
+    spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' })
+  } catch (_) {}
+}
+
+// 关闭时确定性清理会话内缓存：
+// Windows 对子进程 kill('SIGTERM') 是强杀，JVM 的 shutdown hook（cleanupTempFiles）不会执行，
+// 导致关闭后 .bempdiff/{runtime,exports} 与系统临时 bempdiff-* 残留。这里是 Node 侧兜底，
+// 须在后端侧边进程已终止、文件句柄释放后再删（stopSidecar 末尾调用）。
+// 保留 logs / ai_replay（供问题回溯）。删除尽力而为，不阻断退出。
+function cleanupCachesOnExit() {
+  try {
+    const home = require('os').homedir()
+    const base = path.join(home, '.bempdiff')
+    for (const sub of ['exports', 'runtime']) {
+      try { fs.rmSync(path.join(base, sub), { recursive: true, force: true }) } catch (_) {}
+    }
+    try {
+      const t = require('os').tmpdir()
+      for (const f of fs.readdirSync(t)) {
+        if (f.startsWith('bempdiff-')) {
+          try { fs.rmSync(path.join(t, f), { recursive: true, force: true }) } catch (_) {}
+        }
+      }
+    } catch (_) {}
   } catch (_) {}
 }
 
@@ -117,6 +191,21 @@ function findCfr() {
   return fs.existsSync(cfr) ? cfr : null
 }
 
+// 三方依赖 lib（POI 等，解析 .xls 用）：返回通配路径段，供 javac/java 的 classpath 展开。
+// 优先 dist_input/app/lib（构建脚本分发），回退 toolchain/lib（源码/按需编译场景）。
+function findPoiLib() {
+  for (const d of [
+    path.join(ROOT, 'bempdiff', 'dist_input', 'app', 'lib'),
+    path.join(ROOT, 'bempdiff', 'toolchain', 'lib')
+  ]) {
+    if (fs.existsSync(d)) {
+      const jars = fs.readdirSync(d).filter((f) => f.endsWith('.jar'))
+      if (jars.length) return path.join(d, '*')
+    }
+  }
+  return null
+}
+
 function findClasspath() {
   const base = path.join(ROOT, 'bempdiff', 'dist_input')
   const classes = path.join(base, 'classes')
@@ -149,8 +238,12 @@ function ensureClasspath() {
   walk(srcDir)
   if (!files.length) return null
   const cfr = findCfr()
+  const poi = findPoiLib()
+  const cpParts = []
+  if (cfr) cpParts.push(cfr)
+  if (poi) cpParts.push(poi)
   const args = ['-encoding', 'UTF-8', '-d', out]
-  if (cfr) args.push('-cp', cfr)
+  if (cpParts.length) args.push('-cp', cpParts.join(path.delimiter))
   args.push(...files)
   const r = spawnSync(javac, args, { cwd: ROOT, stdio: 'ignore' })
   if (r.status !== 0) return null
@@ -165,25 +258,41 @@ async function startBackend() {
   }
   const java = findJava()
   const cp = ensureClasspath()
+  // 启动诊断：记录资源根与 classpath 解析结果，便于在「只弹启动页、无主窗」时定位 ROOT/产物问题
+  rotateAppend(SHELL_LOG, `[boot] ROOT=${ROOT} resourcesPath=${process.resourcesPath} __dirname=${__dirname} java=${java} cp=${cp || 'NULL'}\n`)
   if (!cp) {
+    rotateAppend(SHELL_LOG, '[boot] NO_CLASSPATH: 后端产物缺失或现场编译失败，不会启动后端，主窗将无法加载\n')
     console.error('[BempDiff] No backend artifact and on-the-fly compile failed. Run the build script first.')
     return false
   }
   const cfr = findCfr()
-  const classPath = cfr ? cp + path.delimiter + cfr : cp
-  const args = ['-cp', classPath, 'com.bempdiff.Main', 'server', '--port', String(PORT)]
-  if (fs.existsSync(path.join(ROOT, 'bempdiff', 'webui', 'dist'))) {
-    args.push('--webroot', 'bempdiff/webui/dist')
-  }
-  const out = fs.openSync(BACKEND_LOG, 'a')
+  const poi = findPoiLib()
+  const cpParts = [cp]
+  if (cfr) cpParts.push(cfr)
+  if (poi) cpParts.push(poi)
+  const classPath = cpParts.join(path.delimiter)
+  // HotSpot 的 -Xmx 须连写（-Xmx2g）：Electron spawn 按数组传给 javaw 时若拆成 '-Xmx','2g' 两个 token，
+  // 会被解析为“-Xmx 缺值”而报 Invalid maximum heap size: -Xmx，导致后端启动即失败。
+  // 显式 2g：默认堆=物理内存 1/4，小内存机器上解包/反编译易 OOM；给 256MB 单条目 + CFR + 扁平化叶子留足余量。
+  const args = ['-Xmx2g', '-cp', classPath, 'com.bempdiff.Main', 'server', '--port', String(PORT)]
+  // webroot 与 Tauri 统一：优先 dist_input/webui（assemble 镜像的产物），回退 webui/dist（仅前端源码直接构建）。
+  // 打包态 extraResources 只包含 dist_input/webui，故这里按相对 ROOT 的多候选查找。
+  const webrootCandidates = [
+    path.join('bempdiff', 'dist_input', 'webui'),
+    path.join('bempdiff', 'webui', 'dist')
+  ]
+  const webroot = webrootCandidates.find((c) => fs.existsSync(path.join(ROOT, c)))
+  if (webroot) args.push('--webroot', webroot)
+  const out = openLog(BACKEND_LOG)
   const child = spawn(java, args, {
     cwd: ROOT,
     windowsHide: true, // 关键：不弹 Java 控制台窗口
     detached: true,
-    stdio: ['ignore', out, out], // 日志落盘，不污染任何控制台
+    stdio: ['ignore', out, out], // 日志落盘（打不开则 ignore），不污染任何控制台
     env: process.env
   })
   children.push(child)
+  backendPid = child.pid || null // 记录后端主进程 PID，退出时用 taskkill /T 强杀整棵进程树
   appendLog(BACKEND_LOG, '[sidecar] backend started PID', child.pid, '->', urlSafe(classPath))
   // 等后端真正在 PORT 监听后再返回（最多 30s），避免窗口在后端就绪前加载，
   // 导致首批 API 调用（如「连接测试」）出现 "Failed to fetch"。
@@ -208,7 +317,7 @@ async function startFrontend() {
     } catch (_) { useVite = false }
   }
   if (!useVite) return false
-  const out = fs.openSync(VITE_LOG, 'a')
+  const out = openLog(VITE_LOG)
   const child = spawn('cmd.exe',
     ['/c', `cd /d bempdiff\\webui && npm run dev -- --port ${DEV_PORT} --host 127.0.0.1`],
     {
@@ -237,6 +346,63 @@ function computeSize() {
   return { maximize: false, width: cw, height: ch }
 }
 
+// ---------- 启动图（splash）过渡 ----------
+// 后端 sidecar 启动可能耗时数秒——这段时间若直接黑屏等待，用户会觉得"没反应 / 打不开"。
+// 参照 Tauri 版启动图方案：先弹出一个只含品牌 logo + 进度条的轻量窗口，后端就绪、主窗口
+// ready-to-show 后再关闭 splash。splash.html 为自包含单页（相对路径引用 ./splash-logo.png），
+// 支持 loadFile 本地加载，无 Tauri 运行时自动降级为不确定进度动画，故 Electron 无需改其脚本。
+let splashWin = null
+let SPLASH_SIZE_W = 400
+let SPLASH_SIZE_H = 300
+
+function findSplashHtml() {
+  // 优先 dist_input/webui（assemble 镜像产物，生产打包只含这里），回退 webui/dist（源码直构）
+  for (const c of [
+    path.join(ROOT, 'bempdiff', 'dist_input', 'webui', 'splash.html'),
+    path.join(ROOT, 'bempdiff', 'webui', 'dist', 'splash.html')
+  ]) {
+    if (fs.existsSync(c)) return c
+  }
+  return null
+}
+
+function createSplashWindow() {
+  if (splashWin && !splashWin.isDestroyed()) return splashWin
+  const html = findSplashHtml()
+  // 轻量、无边框、不可调的纯展示窗口（避免用户拖动/缩放破坏启动页布局）
+  const win = new BrowserWindow({
+    width: SPLASH_SIZE_W,
+    height: SPLASH_SIZE_H,
+    frame: false,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    show: false,
+    skipTaskbar: true, // 不占任务栏——它只是过渡窗，避免闪一个多余图标
+    webPreferences: { contextIsolation: true, nodeIntegration: false }
+  })
+  splashWin = win
+  if (html) {
+    win.loadFile(html)
+    win.once('ready-to-show', () => { win.center(); win.show() })
+  } else {
+    // 无 splash 资源：回退为一个小占位窗，主窗就绪后同样关闭，保证流程一致
+    win.loadURL('about:blank')
+    win.once('ready-to-show', () => { win.center(); win.show() })
+  }
+  // 超时兜底：主窗 ready-to-show/did-fail-load 都未触发（如后端启动挂起）时，
+  // 强制收回无边框+skipTaskbar 的 splash，避免其成为无法关闭的僵尸窗。
+  // 正常路径会由 createWindow 更早关闭，此兜底仅兜异常场景。
+  setTimeout(() => closeSplash(), 8000)
+  return win
+}
+
+function closeSplash() {
+  if (splashWin && !splashWin.isDestroyed()) splashWin.close()
+  splashWin = null
+}
+
 function createWindow(url) {
   const size = computeSize()
   const win = new BrowserWindow({
@@ -259,6 +425,15 @@ function createWindow(url) {
   win.once('ready-to-show', () => {
     if (!size.maximize) win.center() // 在主屏工作区内居中
     win.show()
+    // 主窗口真正显示时才关闭启动图，避免 splash→主窗切换之间出现黑屏空档
+    closeSplash()
+  })
+
+  // 主窗体 URL 加载失败（如后端 500/地址不可达）时，同样收起 splash 并显示主窗的错误页，
+  // 避免 splash 无边框+skipTaskbar 无从关闭成为僵尸窗，强制用户只能任务管理器杀进程。
+  win.webContents.on('did-fail-load', () => {
+    closeSplash()
+    win.show()
   })
 
   // 开发便利：F12 打开 DevTools
@@ -280,16 +455,27 @@ function createWindow(url) {
     require('electron').shell.openExternal(u)
     return { action: 'deny' }
   })
+
+  return win // 返回主窗口句柄，供调用方可靠地赋给 mainWindow（避免 getAllWindows()[0] 误取 splash）
 }
 
 // ---------- 进程回收 ----------
 function stopSidecar() {
+  // 1) 强杀后端 javaw 整棵进程树（根因修复：Windows 下 SIGTERM 对 detached 子进程无效，
+  //    仅靠端口兜底又会因 javaw 异常不监听/权限问题漏杀，导致关闭 app 后 javaw 残留）。
+  killTreePid(backendPid)
+  backendPid = null
+  // 2) 其余 sidecar（vite 等）尽量 SIGTERM；Windows 兜底靠下方端口强杀
   for (const c of children) {
     try { c.kill('SIGTERM') } catch (_) { /* ignore */ }
   }
   children = []
+  // 3) 端口层面双保险：无论 javaw 进程名如何，都强杀 18765 / devport 占用者
   killPort(PORT)
   killPort(DEV_PORT)
+
+  // 4) 后端/端口均已终止、句柄释放后，确定性清理会话缓存（runtime/exports/系统临时 bempdiff-*）
+  cleanupCachesOnExit()
 }
 
 // 渲染进程文件/文件夹选择对话框桥
@@ -370,6 +556,9 @@ if (!gotLock) {
   })
 
   app.on('before-quit', stopSidecar)
+  // 双保险：will-quit 一定在退出前触发（before-quit 可能因窗口关闭竞态/被 preventDefault 跳过）。
+  // stopSidecar 内部 taskkill 是幂等的，重复调用无害。
+  app.on('will-quit', stopSidecar)
 
   app.whenReady().then(async () => {
     let initialUrl
@@ -380,6 +569,8 @@ if (!gotLock) {
       // 清理旧实例占用的端口，允许干净重启
       killPort(PORT)
       killPort(DEV_PORT)
+      // 先弹启动图，让后端 sidecar 启动的这数秒有可视反馈（否则黑屏等待）
+      createSplashWindow()
       const backendOk = await startBackend()
       const viteStarted = await startFrontend()
       // 后端启动快，优先用它开窗口（同源，API 直连）；若后端未就绪（罕见：产物缺失/ javaw 缺失）
@@ -397,8 +588,10 @@ if (!gotLock) {
       }
     }
 
-    createWindow(initialUrl)
-    mainWindow = BrowserWindow.getAllWindows()[0]
+    // 直接使用 createWindow 返回值作为主窗口句柄，而非 getAllWindows()[0]——
+    // splash 在 createWindow 之前创建，getAllWindows[0] 可能误取 splash（时序竞争），
+    // 导致 sendShellCompare/activate 作用到 splash 而非主窗，首次带文件参数自动比对丢失。
+    mainWindow = createWindow(initialUrl)
     // 冲刷排队参数（窗口就绪前收到的 second-instance）
     if (pendingShellPaths) { sendShellCompare(pendingShellPaths); pendingShellPaths = null }
     // 首次启动即带文件参数（双击 / 右键第一个文件 / 命令行）：自动开始比对

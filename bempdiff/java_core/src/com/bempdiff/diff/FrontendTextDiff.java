@@ -52,7 +52,8 @@ public final class FrontendTextDiff {
             } else {
                 diff = LineDiff.unified(oldText, newText, rules);
             }
-            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true);
+            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true,
+                    textHash(key, oldBytes, oldEntry), textHash(key, newBytes, newEntry));
         } catch (Exception e) {
             return DecompiledUnit.fail(key, e.getMessage());
         }
@@ -80,10 +81,26 @@ public final class FrontendTextDiff {
             } else {
                 diff = LineDiff.unified(oldText, newText, rules);
             }
-            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true);
+            // 归档内部文本条目无 entry 元数据，bytes 自身 + key 拼串作为指纹；缺失侧 0000000
+            String oldHash = (oldBytes != null)
+                    ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
+            String newHash = (newBytes != null)
+                    ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+            return new DecompiledUnit(key, oldText, newText, diff, engine, "", true, oldHash, newHash);
         } catch (Exception e) {
             return DecompiledUnit.fail(key, e.getMessage());
         }
+    }
+
+    /**
+     * 文本类短哈希：LogicalEntry 提供 key + size；mtime 不可用（LogicalEntry 不存 mtime，且 jar 内部
+     * mtime 通常为 0）。用 key+size 拼串保证两侧身份可区分、缺失侧统一回退 0000000。
+     */
+    private static String textHash(String key, byte[] bytes, LogicalEntry entry) {
+        if (bytes == null) return "0000000";
+        String path = entry != null ? entry.getKey() : key;
+        long size = entry != null ? entry.getSize() : bytes.length;
+        return com.bempdiff.util.ShortHash.ofPathAndSize(path, size);
     }
 
     /**

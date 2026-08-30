@@ -1,12 +1,14 @@
 <script setup>
 import { computed, ref, shallowRef, nextTick, onMounted, onUnmounted, onUpdated, watch } from 'vue'
-import { state, activeTab, closeTab, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL } from '../store'
+import { state, activeTab, closeTab, pinTab, closeOtherTabs, closeAllTabs, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL } from '../store'
+import { toast } from '../store'
 import { inlineDiff } from '../lib/diff_inline'
 import { alignLines } from '../lib/diff_align'
 import { foldContext } from '../lib/diff_fold'
 import { tokenInfoAt, TOKEN_META } from '../lib/token_classify'
 import { langOf, tokenizeLine } from '../lib/syntax_highlight'
 import PathBar from './PathBar.vue'
+import ContextMenu from './ContextMenu.vue'
 
 // STATUS_META / STATUS_LABEL 从 store.js 共享，避免与 DiffTree/InfoPanel 重复定义
 const STATUS_CLS = {
@@ -17,7 +19,10 @@ const STATUS_CLS = {
 }
 
 // ---------- 性能相关常量 ----------
-const EST_ROW_H = 21          // 行高估算值（真实高度由 measureVisible 回填）
+const EST_ROW_H = 21          // 行高估算值（真实高度由 measureVisible 回填）。
+                               // ⚠️ 必须与 CSS .urow/.urow.fold 的 height:21px 保持同步——
+                               // unified 虚拟滚动的 uniOffsets/uniTotal/scrollToUni/top 都按此值等差计算，
+                               // 改这里必须同步改 CSS，否则热力图点击跳转与行定位会漂移。
 const OVERSCAN = 12           // 视口上下额外渲染行数（滚动缓冲）
 const OVERSIZED_LINES = 60000  // 差异行数超此阈值 → 降级「简洁视图」（关行内高亮 + 默认折叠未变）
 
@@ -45,9 +50,14 @@ const foldWin = 3
 // 查看模式：diffOnly=false=全量内容（显示全部代码行，含未变更）；true=仅差异内容（未变更行全部折叠，只留差异行）。
 // 差异内容模式复用 foldContext(rows, true, 0)——win=0 时所有 ctx 行折叠成占位条，与报告「只写差异内容」语义一致。
 const diffOnly = ref(false)
-/** 折叠条点击：差异模式 → 切回全量内容；普通折叠 → 展开该段。 */
+
+// Git 风格 unified 视图（参考 IDE Git 插件对比模式）：左侧固定旧行号列 + 新行号列 + 后侧统一内容列，
+// 相同/差异分段展示、差异行标 +/-、字符级高亮，右侧热力差异地图辅助定位。
+// 默认关闭，保留既有 BCompare 式 split/wrap 视图可回退。
+const gitMode = ref(false)
+/** 折叠条点击：差异模式 → 切回全量内容（同时重置折叠）并展开；普通折叠 → 展开该段。 */
 function onFoldClick() {
-  if (diffOnly.value) diffOnly.value = false
+  if (diffOnly.value) { diffOnly.value = false; collapse = false }
   else collapse.value = false
 }
 /** 折叠条文案（区分两种折叠来源）。 */
@@ -105,6 +115,16 @@ const currentFc = computed(() => {
 const currentFcMeta = computed(() => fclassMeta(currentFc.value))
 function fcOf(t) { return (t.node && t.node.fileClass) || 'OTHER' }
 
+/**
+ * 哈希徽标圆点色：取 7 位短哈希的前 2 位当 hue，避免任意两个文件都同色（视觉上「同色 = 同文件」）。
+ * 缺失占位 0000000 统一给灰色，提示「该侧无内容」。
+ */
+function hashTone(h) {
+  if (!h || h === '0000000') return '#9ca3af'
+  const v = parseInt(h.substring(0, 2), 16) || 0
+  return 'hsl(' + (v * 3.6).toFixed(0) + ', 60%, 50%)'
+}
+
 // 语法高亮语言：扩展名优先（覆盖 .md/.py/.ts 等后端未细分类型），FileClass 兜底。
 // key 取当前激活文件（tab 快照 / 树节点 / 归档内部复合键）。
 const lang = computed(() => {
@@ -114,10 +134,11 @@ const lang = computed(() => {
     || ''
   return langOf(k, currentFc.value)
 })
-// diff gutter 图标：左栏标记 del/rep，右栏标记 add/rep（对应行内容所在侧）；ctx/空侧无图标
+// diff gutter 图标：还原为 +/- 号——左栏 del/rep 标「−」（旧侧删除），右栏 add/rep 标「+」（新侧新增）；
+// ctx/空侧无图标（gtIcon 返回空串即不渲染 <i>）。+/- 符号更贴合 git/BDiff 约定，一眼看出差值语义。
 function gtIcon(v, side) {
-  if (side === 'left') return v.type === 'del' ? 'bi-dash-lg' : (v.type === 'rep' ? 'bi-pencil' : '')
-  return v.type === 'add' ? 'bi-plus-lg' : (v.type === 'rep' ? 'bi-pencil' : '')
+  if (side === 'left') return v.type === 'del' || v.type === 'rep' ? 'bi-dash' : ''
+  return v.type === 'add' || v.type === 'rep' ? 'bi-plus' : ''
 }
 
 // ======================================================================
@@ -127,6 +148,13 @@ function gtIcon(v, side) {
 // ======================================================================
 const rawOld = computed(() => (dec.value && dec.value.oldSource) ? dec.value.oldSource : '')
 const rawNew = computed(() => (dec.value && dec.value.newSource) ? dec.value.newSource : '')
+// 删除型文件：旧侧有内容、新侧为空。全量模式下需让左右两侧都通读全量内容（见 foldedRows/getInline），
+// 而非默认 del 只落在左侧；切到「仅差异内容」仍按删除行（红）呈现，保留删除语义。
+const deletedFile = computed(() => {
+  const oldText = rawOld.value || ''
+  const newText = rawNew.value || ''
+  return oldText.trim().length > 0 && newText.trim().length === 0
+})
 const parseGen = ref(0)
 const parseStatus = ref('idle') // idle | done（对齐为同步计算，无需分块）
 const rows = shallowRef([])     // 对齐后的行（含原始下标 _i，供行内差异缓存与定位）
@@ -169,10 +197,27 @@ function startParse() {
 
 // 折叠未变（collapse）后用于渲染的行集合；fold 行无 _i。
 // diffOnly（仅差异内容）时 win=0 折叠全部未变行，只留差异行；否则按 collapse 折叠远离变化块的 ctx。
+// 边缘情况：全 ctx 文件无变化行，collapse 折叠会吞掉全部内容，此时强制不折叠。
 const foldedRows = computed(() => {
   if (!rows.value.length) return []
   if (diffOnly.value) return foldContext(rows.value, true, 0)
-  return foldContext(rows.value, collapse.value, foldWin)
+  // 删除型文件全量模式：整篇镜像为 ctx（左右两侧都显示全量内容，便于通读原文）；不参与折叠。
+  if (deletedFile.value) {
+    const out = new Array(rows.value.length)
+    let ln = 0
+    for (let k = 0; k < rows.value.length; k++) {
+      const r = rows.value[k]
+      if (r.type === 'del') {
+        ln++
+        out[k] = { type: 'ctx', _i: k, left: '' + ln, leftText: r.leftText, right: '' + ln, rightText: r.leftText, _chg: -1, lDel: true }
+      } else {
+        out[k] = { ...r, _chg: -1 }
+      }
+    }
+    return out
+  }
+  const hasChanges = rows.value.some(r => r.type === 'del' || r.type === 'add' || r.type === 'rep')
+  return foldContext(rows.value, collapse.value && hasChanges, foldWin)
 })
 
 // 差异行（rep/del/add）快速定位序列；i = 原始下标 _i。
@@ -205,9 +250,16 @@ function getInline(ri) {
   const r = rows.value[ri]
   if (!r) return { left: [{ m: false, s: '', toks: [] }], right: [{ m: false, s: '', toks: [] }] }
   const key = ri + '|' + lang.value
-  // 仅 rep 行需要行内差异；ctx/del/add 整行高亮即可（BCompare 同款：替换行才做字符级细分）
+  // 仅 rep 行需要行内差异；ctx/del/add 整行高亮即可（BCompare 同款：替换行才做字符级细分）。
+  // 注：即便单段也必须用数组包裹——模板按 v-for="s in leftSegs" 遍历，传入对象会被当成
+  // 4 个属性（m/kind/s/toks）展开，渲染出空 span，常见 ctx 文件全量内容"看不见"的根因。
   if (!inlineOn.value || r.type !== 'rep') {
-    return { left: withToks({ m: false, kind: '', s: r.leftText }), right: withToks({ m: false, kind: '', s: r.rightText }) }
+    // 删除型文件全量模式：左侧/右侧均普通镜像（整列不再刷红），差异由左行号红(lDel)提示。
+    if (deletedFile.value && !diffOnly.value && r.type === 'del') {
+      const seg = withToks({ m: false, kind: '', s: r.leftText })
+      return { left: [seg], right: [seg] }
+    }
+    return { left: [withToks({ m: false, kind: '', s: r.leftText })], right: [withToks({ m: false, kind: '', s: r.rightText })] }
   }
   if (inlineCache.has(key)) return inlineCache.get(key)
   const segs = inlineDiff(r.leftText || '', r.rightText || '', granularity.value)
@@ -217,7 +269,7 @@ function getInline(ri) {
   inlineCache.set(key, result)
   return result
 }
-watch([granularity, oversized, forceFull, rawOld, rawNew, lang], () => inlineCache.clear())
+watch([granularity, oversized, forceFull, rawOld, rawNew, lang], () => { inlineCache.clear(); uniInlineCache.clear() })
 
 // ======================================================================
 // 虚拟滚动：前缀和 offsets + 二分定位可见区间 + 动态行高回填
@@ -227,7 +279,11 @@ const viewportH = ref(600)
 const diffAreaRef = ref(null) // 换行模式滚动层
 const leftPaneRef = ref(null)
 const rightPaneRef = ref(null)
-const rowEls = new Map()      // abs(折叠行下标) -> DOM 元素，供实测行高
+const rowEls = new Map()      // abs(折叠行下标) -> {left,right,wrap}（split 双栏左右各一 dom；wrap 仅 wrap）
+// split 模式左右两栏各自渲染同 abs 的 .prow，若只存单个 el 会被后注册者覆盖，
+// 导致 measureVisible 只测到单侧高度：当另一侧内容换行成多行、offsetHeight 更大时，
+// offsets 预留高度不足，该行溢出压到下一行区域（视觉「行叠加」）。故按侧分桶存储。
+const rowSlots = (abs) => { if (!rowEls.has(abs)) rowEls.set(abs, { left: null, right: null, wrap: null }); return rowEls.get(abs) }
 
 const offsets = computed(() => {
   const hs = heights.value
@@ -274,6 +330,240 @@ const visibleRows = computed(() => {
   return res
 })
 
+// ======================================================================
+// Git 风格 unified 视图数据：把 foldedRows 拍平成「左旧行号|新行号|内容」的单列展示行。
+//  - ctx→1 行（两行号齐）；del→1 行（仅旧行号）；add→1 行（仅新行号）；
+//  - rep→拍成 2 行（『-』旧行、『+』新行），行内字符高亮由 uniInline 配对左右文本。
+// 独立于 split/wrap 的虚拟滚动：unified 固定行高（不换行，超长行横向滚动），
+// 因此 uniOffsets 是等差序列，热力差异地图按变化行分布等比映射，点击跳转对应行。
+// ======================================================================
+const uniAreaRef = ref(null)        // unified 滚动层
+const uniInlineCache = new Map()    // key = 源foldedRows下标|侧|粒度|语言
+/** 待拍平的折叠行下标 → 语义（'ne'=正常/'oid'=仅旧/'nid'=仅新/'mod'=修改对），供判断是否差异行 */
+const isUniChange = (t) => t === 'del' || t === 'add' || t === 'rep-del' || t === 'rep-add'
+
+const uniRows = computed(() => {
+  const fr = foldedRows.value
+  const out = []
+  for (let i = 0; i < fr.length; i++) {
+    const r = fr[i]
+    if (r.type === 'fold') { out.push({ type: 'fold', count: r.count, src: i }); continue }
+    switch (r.type) {
+      case 'ctx':
+        out.push({ type: 'ctx', oldLn: r.left, newLn: r.right, text: r.leftText || '', kind: 'c', src: i })
+        break
+      case 'del':
+        out.push({ type: 'del', oldLn: r.left, newLn: '', text: r.leftText || '', kind: 'd', src: i })
+        break
+      case 'add':
+        out.push({ type: 'add', oldLn: '', newLn: r.right, text: r.rightText || '', kind: 'a', src: i })
+        break
+      default: { // rep 修改对 → 两行
+        out.push({ type: 'rep-del', oldLn: r.left, newLn: '', text: r.leftText || '', src: i, kind: 'd', mod: true })
+        out.push({ type: 'rep-add', oldLn: '', newLn: r.right, text: r.rightText || '', src: i, kind: 'a', mod: true })
+      }
+    }
+  }
+  return out
+})
+
+/** 修改对行内差异：按侧取对应高亮片段（del 侧取 del 片段、add 侧取 add 片段），其余 eq 常规显示。 */
+const uniSegs = computed(() => {
+  const ur = uniRows.value
+  const out = new Array(ur.length)
+  for (let i = 0; i < ur.length; i++) {
+    const x = ur[i]
+    if (x.mod) {
+      const fr = foldedRows.value[x.src]
+      // 整行粒度(line)＝关闭行内差异细化：rep 修改对被拆成 rep-del/rep-add 两行，靠 .urow.rep-del/.rep-add
+      // 整行淡底色标识即可，不再细分 im-del/im-add。若不拦截，inlineDiff 会把 'line' 当字符级处理，
+      // 使「整行」档在 git 模式退化为字符粒度——这就是粒度按钮在 git 模式看不出变化的根因。
+      if (granularity.value === 'line') {
+        const text = x.kind === 'd' ? ((fr && fr.leftText) || '') : ((fr && fr.rightText) || '')
+        out[i] = [{ m: false, kind: '', s: text, toks: tokenizeLine(text, lang.value) }]
+        continue
+      }
+      // 缓存 key 追加两侧行文本指纹：折叠/仅差异切换会让同一 src 下标对应到不同内容的 rep 行
+      //（foldContext 的 win 变化会重排 foldedRows），不加指纹会命中旧片段导致高亮错配。
+      const lf = ((fr && fr.leftText) || '')
+      const rf = ((fr && fr.rightText) || '')
+      const key = x.src + '|' + x.kind + '|' + granularity.value + '|' + lang.value + '|' + lf + '\u0001' + rf
+      if (!uniInlineCache.has(key)) {
+        const segs = inlineDiff(lf, rf, granularity.value)
+        const half = x.kind === 'd'
+          ? segs.filter(s => s.t !== 'add').map(s => withToks({ m: s.t === 'del', kind: 'del', s: s.s }))
+          : segs.filter(s => s.t !== 'del').map(s => withToks({ m: s.t === 'add', kind: 'add', s: s.s }))
+        uniInlineCache.set(key, half)
+      }
+      out[i] = uniInlineCache.get(key)
+    } else if (x.type === 'ctx' || x.type === 'del' || x.type === 'add') {
+      out[i] = [withToks({ m: false, kind: '', s: x.text })]
+    } else {
+      out[i] = [] // fold 占位行：模板走 fold 分支不渲染 segs，给空数组保证 out[i] 恒为数组
+    }
+  }
+  return out
+})
+
+// unified 虚拟滚动：固定行高，偏移为等差 → 二分定位可见区间
+const uniOffsets = computed(() => {
+  const n = uniRows.value.length
+  const arr = new Array(n + 1)
+  arr[0] = 0
+  for (let i = 1; i <= n; i++) arr[i] = arr[i - 1] + EST_ROW_H
+  return arr
+})
+const uniTotal = computed(() => uniRows.value.length * EST_ROW_H)
+function uniFindStart(y) {
+  const o = uniOffsets.value
+  let lo = 0, hi = o.length - 1, ans = 0
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (o[mid] <= y) { ans = mid; lo = mid + 1 } else hi = mid - 1 }
+  return ans
+}
+function uniFindEnd(y) {
+  const o = uniOffsets.value
+  let lo = 0, hi = o.length - 1, ans = o.length - 1
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (o[mid] < y) lo = mid + 1; else { ans = mid; hi = mid - 1 } }
+  return ans
+}
+const uniStart = computed(() => Math.max(0, uniFindStart(scrollTop.value) - OVERSCAN))
+const uniEnd = computed(() => Math.min(uniRows.value.length, uniFindEnd(scrollTop.value + viewportH.value) + OVERSCAN))
+const uniVisible = computed(() => {
+  const ur = uniRows.value
+  const us = uniSegs.value
+  const res = []
+  for (let i = uniStart.value; i < uniEnd.value; i++) {
+    const x = ur[i]
+    res.push({ type: x.type, abs: i, oldLn: x.oldLn, newLn: x.newLn, text: x.text, count: x.count, segs: us[i], kind: x.kind, ri: uniAbsToRi(i) })
+  }
+  return res
+})
+function onUniScroll(e) {
+  scrollTop.value = e.target.scrollTop
+  viewportH.value = e.target.clientHeight
+}
+// 热力差异地图：合并连续变化行为一条色块，记录其在 unified 全高中的起止偏移
+const uniHeat = computed(() => {
+  const ur = uniRows.value
+  const off = uniOffsets.value
+  const bars = []
+  let i = 0
+  const n = ur.length
+  while (i < n) {
+    if (!isUniChange(ur[i].type)) { i++; continue }
+    let j = i
+    let hasDel = false, hasAdd = false
+    while (j < n && isUniChange(ur[j].type)) {
+      if (ur[j].kind === 'd') hasDel = true
+      else if (ur[j].kind === 'a') hasAdd = true
+      j++
+    }
+    bars.push({ top: off[i], bottom: off[j], h: off[j] - off[i], start: i, endAbs: j, del: hasDel, add: hasAdd })
+    i = j
+  }
+  return bars
+})
+function scrollToUni(abs) {
+  const el = uniAreaRef.value
+  if (!el) return
+  el.scrollTo({ top: Math.max(0, (uniOffsets.value[abs] || 0) - el.clientHeight / 2 + EST_ROW_H / 2), behavior: 'smooth' })
+}
+
+// 热力地图点击后高亮的目标拍平行（响应式，保证 .heat 类随滚动/重渲染稳定呈现）
+const centerUniAbs = ref(-1)
+function onUniHeatClick(bar) {
+  flashRi.value = -1
+  scrollToUni(bar.start)
+  centerUniAbs.value = bar.start
+}
+// 双栏(split/wrap)热力差异地图：与 unified 同款——合并连续变更行(DEL/ADD/REP)为色块，
+// 按全高比例映射到右缘。foldedRows 的 offsets 为长度 n+1（末项=总高），块边界直接取 off[i]/off[j]。
+const splitHeat = computed(() => {
+  const fr = foldedRows.value
+  if (!fr.length) return []
+  const off = offsets.value
+  const bars = []
+  let i = 0, n = fr.length
+  while (i < n) {
+    const t = fr[i].type
+    if (t !== 'del' && t !== 'add' && t !== 'rep') { i++; continue }
+    let j = i, hasDel = false, hasAdd = false
+    while (j < n) {
+      const c = fr[j].type
+      if (c !== 'del' && c !== 'add' && c !== 'rep') break
+      if (c === 'add') hasAdd = true
+      else if (c === 'del') hasDel = true
+      else { hasDel = true; hasAdd = true } // rep 修改对同时含删除侧+新增侧，块标混合（橙）
+      j++
+    }
+    const top = off[i] || 0
+    const bottom = off[j] || top
+    bars.push({ top, bottom, h: bottom - top, start: i, endAbs: j, del: hasDel, add: hasAdd })
+    i = j
+  }
+  return bars
+})
+function onSplitHeatClick(bar) {
+  flashRi.value = -1
+  scrollToSplit(bar.start)
+}
+function scrollToSplit(abs) {
+  // wrap 换行模式是单滚动容器(diffAreaRef)，split 分栏是左右 pane——按模式选滚动目标
+  const target = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+  if (!target) return
+  const top = offsets.value[abs] || 0
+  const h = heights.value[abs] || EST_ROW_H
+  target.scrollTo({ top: Math.max(0, top - viewportH.value / 2 + h / 2), behavior: 'smooth' })
+  // split 双栏再同步右栏，保持视野一致；wrap 单容器无此操作
+  if (!wrap.value && leftPaneRef.value && rightPaneRef.value) rightPaneRef.value.scrollTop = leftPaneRef.value.scrollTop
+}
+/**
+ * unified 拍平行 abs → 原始 rows 下标（_i）。
+ * 映射链：uniRows[abs].src（foldedRows 下标）→ foldedRows[src]._i（rows 下标）。
+ * fold 行无 _i（无可定位的源行）→ 返回 -1。
+ * 供状态栏（statusInfo 用 rows[ri]）与光标定位复用，避免把拍平行号误当原始下标。
+ */
+function uniAbsToRi(abs) {
+  const ur = uniRows.value[abs]
+  if (!ur || ur.type === 'fold') return -1
+  const fr = foldedRows.value[ur.src]
+  return (fr && typeof fr._i === 'number') ? fr._i : -1
+}
+
+// unified 单列：rep-add 展示的是新侧内容（右列语义），其余行统一按旧侧取文本/行号
+function uniSideOf(v) { return v.type === 'rep-add' ? 'right' : 'left' }
+
+function onUniMove(e, v) {
+  if (v.type === 'fold') return
+  const p = locateCell(e, v)
+  if (!p) return
+  const ri = uniAbsToRi(v.abs)
+  if (ri < 0) return
+  const side = uniSideOf(v)
+  const last = hoverPos.value
+  if (last && last.ri === ri && last.side === side && last.col0 === p.col0) return
+  hoverPos.value = { ri, side, col0: p.col0 }
+}
+function onUniClick(e, v) {
+  if (v.type === 'fold') return
+  const p = locateCell(e, v)
+  if (!p) return
+  const ri = uniAbsToRi(v.abs)
+  if (ri < 0) return
+  const side = uniSideOf(v)
+  caretPos.value = { ri, side, col0: p.col0 }
+  hoverPos.value = { ri, side, col0: p.col0 }
+}
+// 切换视图/换行/Git 模式时：统一滚动位置 + 清空光标/悬停状态（git 模式下 ri 语义与 split 不同，
+// 残留旧光标会让状态栏显示过期坐标），再量取滚动容器高度。
+watch([gitMode, wrap], () => {
+  scrollTop.value = 0
+  caretPos.value = null
+  hoverPos.value = null
+  curIdx.value = -1
+  nextTick(() => { if (uniAreaRef.value) viewportH.value = uniAreaRef.value.clientHeight })
+})
+
 const heights = ref([])
 // 折叠行集合变化（分块解析推进 / 折叠切换）时，保留已测得的高度、新增行用估算值。
 watch(foldedRows, (fr) => {
@@ -282,15 +572,21 @@ watch(foldedRows, (fr) => {
   heights.value = h
 }, { flush: 'sync' })
 
-function setRowRef(abs, el) {
-  if (el) rowEls.set(abs, el)
-  else rowEls.delete(abs)
+function setRowRef(abs, el, side) {
+  // el 为空（dom 卸载）时仅清对应侧，不影响其余侧；split 双栏据此互补测量
+  const s = rowSlots(abs)
+  if (el) s[side] = el
+  else s[side] = null
 }
 function measureVisible() {
   const hs = heights.value.slice()
   let changed = false
-  rowEls.forEach((el, abs) => {
-    const h = el.offsetHeight
+  rowEls.forEach((s, abs) => {
+    // 行高取两侧实际高度最大值：offsets 按此预留，才能容纳换行成多行的那一侧，杜绝"行叠加"
+    const lh = s.left ? s.left.offsetHeight : 0
+    const rh = s.right ? s.right.offsetHeight : 0
+    const wh = s.wrap ? s.wrap.offsetHeight : 0
+    const h = Math.max(lh, rh, wh)
     if (h > 0 && Math.abs((hs[abs] || EST_ROW_H) - h) > 0.5) { hs[abs] = h; changed = true }
   })
   if (changed) heights.value = hs
@@ -351,11 +647,123 @@ function onKey(e) {
   }
 }
 
-// 中键关闭 tab；左键点 tab 文字切激活，点 x 关闭。
+// 中键关闭 tab；左键点 tab 文字切激活，点 x 关闭；右键打开 tab 上下文菜单。
 function onTabClick(key) { state.activeKey = key }
 function onTabClose(e, key) { e.stopPropagation(); closeTab(key) }
 function onTabMouseDown(e, key) {
   if (e.button === 1) { e.preventDefault(); closeTab(key) } // 中键关闭
+}
+
+// ===================== tab 标题右键菜单（BCompare 风格） =====================
+// 桌面壳能力检测：复制到剪贴板 / 系统级「在资源管理器中显示」仅在 Electron/Tauri 可用。
+const tabCtx = ref({ visible: false, x: 0, y: 0, key: null })
+const tabCtxNode = ref(null) // 当前右键的 tab 及其 node（用于路径解析）
+const hasShell = computed(() => !!(typeof window !== 'undefined' && window.bempdiff &&
+  (typeof window.bempdiff.openPath === 'function' || typeof window.bempdiff.showInFolder === 'function')))
+
+function openTabCtx(e, t) {
+  e.preventDefault(); e.stopPropagation()
+  tabCtxNode.value = t
+  tabCtx.value = { visible: true, x: e.clientX, y: e.clientY, key: t.key }
+}
+function closeTabCtx() { tabCtx.value = { ...tabCtx.value, visible: false } }
+
+// 右键菜单项（BCompare 风格、含定界分组）：
+//   关闭类 / 路径复制（含资源管理器，仅桌面壳+有磁盘时可用）/ 固定。
+const tabMenuItems = computed(() => {
+  const t = tabCtxNode.value
+  if (!t) return []
+  const info = t ? tabDiskInfo(t) : null
+  const hasDisk = !!(info && info.hasDisk)
+  const pinned = !!t.pinned
+  const others = state.tabs.length > 1
+  const anyPinnedOther = state.tabs.some(x => x.pinned && x.key !== t.key)
+  return [
+    { id: 'close',       group: 'close', label: '关闭',              icon: 'bi-x-lg',   disabled: false, title: '关闭当前对比页' },
+    { id: 'closeOthers', group: 'close', label: '关闭其他',          icon: 'bi-collection', disabled: !others, title: !others ? '仅一个对比页，无可关闭的其它页' : '关闭除当前与已固定外的其它对比页' },
+    { id: 'closeAll',    group: 'close', label: '全部关闭',          icon: 'bi-x-square', disabled: !others && !anyPinnedOther, title: anyPinnedOther ? '已固定的对比页将被保留' : '关闭所有对比页（已固定的保留）' },
+    { id: 'sep',         group: 'copy',  divider: true },
+    { id: 'copyPath',    group: 'copy',  label: '复制路径',          icon: 'bi-link-45deg', disabled: false, title: hasDisk ? '复制文件绝对路径' : '复制包内相对路径（无磁盘路径）' },
+    { id: 'copyRelPath', group: 'copy',  label: '复制相对路径',      icon: 'bi-subtract', disabled: false, title: '复制文件相对路径' },
+    { id: 'reveal',      group: 'copy',  label: '在资源管理器中显示', icon: 'bi-folder2-open', disabled: !hasDisk || !hasShell.value, title: !hasShell.value ? '浏览器模式无法调用资源管理器，请使用桌面壳' : (!hasDisk ? '包内条目无磁盘路径，无法在资源管理器中定位' : '在系统文件管理器中定位该文件') },
+    { id: 'sep2',        group: 'pin',   divider: true },
+    { id: 'pin',         group: 'pin',   label: pinned ? '取消固定' : '固定', icon: pinned ? 'bi-pin-angle' : 'bi-pin', disabled: false, title: pinned ? '取消固定，该页将可被关闭/排序' : '固定该对比页，置顶且在关闭类操作中保留' }
+  ]
+})
+
+function onTabMenuSelect(item) {
+  const t = tabCtxNode.value
+  if (!item || !t) return
+  switch (item.id) {
+    case 'close': closeTab(t.key); return
+    case 'closeOthers': closeOtherTabs(t.key); return
+    case 'closeAll': closeAllTabs(); return
+    case 'copyPath': onTabCopyPath(); return
+    case 'copyRelPath': onTabCopyRelPath(); return
+    case 'reveal': onTabRevealInFolder(); return
+    case 'pin': pinTab(t.key); return
+  }
+}
+
+// 复制文本到剪贴板（clipboard API，非安全上下文降级 execCommand）。
+async function copyTabText(text, tip) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    toast('success', tip + (text && text.length > 60 ? '：' + text.slice(0, 60) + '…' : ''))
+  } catch (_) {
+    toast('danger', '复制失败（剪贴板不可用）')
+  }
+  closeTabCtx()
+}
+
+// 当前右键 tab 的路径信息：
+//  - folder 模式：node 持磁盘绝对路径 absPath（按差异状态选左/右根）+ 相对根 relPath，可复制绝对/相对路径与资源管理器定位；
+//  - 包内条目（ARCHIVE-INNER，node 为 null）或包比对模式：无磁盘路径，仅包内相对 key（复制路径按包内 key，资源管理器项禁用）。
+function tabDiskInfo(t) {
+  const folderMode = !!state.job && state.job.mode === 'folder'
+  const node = t && t.node
+  if (!node) return { absPath: '', relPath: (t && t.key) || '', hasDisk: false }
+  const abs = node.absPath || ''
+  return {
+    absPath: abs,
+    relPath: node.relPath || node.key || '',
+    hasDisk: folderMode && !!abs
+  }
+}
+
+async function onTabCopyPath() {
+  const t = tabCtxNode.value
+  if (!t) return
+  const info = tabDiskInfo(t)
+  if (info.hasDisk) await copyTabText(info.absPath, '已复制绝对路径')
+  else await copyTabText(info.relPath || t.key, '已复制包内路径')
+}
+async function onTabCopyRelPath() {
+  const t = tabCtxNode.value
+  if (!t) return
+  const info = tabDiskInfo(t)
+  await copyTabText(info.relPath || t.key, '已复制相对路径')
+}
+async function onTabRevealInFolder() {
+  const t = tabCtxNode.value
+  if (!t) return
+  const info = tabDiskInfo(t)
+  if (!info.hasDisk) { toast('warning', '包内条目无磁盘路径，无法在资源管理器中显示'); closeTabCtx(); return }
+  try {
+    const r = await window.bempdiff.showInFolder(info.absPath)
+    if (r && typeof r === 'object' && !r.ok) toast('danger', r.message || '资源管理器显示失败')
+    else toast('info', '已在资源管理器中定位')
+  } catch (e) { toast('danger', '资源管理器显示失败：' + e.message) }
+  closeTabCtx()
 }
 
 // ---------- 差异行快速定位（上一处 / 下一处） ----------
@@ -384,6 +792,14 @@ function locate(idx) {
     if (di < 0) {
       // 目标行被折叠收起：展开未变后再定位
       if (collapse.value) { collapse.value = false; nextTick(() => locate(idx)); return }
+      return
+    }
+    // Git 风格 unified 视图：目标行在 uniRows 中的位置 = foldedRows[di] 对应的拍平行起点
+    // （rep 拆成两行，取第一个匹配的拍平行即可）。滚动走 uniAreaRef，与 split/wrap 无关。
+    if (gitMode.value) {
+      const uAbs = uniRows.value.findIndex(u => u.src === di)
+      if (uAbs < 0) return
+      scrollToUni(uAbs)
       return
     }
     const top = offsets.value[di] || 0
@@ -511,18 +927,21 @@ watch([rawOld, rawNew], () => {
 let ro = null
 function setupObserver() {
   if (ro) { ro.disconnect(); ro = null }
-  const el = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+  const el = gitMode.value ? uniAreaRef.value : (wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value))
   if (!el) return
   viewportH.value = el.clientHeight || viewportH.value
   ro = new ResizeObserver(() => {
-    const c = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+    const c = gitMode.value ? uniAreaRef.value : (wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value))
     if (c) viewportH.value = c.clientHeight
-    // 宽度变化会改变行高 → 重置为估算，下一次 onUpdated 实测回填
-    heights.value = new Array(foldedRows.value.length).fill(EST_ROW_H)
+    // unified 固定行高，heights 仅 split/wrap 用——git 模式跳过，避免多余重算
+    if (!gitMode.value) {
+      // 宽度变化会改变行高 → 重置为估算，下一次 onUpdated 实测回填
+      heights.value = new Array(foldedRows.value.length).fill(EST_ROW_H)
+    }
   })
   ro.observe(el)
 }
-watch(wrap, () => { nextTick(setupObserver) })
+watch([wrap, gitMode], () => { nextTick(setupObserver) })
 
 onMounted(() => {
   window.addEventListener('keydown', onKey)
@@ -556,7 +975,9 @@ onUpdated(() => measureVisible())
                     role="tab"
                     :aria-selected="state.activeKey === t.key"
                     @click="onTabClick(t.key)"
-                    @mousedown="onTabMouseDown($event, t.key)">
+                    @mousedown="onTabMouseDown($event, t.key)"
+                    @contextmenu="openTabCtx($event, t)">
+              <i v-if="t.pinned" class="bi bi-pin-angle-fill" style="font-size:.6rem" :style="{color: 'var(--bs-secondary-color)'}" title="已固定（关闭类操作保留）"></i>
               <i class="bi bi-circle-fill" style="font-size:.45rem" :style="{color: statusDot(t.node && t.node.status)}"></i>
               <i class="bi dvt-fc-icon" :class="fclassMeta(fcOf(t)).icon"
                  :style="{color: state.activeKey === t.key ? fclassMeta(fcOf(t)).accent : 'var(--bs-secondary-color)'}"
@@ -575,6 +996,10 @@ onUpdated(() => measureVisible())
       </ul>
     </div>
 
+    <!-- tab 标题右键菜单（复用通用 ContextMenu：BCompare 风格，含分组分隔与禁用理由） -->
+    <ContextMenu :visible="tabCtx.visible" :x="tabCtx.x" :y="tabCtx.y" :items="tabMenuItems"
+                 @select="onTabMenuSelect" @close="closeTabCtx" />
+
     <div class="filebar">
       <i class="bi filebar-icon" :class="currentFcMeta.icon"
          :style="{color: currentFcMeta.accent}"
@@ -589,7 +1014,22 @@ onUpdated(() => measureVisible())
             :title="'文件类型：' + currentFcMeta.label">
         <i class="bi" :class="currentFcMeta.icon"></i>{{ currentFcMeta.label }}
       </span>
-      <span class="ms-auto text-secondary me-2" style="font-size:.75rem" title="当前文件使用的反编译引擎（默认 CFR）">
+      <!-- Git 短哈希徽标：左侧旧版（7 位 SHA-1 截断，缺失则 0000000 占位），右侧新版；
+           类比 `git rev-parse --short=7`，两侧相同时合并为单色（说明此文件未变）。
+           视觉上参照 IDE Git 插件：用等宽字体 + 淡底色 + 小徽标，方便扫读。 -->
+      <span class="hash-badge" v-if="dec && (dec.oldHash || dec.newHash)" :title="'Git 风格 7 位短哈希（基于文件字节 SHA-1）· 旧侧 ' + (dec.oldHash || '0000000') + ' / 新侧 ' + (dec.newHash || '0000000')">
+        <span class="hash-side hash-old" :class="{ 'hash-empty': dec.oldHash === '0000000' }">
+          <i class="bi bi-circle-fill hash-dot" :style="{ color: hashTone(dec.oldHash) }"></i>{{ dec.oldHash || '0000000' }}
+        </span>
+        <i class="bi bi-arrow-right hash-arrow"></i>
+        <span class="hash-side hash-new" :class="{ 'hash-empty': dec.newHash === '0000000' }">
+          <i class="bi bi-circle-fill hash-dot" :style="{ color: hashTone(dec.newHash) }"></i>{{ dec.newHash || '0000000' }}
+        </span>
+      </span>
+      <!-- 右侧信息+操作区：包成整块 flex，窄屏触发 filebar 换行时整块跳到下一行并靠右，
+           避免统计/按钮在第二行散落在左边、层级杂乱。 -->
+      <div class="filebar-actions">
+      <span class="text-secondary" style="font-size:.75rem" title="当前文件使用的反编译引擎（默认 CFR）">
         反编译引擎：{{ dec ? dec.engine : '—' }}
       </span>
       <!-- 差异统计（BCompare 风格）：+新增 / −删除 / ~修改 / =未变 -->
@@ -612,6 +1052,11 @@ onUpdated(() => measureVisible())
         <i class="bi" :class="wrap ? 'bi-text-wrap' : 'bi-text-paragraph'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
+              @click="gitMode = !gitMode"
+              :title="gitMode ? '当前：Git 风格统一对比（左行号 + 后统一内容 + 热力地图）· 点击切换为双栏' : '切换为 Git 风格统一对比（左行号列固定，插除/新增分段展示 + 右侧热力差异地图）'">
+        <i class="bi" :class="gitMode ? 'bi-file-diff' : 'bi-columns-gap'"></i>
+      </button>
+      <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
               @click="cycleGranularity" :title="'行内差异粒度：' + granularityLabel + '（点击在 整行 / 词级 / 字符级 间循环切换）'">
         <i class="bi" :class="granularityIcon"></i>
       </button>
@@ -621,21 +1066,15 @@ onUpdated(() => measureVisible())
               :title="collapse ? '已折叠未变更行，点击展开全部' : '折叠远离变化块的未变更行（对标 Beyond Compare）'">
         <i class="bi" :class="collapse ? 'bi-arrows-expand' : 'bi-arrows-collapse'"></i>
       </button>
-      <!-- 查看模式：全量内容（含未变更）/ 仅差异内容（未变更行全部折叠） -->
-      <div class="btn-group btn-group-sm ms-1" role="group" aria-label="查看模式">
-        <button class="btn py-0 px-2" style="font-size:1.05rem"
-                :class="diffOnly ? 'btn-outline-secondary' : 'btn-primary'"
-                @click="diffOnly = false"
-                :title="diffOnly ? '全量内容：显示全部代码行（含未变更）' : '当前：全量内容（显示全部代码行，含未变更）'">
-          <i class="bi bi-file-earmark-text"></i>
-        </button>
-        <button class="btn py-0 px-2" style="font-size:1.05rem"
-                :class="diffOnly ? 'btn-primary' : 'btn-outline-secondary'"
-                @click="diffOnly = true"
-                :title="diffOnly ? '当前：仅差异内容（隐藏未变更行，只显示变更行）' : '仅差异内容：只显示变更行（隐藏未变更内容）'">
-          <i class="bi bi-diff"></i>
-        </button>
-      </div>
+      <!-- 查看模式：全量内容 / 仅差异内容 合并为单个动画图标，点击切换（图标随状态翻转淡入） -->
+      <button class="btn btn-sm dvt-mode-btn ms-1 py-0 px-2" style="font-size:1.05rem"
+              :class="diffOnly ? 'btn-primary' : 'btn-outline-secondary'"
+              @click="diffOnly = !diffOnly; collapse = false"
+              :title="diffOnly ? '当前：仅差异内容（隐藏未变更行）· 点击切换为全量内容' : '当前：全量内容（显示全部代码行，含未变更）· 点击切换为仅差异内容'">
+        <i :key="diffOnly ? 'diff' : 'full'"
+           class="bi dvt-mode-ic"
+           :class="diffOnly ? 'bi-distribute-vertical' : 'bi-file-earmark-text'"></i>
+      </button>
       <!-- 差异行快速定位：上一处 / 下一处（仅 add/del 算差异行） -->
       <div class="btn-group btn-group-sm ms-1" role="group" aria-label="差异行定位">
         <button class="btn btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
@@ -650,10 +1089,11 @@ onUpdated(() => measureVisible())
           <i class="bi bi-chevron-down"></i>
         </button>
       </div>
+      </div>
     </div>
 
     <!-- 主体：反编译完成且差异解析完成 → 虚拟滚动渲染 -->
-    <div class="diff-area" v-if="(node || dec) && dec.ok && parseStatus === 'done'">
+    <div class="diff-area" v-if="(node || dec) && dec && dec.ok && parseStatus === 'done'">
       <!-- 超大文件降级横幅：简洁视图提示 + 手动展开完整差异 -->
       <div class="oversized-banner" v-if="oversized && !forceFull">
         <i class="bi bi-speedometer2"></i>
@@ -665,12 +1105,43 @@ onUpdated(() => measureVisible())
         <button class="btn btn-sm btn-outline-primary py-0 px-2 ms-2" @click="forceFull = true; collapse = false">展开完整差异（可能卡顿）</button>
       </div>
 
+      <!-- Git 风格 unified 视图：左「旧行号|新行号」列固定 + 后统一内容列（删/改/增段按 -/+ 区分），右侧热力差异地图 -->
+      <div class="diff-unified" v-if="gitMode">
+        <div class="uni-body" ref="uniAreaRef" @scroll="onUniScroll">
+          <div class="uni-grid" :style="{ height: uniTotal + 'px' }">
+            <div v-for="(v, k) in uniVisible" :key="'u' + v.abs"
+                 class="urow" :class="[v.type === 'fold' ? 'fold' : v.type, { heat: v.abs === centerUniAbs, current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+                 @mousemove="onUniMove($event, v)" @click="onUniClick($event, v)"
+                 :style="{ top: (v.abs * EST_ROW_H) + 'px' }">
+              <template v-if="v.type === 'fold'">
+                <span class="u-fold" role="button" tabindex="0" :title="foldLabel(v)" @click="onFoldClick" @keydown.enter="onFoldClick">{{ foldLabel(v) }}</span>
+              </template>
+              <template v-else>
+                <span class="u-sign" :class="'u-sign-' + v.kind">{{ v.kind === 'd' ? '−' : (v.kind === 'a' ? '+' : ' ') }}</span>
+                <span class="u-ln-old" :class="{ 'u-ln-d': v.oldLn && v.kind === 'd' }">{{ v.oldLn }}</span>
+                <span class="u-ln-new" :class="{ 'u-ln-a': v.newLn && v.kind === 'a' }">{{ v.newLn }}</span>
+                <span class="u-code" data-side="uni"><span v-for="(s, si) in v.segs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span></span>
+              </template>
+            </div>
+          </div>
+        </div>
+        <!-- 右侧热力差异地图：等比映射差异块位置，点击跳转定位（无内容/无差异时隐藏） -->
+        <div class="uni-heat" v-if="uniTotal > 0 && uniHeat.length" :title="'全局差异地图：深色块=删除、浅色=新增，点击跳转到对应位置'">
+          <div v-for="(b, bi) in uniHeat" :key="'hb' + bi" class="uni-heat-bar"
+               :class="{ 'uni-heat-del': b.del, 'uni-heat-add': b.add }"
+               :style="{ top: (b.top / uniTotal * 100) + '%', height: (isNaN(b.h / uniTotal * 100) ? 1 : b.h / uniTotal * 100) + '%' }"
+               :title="'差异区域 ' + (b.start + 1) + '..' + (b.endAbs)"
+               @click="onUniHeatClick(b)"></div>
+        </div>
+      </div>
+
       <!-- 换行模式：单容器 4 列网格（整行背景 + 逐行对齐，长行自动换行） -->
-      <div class="diff-scroll" ref="diffAreaRef" v-if="wrap" @scroll="onDiffScroll">
-        <div class="diff-grid" :style="{ height: totalHeight + 'px' }">
+      <div class="diff-flex" v-else-if="wrap">
+        <div class="diff-scroll" ref="diffAreaRef" @scroll="onDiffScroll">
+          <div class="diff-grid" :style="{ height: totalHeight + 'px' }">
           <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
                class="row" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
-               :data-ri="v.ri" :ref="el => setRowRef(v.abs, el)"
+               :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'wrap')"
                @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
                :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
             <template v-if="v.type === 'fold'">
@@ -690,15 +1161,25 @@ onUpdated(() => measureVisible())
         </div>
       </div>
 
+        <!-- 换行模式右侧热力差异地图：等比映射差异块位置，点击跳转定位（与双栏一致） -->
+        <div class="uni-heat" v-if="splitHeat.length" :title="'全局差异地图：深色块=删除、浅色=新增，点击跳转到对应位置'">
+          <div v-for="(b, bi) in splitHeat" :key="'wb' + bi" class="uni-heat-bar"
+               :class="{ 'uni-heat-del': b.del, 'uni-heat-add': b.add }"
+               :style="{ top: (b.top / totalHeight * 100) + '%', height: (isNaN(b.h / totalHeight * 100) ? 1 : b.h / totalHeight * 100) + '%' }"
+               :title="'差异区域 ' + (b.start + 1) + '..' + (b.endAbs)"
+               @click="onSplitHeatClick(b)"></div>
+        </div>
+      </div>
+
       <!-- 不换行模式：左右分栏各占一半宽度 + 中间分隔条；两侧底部横向滚动条同步左右滑动 -->
       <div class="diff-split" v-else>
         <div class="diff-pane" ref="leftPaneRef" @scroll="onPaneScroll('left')">
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
             <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
                  class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
-                 :data-ri="v.ri" :ref="el => setRowRef(v.abs, el)"
+                 :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'left')"
                  @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
-                 :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
+                 :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0', minHeight: (heights[v.abs] || EST_ROW_H) + 'px' }">
               <template v-if="v.type === 'fold'">
                 <span class="code flex-1 fold-ph" style="grid-column:1/-1" role="button" tabindex="0"
                       :title="foldLabel(v)"
@@ -706,7 +1187,7 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
-                <span class="ln">{{ v.left }}</span>
+                <span class="ln" :class="{ 'ln-del': v.lDel }">{{ v.left }}</span>
                 <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -719,9 +1200,9 @@ onUpdated(() => measureVisible())
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
             <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
                  class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
-                 :data-ri="v.ri" :ref="el => setRowRef(v.abs, el)"
+                 :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'right')"
                  @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
-                 :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
+                 :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0', minHeight: (heights[v.abs] || EST_ROW_H) + 'px' }">
               <template v-if="v.type === 'fold'">
                 <span class="code flex-1 fold-ph" style="grid-column:1/-1" role="button" tabindex="0"
                       :title="foldLabel(v)"
@@ -734,6 +1215,15 @@ onUpdated(() => measureVisible())
               </template>
             </div>
           </div>
+        </div>
+
+        <!-- 双栏右侧热力差异地图：等比映射差异块位置，点击跳转定位（复用 unified 的色块样式） -->
+        <div class="uni-heat" v-if="splitHeat.length" :title="'全局差异地图：深色块=删除、浅色=新增，点击跳转到对应位置'">
+          <div v-for="(b, bi) in splitHeat" :key="'sb' + bi" class="uni-heat-bar"
+               :class="{ 'uni-heat-del': b.del, 'uni-heat-add': b.add }"
+               :style="{ top: (b.top / totalHeight * 100) + '%', height: (isNaN(b.h / totalHeight * 100) ? 1 : b.h / totalHeight * 100) + '%' }"
+               :title="'差异区域 ' + (b.start + 1) + '..' + (b.endAbs)"
+               @click="onSplitHeatClick(b)"></div>
         </div>
       </div>
 
@@ -760,7 +1250,9 @@ onUpdated(() => measureVisible())
 
     <div class="diff-area center-empty" v-else-if="(node || dec) && dec && !dec.ok">
       <div class="ico"><i class="bi bi-exclamation-triangle"></i></div>
-      <div>该文件无法反编译（引擎：{{ dec.engine }}）</div>
+      <!-- 失败时要展示后端返回的具体原因(dec.error)，而非只报引擎名——例如旧版二进制 .xls/.doc 会被明确提示「请另存为 .xlsx/.docx」 -->
+      <div v-if="dec.engine" class="text-secondary mb-1" style="font-size:.85rem">反编译引擎：{{ dec.engine }}</div>
+      <div>{{ dec.error || '该文件无法反编译' }}</div>
       <div v-if="dec.diffText" class="text-start mt-2" style="white-space:pre-wrap;font-size:.8rem">{{ dec.diffText }}</div>
     </div>
 
@@ -785,7 +1277,87 @@ onUpdated(() => measureVisible())
 }
 .oversized-banner b { color: var(--bs-body-color); }
 .diff-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; position: relative; }
+/* 换行(wrap)模式热力条容器：横向 flex，左侧滚动区 + 右缘 .uni-heat 热力地图并排 */
+.diff-flex { display: flex; flex: 1 1 auto; min-height: 0; position: relative; }
 .diff-grid { position: relative; }
+/* Git 风格 unified 视图：左「旧行号|新行号」固定列 + 统一内容列；右缘热力差异地图 */
+.diff-unified { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
+.uni-body { overflow: auto; flex: 1 1 0; min-width: 0; position: relative; }
+.uni-grid { position: relative; }
+.urow {
+  position: absolute; left: 0;
+  box-sizing: border-box;
+  height: 21px; /* ⚠️ 必须与 JS EST_ROW_H(21) 同步——unified 虚拟滚动/热力图按此值等差计算，改须两处同改 */
+  display: flex; align-items: stretch;
+  width: max-content; min-width: 100%;   /* 超长行可横向滚动，行号/符号列 sticky 固定 */
+  font-family: var(--bs-font-monospace);
+  font-size: .82rem; line-height: 1.5;
+  color: var(--bs-body-color);
+  white-space: pre;
+}
+/* 左列（符号/旧行号/新行号）横向滚动时 sticky 固定在左缘，保证「左侧行号序列」恒可见 */
+.urow .u-sign {
+  width: 1.3rem; flex: 0 0 1.3rem; display: flex; align-items: center; justify-content: center;
+  position: sticky; left: 0; z-index: 1;
+  background: var(--bs-tertiary-bg);
+  border-right: 1px solid var(--bs-border-color); user-select: none; color: var(--bs-secondary-color);
+}
+/* git 风格 +/- 标注：符号列随删/增行走红/绿，让 -/+ 在滚动时依旧可辨识（区别于中性内容行）。 */
+.urow.del .u-sign, .urow.rep-del .u-sign { background: rgba(248, 81, 73, 0.14); color: var(--bs-danger); font-weight: 700; }
+.urow.add .u-sign, .urow.rep-add .u-sign { background: rgba(46, 160, 67, 0.14); color: var(--bs-success); font-weight: 700; }
+.urow .u-ln-old, .urow .u-ln-new {
+  flex: 0 0 3.2rem; text-align: right; padding: 0 .4rem;
+  position: sticky; z-index: 1;
+  color: var(--bs-secondary-color);
+  background: color-mix(in srgb, var(--dt-accent, var(--bs-tertiary-bg)) 8%, var(--bs-tertiary-bg));
+  user-select: none; border-right: 1px solid var(--bs-border-color);
+}
+.urow .u-ln-old { left: 1.3rem; }
+.urow .u-ln-new { left: 4.5rem; }
+.urow .u-ln-d { color: var(--bs-danger); font-weight: 700; }
+.urow .u-ln-a { color: var(--bs-success); font-weight: 700; }
+.urow .u-code {
+  flex: 1 1 auto; min-width: 0; padding: 0 .6rem; cursor: text; overflow: visible;
+}
+/* 差异行底色：删除(旧)红 / 新增(新)绿 / 修改段占位——只对内容与符号列刷淡底，行号列保持中性。
+   Trae IDE 风格：与 split 模式同步，整行底色从 10% 降到 8% 极浅，避免与行内片段背景叠加产生糊状。 */
+.urow.del, .urow.rep-del { background: rgba(248, 81, 73, 0.10); }
+.urow.add, .urow.rep-add { background: rgba(46, 160, 67, 0.10); }
+.urow.fold { background: var(--bs-tertiary-bg); height: 21px; }
+.urow.fold .u-fold {
+  flex: 1; align-self: center; text-align: center; font-size: .72rem;
+  color: var(--bs-secondary-color); cursor: pointer; user-select: none;
+}
+.urow:hover { background: var(--bs-tertiary-bg); }
+.urow.heat { outline: 2px solid var(--bs-primary); outline-offset: -2px; }
+/* unified 差异导航高亮：current=当前差异行（左侧类型色条 + 行号加深），flash=跳转后短暂闪烁。
+   与 split/wrap 的 .row.current/.row.flash 视觉一致，保证 git 模式下「上一处/下一处」同样有反馈。 */
+.urow.current {
+  --cur-halo: color-mix(in srgb, var(--dt-accent, var(--bs-primary)) 35%, transparent);
+  box-shadow:
+    inset 6px 0 0 0 var(--dt-accent, var(--bs-primary)),
+    inset 9px 0 0 0 var(--cur-halo);
+}
+.urow.current .u-ln-old, .urow.current .u-ln-new { color: var(--dt-accent, var(--bs-primary)); font-weight: 700; }
+.urow.flash { animation: uniFlash .9s ease-out; }
+@keyframes uniFlash {
+  0% { background: var(--bs-primary-bg-subtle); }
+  100% { background: transparent; }
+}
+/* unified 行内 token 沿用既有 .tok / .im-del / .im-add 高亮，无需重复定义 */
+/* 热力差异地图：定位到右缘，垂直铺满，色块按差异块等比映射 */
+.uni-heat {
+  flex: 0 0 10px; margin-left: 4px; border-left: 1px solid var(--bs-border-color);
+  background: var(--bs-tertiary-bg); position: relative; min-height: 0;
+}
+.uni-heat-bar {
+  position: absolute; right: 1px; width: 8px; border-radius: 2px; cursor: pointer;
+  transition: width .12s, right .12s;
+}
+.uni-heat-bar:hover { width: 12px; right: -1px; }
+.uni-heat-del { background: color-mix(in srgb, var(--bs-danger) 78%, transparent); }
+.uni-heat-add { background: color-mix(in srgb, var(--bs-success) 70%, transparent); }
+.uni-heat-add.uni-heat-del { background: color-mix(in srgb, #b45309 70%, transparent); }
 .diff-split { flex: 1 1 auto; min-height: 0; display: flex; }
 .diff-pane { overflow: auto; flex: 1 1 0; min-width: 0; position: relative; }
 .diff-pane.right { border-left: 1px solid var(--bs-border-color); }
@@ -800,17 +1372,20 @@ onUpdated(() => measureVisible())
 }
 .row { grid-template-columns: 1.15rem 3.2rem 1fr 1.15rem 3.2rem 1fr; }
 .prow { grid-template-columns: 1.15rem 3.2rem 1fr; }
-/* diff gutter：行类型色条 + 图标（add=绿+plus、del=红+dash、rep=橙+pencil；ctx/空侧无图标无底色）。
+/* diff gutter：行类型色条 + 图标（add/del/rep 统一用 💡 灯泡，Trae IDE 风格）。
    图标只在「该侧存在该类型内容」时出现：左栏 del/rep、右栏 add/rep（gtIcon 控制）。 */
 .row .gt, .prow .gt {
   display: flex; align-items: center; justify-content: center;
-  font-size: .68rem; user-select: none;
+  font-size: .72rem; user-select: none;
   border-right: 1px solid var(--bs-border-color);
 }
-.row .gt.gt-add, .prow .gt.gt-add { background: color-mix(in srgb, var(--bs-success) 20%, transparent); color: var(--bs-success); }
-.row .gt.gt-del, .prow .gt.gt-del { background: color-mix(in srgb, var(--bs-danger) 20%, transparent); color: var(--bs-danger); }
-.row .gt.gt-rep, .prow .gt.gt-rep { background: color-mix(in srgb, var(--bs-warning) 26%, transparent); color: #b45309; }
+/* Trae 风格：变更行 gutter 用极浅同色底 + 主色灯泡，无饱和度叠加避免视觉重 */
+.row .gt.gt-add, .prow .gt.gt-add { background: rgba(46, 160, 67, 0.10); color: #1a7f37; }
+.row .gt.gt-del, .prow .gt.gt-del { background: rgba(248, 81, 73, 0.10); color: #cf222e; }
+.row .gt.gt-rep, .prow .gt.gt-rep { background: rgba(187, 128, 9, 0.10); color: #9a6700; }
 .row:hover, .prow:hover { background: var(--bs-tertiary-bg); }
+/* 删除型文件全量模式：删除行左侧行号红，提示"此行已被删除"（内容不整行刷红，便于通读） */
+.row .ln.ln-del, .prow .ln.ln-del { color: var(--bs-danger); font-weight: 700; }
 .row .ln, .prow .ln {
   text-align: right; padding: 0 .4rem;
   color: var(--bs-secondary-color);
@@ -883,23 +1458,69 @@ onUpdated(() => measureVisible())
   white-space: nowrap;
 }
 /* 行内词/字符级差异高亮（对标 Beyond Compare / GitHub inline diff）：
-   文字色锁定正文色，红/绿底上仍清晰；浅橙行底上差异片段用更高饱和 + 内描边突出「差异点」 */
-.code .im-del { background: rgba(220,53,69,.42); border-radius: 2px; color: var(--bs-body-color); }
-.code .im-add { background: rgba(25,135,84,.42); border-radius: 2px; color: var(--bs-body-color); }
-/* 折叠占位行：类型色 + 斜体，提示被折叠段落归属 */
-.row.fold, .prow.fold { background: var(--bs-tertiary-bg); }
-.row.fold .fold-ph, .prow.fold .fold-ph { color: var(--dt-accent, var(--bs-secondary-color)); font-style: italic; text-align: center; cursor: pointer; user-select: none; }
-.row.add, .prow.add { background: var(--bs-success-bg-subtle); }
-.row.add .ln, .prow.add .ln { color: var(--bs-success); font-weight: 600; }
+   Trae IDE 风格：行内差异片段用 IDE 同款极浅同色系（VS Code Deletion #ffebe9 / Addition #e6ffec），
+   不再叠加深色 box-shadow 描边（小字号下 1px inset 描边会与背景叠加产生「重影」）。
+   文字保留 token 类型色（currentColor），让红/绿底上的语法层次自然透出，不再 color-mix 加深。 */
+.code .im-del { background: #ffebe9; border-radius: 2px; color: inherit; }
+.code .im-add { background: #e6ffec; border-radius: 2px; color: inherit; }
+/* Git 风格 unified 视图：内容区类名不是 .code 而是 .u-code，需为同样片段补同款高亮，
+   否则 rep 行的词/字符级细分（im-del/im-add）匹配不到规则，粒度切换在 git 模式下无可见差异。
+   颜色较 split 视图加深一档：unified 内容紧凑、行底淡色更易被区分需求淹没，加深红/绿便于一眼分辨差异位。 */
+.u-code .im-del { background: rgba(248, 81, 73, 0.38); border-radius: 2px; color: inherit; }
+.u-code .im-add { background: rgba(46, 160, 67, 0.36); border-radius: 2px; color: inherit; }
+[data-bs-theme="dark"] .code .im-del { background: rgba(248, 81, 73, 0.32); }
+[data-bs-theme="dark"] .code .im-add { background: rgba(46, 160, 67, 0.32); }
+[data-bs-theme="dark"] .u-code .im-del { background: rgba(248, 81, 73, 0.55); }
+[data-bs-theme="dark"] .u-code .im-add { background: rgba(46, 160, 67, 0.52); }
+/* 折叠占位行：类型色 + 斜体，提示被折叠段落归属；前置 ● 圆点表达"被收起"语义。
+   圆点用当前文件类型色（--dt-accent），与 filebar 类型徽标呼应。 */
+.row.fold, .prow.fold { background: var(--bs-tertiary-bg); border-left: 3px solid var(--dt-accent, var(--bs-border-color)); }
+.row.fold .fold-ph, .prow.fold .fold-ph {
+  color: var(--dt-accent, var(--bs-secondary-color));
+  font-style: italic; text-align: center; cursor: pointer; user-select: none;
+  display: flex; align-items: center; justify-content: center; gap: .4rem;
+}
+.row.fold .fold-ph::before, .prow.fold .fold-ph::before {
+  content: '●'; color: var(--dt-accent, var(--bs-secondary-color));
+  font-size: .55rem; line-height: 1;
+}
+/* 差异行：左侧 3px 主色条（gutter 内已刷底色，色条强化"该行是变更"语义，一眼锁定）。
+   Trae IDE 风格：整行底色从 14-18% 降到 8-10%，避免与行内片段背景叠加产生糊状；
+   文字继承正文色（inherited），让 token 类型色在淡色行底上自然透出，保持代码可读性。 */
+.row, .prow { box-shadow: inset 0 0 0 0 transparent; }
+.row.add, .prow.add {
+  background: rgba(46, 160, 67, 0.06);
+  box-shadow: inset 3px 0 0 #1a7f37;
+}
+.row.add .ln, .prow.add .ln { color: #1a7f37; font-weight: 600; }
 .row.add .ln:last-of-type { border-left: 1px solid var(--bs-border-color); }
-.row.del, .prow.del { background: var(--bs-danger-bg-subtle); }
-.row.del .ln, .prow.del .ln { color: var(--bs-danger); font-weight: 600; }
-.row.del .code, .prow.del .code { color: var(--bs-body-color); }
-/* BCompare 风格「替换行」：修改对同行左右对照，整体淡橙底；行内红/绿片段继续细分，
-   差异片段加内描边（inset ring）使其从行底/同色文字中清晰跳出，一眼定位差异点 */
-.row.rep, .prow.rep { background: var(--bs-warning-bg-subtle); }
-.row.rep .code .im-del, .prow.rep .code .im-del { background: rgba(220,53,69,.6); box-shadow: inset 0 0 0 1px rgba(220,53,69,.32); color: var(--bs-body-color); }
-.row.rep .code .im-add, .prow.rep .code .im-add { background: rgba(25,135,84,.6); box-shadow: inset 0 0 0 1px rgba(25,135,84,.32); color: var(--bs-body-color); }
+.row.del, .prow.del {
+  background: rgba(248, 81, 73, 0.06);
+  box-shadow: inset 3px 0 0 #cf222e;
+}
+.row.del .ln, .prow.del .ln { color: #cf222e; font-weight: 600; }
+/* BCompare 风格「替换行」：修改对同行左右对照，整体极淡橙底（VS Code modified 风格）+ 左侧 3px 橙条；
+   行内 im-del/im-add 继续用 IDE 极浅色细分，差异片段不再加 inset 描边避免重影 */
+.row.rep, .prow.rep {
+  background: rgba(187, 128, 9, 0.06);
+  box-shadow: inset 3px 0 0 #9a6700;
+}
+.row.rep .ln, .prow.rep .ln { color: #9a6700; font-weight: 600; }
+/* 暗色主题：整行底色降到 10%（更淡），只作"该行有变更"的轻提示——差异细节交给行内 im-del/im-add 片段
+   （0.32 透明同色），否则「整行 0.16 + 片段 0.32」同色相叠会在大段修改区糊成深色斑块（视觉重影/字糊）。 */
+[data-bs-theme="dark"] .row.add, [data-bs-theme="dark"] .prow.add { background: rgba(46, 160, 67, 0.10); box-shadow: inset 3px 0 0 #3fb950; }
+[data-bs-theme="dark"] .row.add .ln, [data-bs-theme="dark"] .prow.add .ln { color: #3fb950; }
+[data-bs-theme="dark"] .row.del, [data-bs-theme="dark"] .prow.del { background: rgba(248, 81, 73, 0.10); box-shadow: inset 3px 0 0 #f85149; }
+[data-bs-theme="dark"] .row.del .ln, [data-bs-theme="dark"] .prow.del .ln { color: #f85149; }
+[data-bs-theme="dark"] .row.rep, [data-bs-theme="dark"] .prow.rep { background: rgba(187, 128, 9, 0.09); box-shadow: inset 3px 0 0 #d29922; }
+[data-bs-theme="dark"] .row.rep .ln, [data-bs-theme="dark"] .prow.rep .ln { color: #d29922; }
+/* split 模式 rep 行右 code 右缘虚线：强化「该行在另一侧有对应修改对」—— 比 .gt-rep 图标更显眼，
+   也避免在长行/缩进行里看不到 gutter 图标。仅作用于 split 模式右栏，wrap/unified 模式无此需求。 */
+.diff-pane.right .prow.rep .code {
+  border-right: 1px dashed var(--bs-warning);
+  padding-right: .4rem;
+  margin-right: -1px; /* 抵消虚线宽度避免挤压布局 */
+}
 /* ===== 语法高亮 token 色板 =====
  * 语义色刻意避开 diff 标记三系（红=删除 / 绿=新增 / 橙=修改），
  * 与整行底色、行内片段底色不混淆；diff 片段内的 token 用 color-mix 加深保证红/绿底可读。
@@ -933,14 +1554,28 @@ onUpdated(() => measureVisible())
 .tok-emph { color: var(--tok-hd); }
 .tok-inlinecode { color: var(--tok-code); }
 .tok-op { color: var(--tok-op); }
-/* diff 片段（红/绿底）内：token 保留类型色但加深 40%，红绿底上仍清晰、语法层次不丢 */
-.code .im-del .tok, .code .im-add .tok { color: color-mix(in srgb, currentColor 60%, #000); }
+/* diff 片段（红/绿底）内：token 保留类型色（Trae IDE 风格），让语法层次在淡色行底上自然透出。
+   旧的 color-mix 60% 加深会让 token 与红/绿底融合成糊状，Trae 选择保留 token 原色，靠行底淡色 + 片段
+   极浅背景的对比保证可读性。 */
+.code .im-del .tok, .code .im-add .tok { color: inherit; }
+/* unified 视图内容区（.u-code）同样让片段内 token 继承，保持红/绿底上可读 */
+.u-code .im-del .tok, .u-code .im-add .tok { color: inherit; }
 /* 文件栏差异统计（+新增 −删除 ~修改 =未变） */
 .dvt-stats { display: inline-flex; align-items: center; gap: .5rem; font-size: .72rem; white-space: nowrap; }
-/* 当前定位的差异行：左侧类型色主条 + 行号高亮 + 内容极淡类型色底（层级辨识） */
-.row.current, .prow.current { box-shadow: inset 3px 0 0 var(--dt-accent, var(--bs-primary)); }
+/* 当前定位的差异行：双层描边（6px 类型色主条 + 3px 极淡辅条）+ 行号主色加粗。
+   box-shadow 多 inset 叠加实现"双层条"——主条最贴近边缘 6px，辅条再往内 3px 形成"主-辅"层次。
+   落到 .row.add/.row.del/.row.rep 上时，原本的 3px 差异色条会与 current 的 6px 主色条叠加，current 优先。
+   注：不再给 .code 叠加主色背景，避免与红/绿整行底色 + im-del/im-add 片段背景三重叠加产生糊状。
+   实现细节：把 color-mix(...) 预解析到 --cur-halo 变量，避免 cssnano 把
+   `inset 9px 0 0 color-mix(...)` 压成 `inset 9px 0 color-mix(...)`（缺 spread radius，
+   box-shadow 简写在某些浏览器下被整条丢弃，current 双层描边退化为 rep 灯条）。 */
+.row.current, .prow.current {
+  --cur-halo: color-mix(in srgb, var(--dt-accent, var(--bs-primary)) 35%, transparent);
+  box-shadow:
+    inset 6px 0 0 0 var(--dt-accent, var(--bs-primary)),
+    inset 9px 0 0 0 var(--cur-halo);
+}
 .row.current .ln, .prow.current .ln { color: var(--dt-accent, var(--bs-primary)); font-weight: 700; }
-.row.current .code, .prow.current .code { background: color-mix(in srgb, var(--dt-accent, var(--bs-primary)) 5%, transparent); }
 /* 跳转动画：从主色高亮淡出，提示目标位置 */
 .row.flash, .prow.flash { animation: diffFlash .9s ease-out; }
 @keyframes diffFlash {
@@ -1024,4 +1659,25 @@ onUpdated(() => measureVisible())
   border: 1px solid; border-radius: .375rem; padding: .1rem .45rem;
 }
 .dvt-fc-icon { font-size: .8rem; flex: 0 0 auto; }
+/* Git 短哈希徽标：等宽字体 + 圆点色调 + 缺失占位降透明；旧/新两色 + 箭头表达「从 X 到 Y」。
+   同色 dot 帮助识别「该文件未变」；hashTone 来自前 2 位十六进制，分布较均匀。 */
+.hash-badge {
+  display: inline-flex; align-items: center; gap: .35rem;
+  font-family: var(--bs-font-monospace);
+  font-size: .7rem; font-weight: 500;
+  padding: .08rem .5rem; border-radius: .375rem;
+  background: color-mix(in srgb, var(--bs-body-color) 6%, transparent);
+  border: 1px solid var(--bs-border-color);
+  user-select: text;
+}
+.hash-side { display: inline-flex; align-items: center; gap: .25rem; }
+.hash-dot { font-size: .55rem; flex: 0 0 auto; }
+.hash-arrow { font-size: .65rem; color: var(--bs-secondary-color); margin: 0 .1rem; }
+.hash-empty { opacity: .5; font-style: italic; }
+/* 查看模式动画图标：点击切换 全量/仅差异，图标以翻转+缩放+淡入进入（:key 变更强制重播动画） */
+.dvt-mode-ic { display: inline-block; animation: dvtModeIn .22s ease; }
+@keyframes dvtModeIn {
+  0% { opacity: 0; transform: rotate(-90deg) scale(.6); }
+  100% { opacity: 1; transform: rotate(0) scale(1); }
+}
 </style>

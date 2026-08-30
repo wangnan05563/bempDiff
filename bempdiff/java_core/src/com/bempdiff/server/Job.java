@@ -4,6 +4,9 @@ import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStats;
 import com.bempdiff.model.PackageSnapshot;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 /**
  * 一次比对的内存态产物（供后续反编译 / 报告 / 导出复用，避免重复解析包）。
  *
@@ -24,6 +27,8 @@ public final class Job {
     private volatile PackageSnapshot newSnap; // NOSONAR(S3077)
     private volatile DiffResult result;       // NOSONAR(S3077)
     private volatile DiffStats stats;         // NOSONAR(S3077)
+    /** 两侧物理平铺解包报告（unpackNested 开启时非空；[0]=旧 侧，[1]=新 侧）。引用 volatile 保证可见性。 */
+    private volatile com.bempdiff.unpack.UnpackReport[] unpackReports;
 
     /** 任务状态：QUEUED(已入队) | RUNNING(进行中) | DONE(完成) | ERROR(失败) | CANCELLED(已取消)。 */
     private volatile String status = "QUEUED";
@@ -38,6 +43,12 @@ public final class Job {
 
     /** 取消请求标记；后台任务在阶段边界检查，置位后尽快终止并标记 CANCELLED。 */
     private volatile boolean cancelRequested = false;
+
+    /** 该作业的物理解包运行时目录（{user.home}/.bempdiff/runtime/<jobId>），作业被取代/淘汰时整体回收。 */
+    private volatile Path runtimeDir;
+
+    /** P1-E 终态时间戳（ms）：进入 DONE/ERROR/CANCELLED 时记录，供 JobStore 按「最旧已结束」淘汰。 */
+    public volatile long finishedAtMillis;
 
     public Job(String id, String mode, CompareOptions opts) {
         this.id = id;
@@ -81,6 +92,9 @@ public final class Job {
         return message;
     }
 
+    public com.bempdiff.unpack.UnpackReport[] getUnpackReports() { return unpackReports; }
+    public void setUnpackReports(com.bempdiff.unpack.UnpackReport[] unpackReports) { this.unpackReports = unpackReports; }
+
     public boolean isCancelRequested() {
         return cancelRequested;
     }
@@ -91,6 +105,12 @@ public final class Job {
         this.phase = phase;
         this.message = message;
         if (progress >= 0) this.progress = progress;
+    }
+
+    /** 追加非致命警告到 message（如"解包不完整"），不改变状态/进度，供前端轮询识别部分完成。 */
+    public synchronized void appendMessage(String extra) {
+        if (extra == null || extra.isEmpty()) return;
+        this.message = (this.message == null || this.message.isEmpty()) ? extra : this.message + "；" + extra;
     }
 
     /** 比对成功完成：回填产物并置 DONE/100%。仅当仍 RUNNING 时生效（已被取消/失败则忽略）。 */
@@ -104,6 +124,7 @@ public final class Job {
         this.phase = "done";
         this.message = "完成";
         this.progress = 100;
+        this.finishedAtMillis = System.currentTimeMillis();
     }
 
     /** 比对失败：记录错误并置 ERROR。仅当仍 RUNNING 时生效。 */
@@ -113,18 +134,53 @@ public final class Job {
         this.phase = "error";
         this.message = "失败";
         this.error = error;
+        this.finishedAtMillis = System.currentTimeMillis();
     }
 
-    /** 被取消：仅在 RUNNING 阶段有效（幂等，避免覆盖已完成/已失败的结果）。 */
+    /** 被取消：将 QUEUED/RUNNING 态置为 CANCELLED（幂等，不覆盖已完成/已失败的终态）。
+     *  原实现仅允许 RUNNING，导致「提交后立刻取消」的任务一直停在 QUEUED 永不淘汰；P1-E 放宽到
+     *  已排队/进行中均可取消，并记录结束时间供 JobStore 淘汰。 */
     public void markCancelled() {
-        if (!STATUS_RUNNING.equals(status)) return;
+        if (isTerminal(status)) return;
         this.status = "CANCELLED";
         this.phase = "cancelled";
         this.message = "已取消";
+        this.finishedAtMillis = System.currentTimeMillis();
+    }
+
+    /** 是否已进入终态（DONE/ERROR/CANCELLED），用于幂等保护与淘汰判断。 */
+    private static boolean isTerminal(String st) {
+        return "DONE".equals(st) || "ERROR".equals(st) || "CANCELLED".equals(st);
     }
 
     /** 请求取消（幂等）。 */
     public void requestCancel() {
         this.cancelRequested = true;
+    }
+
+    public Path getRuntimeDir() { return runtimeDir; }
+    public void setRuntimeDir(Path p) { this.runtimeDir = p; }
+
+    /**
+     * 回收该作业的物理解包运行时目录（递归删除，容错）。作业被新比对取代或 JobStore 淘汰时调用，
+     * 避免每次对比在磁盘累积大量解压垃圾（此前 %TEMP% 的 atom/目录只靠进程退出的 deleteOnExit 兜底）。
+     */
+    public void cleanupRuntime() {
+        Path d = runtimeDir;
+        runtimeDir = null;
+        if (d == null) return;
+        try {
+            if (!Files.exists(d)) return;
+            if (Files.isDirectory(d)) {
+                try (java.util.stream.Stream<Path> s = Files.walk(d)) {
+                    s.sorted(java.util.Comparator.reverseOrder())
+                     .forEach(x -> { try { Files.deleteIfExists(x); } catch (Exception ignored) { } });
+                }
+            } else {
+                Files.deleteIfExists(d);
+            }
+        } catch (Exception ignored) {
+            // 删除失败（被占用/权限）静默，不干扰主流程；下次取代/退出时再兜底。
+        }
     }
 }

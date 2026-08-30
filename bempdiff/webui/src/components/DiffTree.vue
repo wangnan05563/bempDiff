@@ -12,6 +12,9 @@ import { buildDirTree, flattenDirTree, dirLayersOf, flattenArchiveChildren } fro
 import { api } from '../api/client'
 import ContextMenu from './ContextMenu.vue'
 import TipButton from './TipButton.vue'
+// 宽度经 prop 传入（App 拖拽调宽），根节点显式绑定——本组件为 fragment（含右键菜单/属性弹窗
+// 多个顶层根），无法靠 :style fallthrough 把宽度透传到唯一根元素。
+const props = defineProps({ panelWidth: { type: Number, default: null } })
 // STATUS_META 已迁到 store.js，与 DiffView/InfoPanel 共享
 const LAYER_LABEL = { L0: 'L0 包级', L1: 'L1 业务码', L2: 'L2 三方依赖', '?': '其他' }
 const LAYER_TITLE = {
@@ -22,8 +25,19 @@ const LAYER_TITLE = {
 }
 
 const tree = computed(() => (state.job && state.job.tree) || [])
+// 树栏「过滤项计数」：直接用后端全量统计（state.job.stats，已含解包后的嵌套归档内部），
+// 与顶部全局汇总栏同一数据源，天然一致且准确。
 const counts = computed(() => {
   const c = { ADDED: 0, DELETED: 0, MODIFIED: 0, UNCHANGED: 0 }
+  const s = state.job && state.job.stats
+  if (s) {
+    c.ADDED = s.added ?? 0
+    c.DELETED = s.deleted ?? 0
+    c.MODIFIED = s.modified ?? 0
+    c.UNCHANGED = s.unchanged ?? 0
+    return c
+  }
+  // 兜底：后端未回传全量统计时退化为顶层树计数（仅保证不崩，不做异步增量）
   for (const n of tree.value) if (c[n.status] !== undefined) c[n.status]++
   return c
 })
@@ -278,6 +292,12 @@ function pushArchiveChildren(out, parent, jarDepth) {
     if (!passesFilters(r.node)) continue
     out.push({ kind: r.kind, node: r.node, key: r.key, parentKey: parent.key,
                depth: jarDepth + r.depth, name: r.name, innerPath: r.innerPath })
+    // 嵌套归档（如 zip 内部再展开 jar）：若该 archiveChild 处于展开态且子节点已缓存，
+    // 需递归再展开其内部条目——否则 jar 显示已展开却无内部行（2026-08-23 修复）。
+    const fc = r.node && r.node.fileClass
+    if ((fc === 'ARCHIVE' || fc === 'JAR') && state.expandedArchives[r.node.key]) {
+      pushArchiveChildren(out, r.node, jarDepth + r.depth)
+    }
   }
 }
 /** jar 内目录折叠状态（与主树 expandedDirs 独立，键为完整复合键 outer!/dir/）。 */
@@ -618,7 +638,8 @@ function ruleTypeLabel(t) {
 </script>
 
 <template>
-  <div class="col-tree" :class="{ collapsed: state.treePanelCollapsed }">
+  <div class="col-tree" :class="{ collapsed: state.treePanelCollapsed }"
+       :style="props.panelWidth != null && !state.treePanelCollapsed ? { width: props.panelWidth + 'px' } : undefined">
     <div v-if="!state.treePanelCollapsed" class="pane-head" title="按层级展示两个包/目录的差异文件，点击任一文件打开双栏源码比对">
       <i class="bi bi-diagram-3"></i> 差异文件树
       <span class="fw-normal" style="font-size:.75rem;color:var(--bs-secondary-color)">

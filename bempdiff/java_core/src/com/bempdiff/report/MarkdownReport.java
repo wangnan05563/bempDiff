@@ -1,5 +1,6 @@
 package com.bempdiff.report;
 
+import com.bempdiff.ai.CategoryConclusion;
 import com.bempdiff.ai.FileAnalysis;
 import com.bempdiff.ai.FileRisk;
 import com.bempdiff.ai.StageASummary;
@@ -44,9 +45,18 @@ public final class MarkdownReport {
     /** 本次 AI 分析聚焦项（可读标签，如「破坏性变更专项」）；null 表示默认整体分析。 */
     private String aiFocus = null;
 
+    /** AI 章节标题（含编号，如「七、AI 智能分析…」）；聚焦报告可改为无编号标题避免跳空。 */
+    private String aiSectionTitle = "## 七、AI 智能分析（两阶段 / 项目级上下文增强）";
+
     /** 设置报告 AI 章节的分析聚焦标注（由 BempServer.runAiAnalysis 按 category/prompt 派生）。 */
     public MarkdownReport setAiFocus(String focus) {
         this.aiFocus = focus;
+        return this;
+    }
+
+    /** 覆写 AI 章节标题（聚焦精简报告使用：删除编号避免一至五被精简后跳空）。 */
+    public MarkdownReport setAiSectionTitle(String title) {
+        this.aiSectionTitle = title == null || title.isEmpty() ? aiSectionTitle : title;
         return this;
     }
 
@@ -115,10 +125,112 @@ public final class MarkdownReport {
         return sb.toString();
     }
 
+    /**
+     * 渲染「聚焦分析报告」：以 AI 智能分析章节为绝对核心，仅保留必要的背景信息
+     * （包信息、精简差异统计、本次分析聚焦、命名文件树），其余（源码级 diff、JAR 内部
+     * 对比、破坏性变更清单、审计摘要等）一律剔除，使文档主题突出、结构精简。
+     *
+     * <p>仅当调用方显式选择了分析项（{@link #aiFocus} 非空）时由后端走此路径；
+     * 标题以分析主题命名（如「测试要点分析报告」），AI 章节改用无编号标题避免跳空。</p>
+     */
+    public String renderFocusReport(PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                          DiffResult r, DiffStats stats,
+                          Map<String, DecompiledUnit> decompiled,
+                          Map<String, DecompiledUnit> text,
+                          StageASummary summary, List<FileAnalysis> fileAnalyses, ProjectContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        // 标题：以分析主题命名，aiFocus 例如「测试要点分析」→「测试要点分析报告」
+        sb.append("# ").append(reportTitleFromFocus(aiFocus)).append("\n\n");
+        // 背景：老包/新包标识（分析对象）
+        sb.append("- 老包：`").append(oldSnap.getFile().getFileName()).append("`（版本 ")
+                .append(nullToNA(oldSnap.getVersion())).append("）\n");
+        sb.append("- 新包：`").append(newSnap.getFile().getFileName()).append("`（版本 ")
+                .append(nullToNA(newSnap.getVersion())).append("）\n");
+        // 背景：精简差异统计（新增/删除/修改，供分析锚定范围）
+        sb.append("- 差异规模：新增 **").append(stats.getAdded()).append("** · 删除 **")
+                .append(stats.getDeleted()).append("** · 修改 **").append(stats.getModified())
+                .append("**\n\n");
+        renderFocusFileList(sb, r);
+        // 核心：AI 智能分析章节（内容与全量报告中的 AI 章节完全一致，仅标题去编号）
+        appendAiSection(sb, summary, fileAnalyses, ctx);
+        return sb.toString();
+    }
+
+    /** 从分析聚焦标签派生报告标题：「测试要点分析」→「测试要点分析报告」；无聚焦则回落通用标题。 */
+    private static String reportTitleFromFocus(String focus) {
+        if (focus == null || focus.isEmpty()) {
+            return "AI 智能分析报告";
+        }
+        // 已是「…报告」则原样；否则直接拼接「报告」
+        return focus.endsWith("报告") ? focus : focus + "报告";
+    }
+
+    /** 精简文件树：仅命名清单（变更类型 + 文件名），供 AI 分析参考完整变更范围。 */
+    private void renderFocusFileList(StringBuilder sb, DiffResult r) {
+        boolean any = false;
+        DiffStatus[] order = {DiffStatus.MODIFIED, DiffStatus.ADDED, DiffStatus.DELETED};
+        for (DiffStatus st : order) {
+            for (String k : r.get(st)) {
+                if (!any) {
+                    sb.append("#### 变更文件清单\n");
+                    any = true;
+                }
+                sb.append("- `").append(mark(st)).append("` ").append(k).append("\n");
+            }
+        }
+        if (any) {
+            sb.append("\n");
+        } else {
+            sb.append("（无文件变更清单）\n\n");
+        }
+    }
+
+    /**
+     * 渲染单文件 AI 功能总结（差异树右键「AI功能总结」）。
+     * 与全量报告模板解耦：只含该文件元信息、AI 结论与差异摘要——
+     * 若复用全量 render，单文件总结会带上整体统计/文件树/其他文件 diff，
+     * 与「整体风险分析」雷同且不聚焦用户所选文件。
+     */
+    public String renderSingleFile(String key, DiffStatus st, FileClass fc,
+                                   DecompiledUnit unit, FileAnalysis fa, ProjectContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# 单文件 AI 功能总结\n\n");
+        sb.append("| 文件 | 变更类型 | 文件类型 | 差异引擎 |\n|---|---|---|---|\n");
+        // 文件名含 | 会切断表格列结构（归档内部条目名来自包内路径，不可信），须转义（评审 L2）
+        sb.append("| `").append(escapePipe(key)).append("` | ").append(statusLabel(st))
+          .append(" | ").append(fc).append(" | ").append(nullToNA(unit.getEngine())).append(" |\n\n");
+        if (fa != null) {
+            sb.append("## AI 分析结论\n\n");
+            sb.append("- **改动意图**：").append(nullToNA(fa.getIntent())).append("\n");
+            sb.append("- **风险等级**：**").append(nullToNA(fa.getRisk())).append("**\n");
+            sb.append("- **影响范围**：").append(nullToNA(fa.getImpact())).append("\n");
+            if (!isEmpty(fa.getContextInfluence())) {
+                sb.append("- **项目上下文影响**：").append(fa.getContextInfluence()).append("\n");
+            }
+            if (!isEmptyList(fa.getTestPoints())) {
+                sb.append("- **测试要点**：\n");
+                for (String tp : fa.getTestPoints()) {
+                    sb.append("  - ").append(tp).append("\n");
+                }
+            }
+            sb.append("\n");
+        } else {
+            sb.append("## AI 分析结论\n\n（AI 未返回该文件的分析结论）\n\n");
+        }
+        appendAiContext(sb, ctx);
+        sb.append("## 差异内容摘要\n\n");
+        if (!unit.isOk()) {
+            sb.append("- 内容提取失败：").append(unit.getError()).append("\n");
+        } else {
+            sb.append(DIFF_OPEN).append(renderCompactDiff(unit.getDiffText())).append(DIFF_CLOSE);
+        }
+        return sb.toString();
+    }
+
     /** 追加 AI 智能分析章节：分析聚焦标注 + 项目级上下文摘要 + 阶段A 概览 + 阶段B 逐文件。 */
     private void appendAiSection(StringBuilder sb, StageASummary summary,
                                  List<FileAnalysis> fileAnalyses, ProjectContext ctx) {
-        sb.append("## 七、AI 智能分析（两阶段 / 项目级上下文增强）\n");
+        sb.append(aiSectionTitle).append("\n");
         // 修复：显式标注本次所选分析项，避免「不同分析项生成的报告看起来相同」
         if (aiFocus != null && !aiFocus.isEmpty()) {
             sb.append("- **本次分析聚焦**：").append(aiFocus).append("\n\n");
@@ -132,19 +244,51 @@ public final class MarkdownReport {
         sb.append("\n");
     }
 
+    /** 报告「项目级上下文（分析依据）」正文长度上限（含标点）。超长会挤占报告篇幅或被 UI 截断，故在此压缩。 */
+    private static final int CTX_ANALYSIS_MAX_CHARS = 200;
+    /** 架构简述为自由叙述文本，给其一个子上限，避免独占预算导致结构化关键字段（构建/模块/依赖）被挤掉。 */
+    private static final int CTX_SUMMARY_MAX_CHARS = 120;
+
     private void appendAiContext(StringBuilder sb, ProjectContext ctx) {
         if (ctx == null || ctx.isEmpty()) {
             return;
         }
         sb.append("### 项目级上下文（分析依据）\n");
-        sb.append("- 构建系统：").append(nullToNA(ctx.getBuildSystem())).append("\n");
-        sb.append("- 模块：").append(join(ctx.getModules())).append("\n");
-        sb.append("- 核心依赖：").append(join(ctx.getDependencies())).append("\n");
-        sb.append("- 配置文件：").append(join(ctx.getConfigFiles())).append("\n");
-        if (!isEmpty(ctx.getSummary())) {
-            sb.append("- 架构简述：").append(ctx.getSummary()).append("\n");
+        // 用独立局部累加器承接本小节正文，预算只针对小节本身（而非整个报告 sb），
+        // 再整体 append，确保「正文 ≤ 200 字」不依赖外层 sb 的已累积长度。
+        StringBuilder body = new StringBuilder();
+        // 架构简述为自由叙述文本，先按对称子上限预裁剪，避免独占后置的结构化关键字段预算
+        String summary = ctx.getSummary();
+        if (!isEmpty(summary) && summary.length() > CTX_SUMMARY_MAX_CHARS - "- 架构简述：".length() - 1) {
+            summary = summary.substring(0, CTX_SUMMARY_MAX_CHARS - "- 架构简述：".length() - 2) + "…";
         }
-        sb.append("\n");
+        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 架构简述：", summary);
+        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 构建系统：", nullToNA(ctx.getBuildSystem()));
+        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 模块：", joinCapped(ctx.getModules()));
+        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 核心依赖：", joinCapped(ctx.getDependencies()));
+        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 配置文件：", joinCapped(ctx.getConfigFiles()));
+        sb.append(body).append("\n");
+    }
+
+    /** 将「标签:值」追加到 out，保证整段字符数不超过 maxChars；预算不足时截断值并追加省略号。空值跳过该行。 */
+    private static void appendBudgeted(StringBuilder out, int maxChars, String label, String value) {
+        if (isEmpty(value)) {
+            return;
+        }
+        int room = maxChars - out.length();
+        if (room <= label.length() + 1) {
+            return; // 预算不足以容纳「标签+换行」，整行省略
+        }
+        int valueRoom = room - label.length() - 1; // 预留一个换行符
+        String display;
+        if (value.length() <= valueRoom) {
+            display = value;
+        } else {
+            // 截断到剩余预算，保留前部核心信息并标注截断
+            int keep = Math.max(0, valueRoom - 1);
+            display = value.substring(0, keep) + "…";
+        }
+        out.append(label).append(display).append("\n");
     }
 
     private void appendStageASummary(StringBuilder sb, StageASummary summary) {
@@ -168,6 +312,152 @@ public final class MarkdownReport {
             }
         }
         sb.append("\n");
+        // 方案B：按所选分析项追加「分类聚焦结论」，让不同类别的报告结构显著区分、重点突出。
+        appendFocusConclusion(sb, summary);
+    }
+
+    /**
+     * 分类聚焦结论渲染（方案B）。依据 {@link StageASummary#getCategory()} 决定呈现哪个维度的
+     * conclusion 字段，实现「分析边界与内容区分」：专项（breaking/impact/testpoints）只渲染
+     * 与自身维度直接相关的字段；整体（risk/custom/缺省回退为整体）则全面呈现各维度并补充
+     * 风险判定依据/回滚/降级预案。优化改造建议对全部类别统一附带。
+     */
+    private void appendFocusConclusion(StringBuilder sb, StageASummary summary) {
+        CategoryConclusion c = summary.getConclusion();
+        if (c == null) {
+            return;
+        }
+        String cat = summary.getCategory() == null ? "" : summary.getCategory();
+        switch (cat) {
+            case "breaking":
+                sb.append("### 破坏性变更专项结论\n");
+                renderBreakingList(sb, c.getBreakingChanges());
+                appendKVLine(sb, "兼容性结论", c.getCompatibilityVerdict());
+                break;
+            case "impact":
+                sb.append("### 影响范围专项结论\n");
+                appendKVLine(sb, "受影响模块/服务", c.getAffectedModules());
+                appendKVLine(sb, "受影响对外接口", c.getAffectedApis());
+                appendKVLine(sb, "内部调用方/依赖链路", c.getInternalCallers());
+                appendKVLine(sb, "扩散路径与数据流", c.getDiffusion());
+                break;
+            case "testpoints":
+                sb.append("### 测试要点专项结论\n");
+                renderTestPoints(sb, c.getTestPoints());
+                break;
+            case "risk":
+            case "custom":
+            default:
+                // 整体风险（及自定义/缺省）：全面呈现各维度，并整合风险预案。
+                // 二三级清单（破坏性变更/测试要点）对整体分析属补充维度，仅当确有内容时才渲染，
+                // 避免空清单占位噪音稀释整体结论重点（专项报告才用占位提示「未识别到」）。
+                if (hasAny(c)) {
+                    sb.append("### 整体风险结论\n");
+                    appendKVLine(sb, "风险判定依据", c.getRiskRationale());
+                    appendKVLine(sb, "受影响模块/服务", c.getAffectedModules());
+                    appendKVLine(sb, "受影响对外接口", c.getAffectedApis());
+                    renderBreakingListIfAny(sb, c);
+                    renderTestPointsIfAny(sb, c);
+                    appendKVLine(sb, "回滚预案", c.getRollbackPlan());
+                    appendKVLine(sb, "降级预案", c.getDegradationPlan());
+                }
+                break;
+        }
+        if (c.hasSuggestions()) {
+            sb.append("### 优化改造建议（结合项目上下文）\n");
+            sb.append(c.getSuggestions()).append("\n\n");
+        }
+    }
+
+    /** 整体分支是否至少有一项可渲染内容（避免空结论只输出一个空小节标题）。 */
+    private static boolean hasAny(CategoryConclusion c) {
+        return !isEmpty(c.getRiskRationale())
+                || !isEmpty(c.getAffectedModules())
+                || !isEmpty(c.getAffectedApis())
+                || !isEmptyList(c.getBreakingChanges())
+                || !isEmptyList(c.getTestPoints())
+                || !isEmpty(c.getRollbackPlan())
+                || !isEmpty(c.getDegradationPlan());
+    }
+
+    /** 整体分支的破坏性变更清单：仅当确有条目时才渲染（专项报告才用「未识别到」占位）。 */
+    private static void renderBreakingListIfAny(StringBuilder sb, CategoryConclusion c) {
+        if (!isEmptyList(c.getBreakingChanges())) {
+            renderBreakingList(sb, c.getBreakingChanges());
+        }
+    }
+
+    /** 整体分支的测试要点清单：仅当确有条目时才渲染（专项报告才用「未识别到」占位）。 */
+    private static void renderTestPointsIfAny(StringBuilder sb, CategoryConclusion c) {
+        if (!isEmptyList(c.getTestPoints())) {
+            renderTestPoints(sb, c.getTestPoints());
+        }
+    }
+
+    /** 破坏性变更条目清单（breaking schema）。 */
+    private static void renderBreakingList(StringBuilder sb, List<CategoryConclusion.BreakingChange> list) {
+        if (isEmptyList(list)) {
+            sb.append("- 未识别到破坏性变更点。\n\n");
+            return;
+        }
+        for (CategoryConclusion.BreakingChange bc : list) {
+            sb.append("- **`").append(nullToNA(bc.getFile())).append("`** [")
+                    .append(nullToNA(bc.getChangeType())).append("]（严重度 ")
+                    .append(normSeverity(bc.getSeverity())).append("）\n");
+            sb.append("  - 变更点：").append(nullToNA(bc.getChange())).append("\n");
+            if (!isEmpty(bc.getCompatImpact())) {
+                sb.append("  - 兼容性影响：").append(bc.getCompatImpact()).append("\n");
+            }
+            if (!isEmpty(bc.getMigrationSuggestion())) {
+                sb.append("  - 迁移改造建议：").append(bc.getMigrationSuggestion()).append("\n");
+            }
+        }
+        sb.append("\n");
+    }
+
+    /** 测试要点清单（testpoints schema）。 */
+    private static void renderTestPoints(StringBuilder sb, List<CategoryConclusion.TestPoint> list) {
+        if (isEmptyList(list)) {
+            sb.append("- 未识别到针对性测试要点。\n\n");
+            return;
+        }
+        int i = 1;
+        for (CategoryConclusion.TestPoint tp : list) {
+            sb.append(i++).append(". **").append(nullToNA(tp.getItem())).append("**");
+            if (!isEmpty(tp.getFile())) {
+                sb.append("（`").append(tp.getFile()).append("`）");
+            }
+            sb.append("\n");
+            if (!isEmpty(tp.getScenario())) {
+                sb.append("   - 场景：").append(tp.getScenario()).append("\n");
+            }
+            if (!isEmpty(tp.getCaseIdea())) {
+                sb.append("   - 用例思路：").append(tp.getCaseIdea()).append("\n");
+            }
+            if (!isEmpty(tp.getVerifyFocus())) {
+                sb.append("   - 验证重点：").append(tp.getVerifyFocus()).append("\n");
+            }
+        }
+        sb.append("\n");
+    }
+
+    /** 有值字段行：仅当 v 非空时输出「键：值」。 */
+    private static void appendKVLine(StringBuilder sb, String k, String v) {
+        if (v != null && !v.isEmpty()) {
+            sb.append("- **").append(k).append("**：").append(v).append("\n");
+        }
+    }
+
+    /** severity 归一化：容忍模型返回的大小写/中文变体，统一映射为 LOW/MEDIUM/HIGH，未知值保留原文兜底。 */
+    private static String normSeverity(String v) {
+        if (v == null || v.isEmpty()) {
+            return "LOW";
+        }
+        String up = v.trim().toUpperCase();
+        if (up.contains("HIGH") || up.contains("严重") || up.contains("高")) return "HIGH";
+        if (up.contains("MEDIUM") || up.contains("中")) return "MEDIUM";
+        if (up.contains("LOW") || up.contains("低")) return "LOW";
+        return v.trim();
     }
 
     private void appendStageB(StringBuilder sb, List<FileAnalysis> fileAnalyses) {
@@ -210,6 +500,17 @@ public final class MarkdownReport {
             return "（无）";
         }
         return String.join("、", l);
+    }
+
+    /** 压缩清单：最多保留前 4 项，超出的部分以「等 N 项」概括，避免长清单挤占上下文预算。 */
+    private static String joinCapped(List<String> l) {
+        if (isEmptyList(l)) {
+            return "（无）";
+        }
+        if (l.size() <= 4) {
+            return String.join("、", l);
+        }
+        return String.join("、", l.subList(0, 4)) + " 等" + l.size() + "项";
     }
 
     private void renderHeader(StringBuilder sb, PackageSnapshot oldSnap, PackageSnapshot newSnap) {
@@ -269,11 +570,14 @@ public final class MarkdownReport {
      * libJar 为 null 时跳过（向后兼容无 JAR 对比的报告）。
      */
     private void renderLibJarDiff(StringBuilder sb, LibJarDiff.Result libJar) {
-        if (libJar == null || libJar.isEmpty()) {
-            return;
-        }
+        // 章节编号为手工顺序（四→五→六）。标题必须先输出：否则 libJar 为空时整章（含标题）被跳过，
+        // 编号会从「四」直接跳到「六」，导致报告标题序号不连续。与其他章节一致，空态保留标题+提示。
         sb.append("## 五、差异依赖 JAR 内部源码对比（Top-").append(topK)
           .append(" 内部 class 反编译源码级 diff）\n");
+        if (libJar == null || libJar.isEmpty()) {
+            sb.append("- 无差异依赖 JAR（本次比对未检出 JAR 级依赖变动）。\n\n");
+            return;
+        }
         sb.append("> 共 ").append(libJar.totalJars).append(" 个差异 JAR（新增 ")
           .append(countJarStatus(libJar, DiffStatus.ADDED)).append(" / 修改 ")
           .append(countJarStatus(libJar, DiffStatus.MODIFIED)).append(" / 删除 ")
@@ -544,5 +848,10 @@ public final class MarkdownReport {
     private static String renderCompactDiff(String diffText) {
         if (diffText == null || diffText.isEmpty()) return "(无差异内容)";
         return DiffDigest.render(diffText);
+    }
+
+    /** Markdown 表格单元格转义：| 前加反斜杠，防止文件名中的竖线切断列结构。 */
+    private static String escapePipe(String s) {
+        return s == null ? "" : s.replace("|", "\\|");
     }
 }

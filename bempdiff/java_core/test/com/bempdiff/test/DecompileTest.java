@@ -174,9 +174,11 @@ public final class DecompileTest {
     }
 
     /**
-     * D5 回归（docs/BempDiff_AI优化与竞品分析报告.md P0）：跨 Decompiler 实例、跨会话的磁盘缓存。
-     * 同一份 class 字节被 d1 反编译并异步落盘后，新建的 d2（内存 LRU 为空）再次反编译须命中磁盘缓存，
+     * D5 回归（docs/BempDiff_AI优化与竞品分析报告.md P0）：跨会话的磁盘缓存。
+     * 同一份 class 字节被 d1 反编译并异步落盘后，d2（模拟新进程冷启动）再次反编译须命中磁盘缓存，
      * 表现为 Decompiler.getDiskHits() 增长，且返回内容与此前一致（证明内容寻址磁盘层生效）。
+     * P0-A 后内存缓存已升级为进程级(static)共享，d1 的命中会留在共享内存里，d2 能直接命中内存、
+     * 完全绕开磁盘；故此处先清空进程级内存缓存，强制 d2 走磁盘层做验证（语义等同重启后的冷缓存）。
      * 用内联唯一源码确保磁盘键不被其它用例污染。
      */
     public void testDecompile_persistentDiskCache_crossInstance() throws Throwable {
@@ -193,7 +195,12 @@ public final class DecompileTest {
         // 等待异步落盘线程把结果写入磁盘
         Thread.sleep(600);
 
-        Decompiler d2 = new Decompiler(null, "java"); // 全新实例，内存 LRU 为空
+        // 清空进程级内存缓存，使 d2 的内存层必然 miss、仅剩磁盘缓存可命中（模拟新进程冷启动）
+        java.lang.reflect.Field memCache = Decompiler.class.getDeclaredField("decompileCache");
+        memCache.setAccessible(true);
+        ((Map<?, ?>) memCache.get(null)).clear();
+
+        Decompiler d2 = new Decompiler(null, "java");
         String again = (String) decompileOne.invoke(d2, (Object) classBytes);
         Asserts.assertEquals("跨实例应命中磁盘缓存(内容一致)", first, again);
         Asserts.assertTrue("应发生至少一次磁盘缓存命中",

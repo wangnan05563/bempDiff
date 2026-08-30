@@ -262,4 +262,15 @@ public final class Json {
             return def;
         }
     }
+
+    public static long longv(Map<String, Object> m, String k, long def) {
+        Object v = m.get(k);
+        if (v == null) return def;
+        if (v instanceof Number) return ((Number) v).longValue();
+        try {
+            return Long.parseLong(String.valueOf(v));
+        } catch (NumberFormatException ex) {
+            return def;
+        }
+    }
 }

@@ -25,7 +25,6 @@ async function req(method, path, body, opts = {}) {
     throw new Error(msg)
   }
   const ct = res.headers.get('content-type') || ''
-  if (opts.blob) return await res.blob()
   if (opts.text || !ct.includes('application/json')) return await res.text()
   return await res.json()
 }
@@ -59,12 +58,16 @@ export const api = {
     if (projDir) body.projectDir = projDir
     return req('POST', `/api/job/${encodeURIComponent(id)}/report`, body, { text: true })
   },
-  // -> blob (zip)
-  exportZip(id) { return req('POST', `/api/job/${encodeURIComponent(id)}/export`, {}, { blob: true }) },
+  // 差异资产导出：改走原生 <a download> GET（见 store.downloadExport），不再经 fetch().blob() 中转，
+  // 避免大 zip（文件夹对比可达数百 MB）撑爆渲染进程内存导致传输中断（Failed to fetch）。
   // -> { items:[{key,risk(HIGH/MEDIUM/LOW),category,reason}], coverage, totalChanged }
   classify(id, projDir) {
     return req('POST', `/api/job/${encodeURIComponent(id)}/ai-classify`, projDir ? { projectDir: projDir } : {})
   },
+  // 差异资产下载管理端点（导出记录列表 / 单条 / 删除）。下载走原始 GET：/api/export/{id}/download。
+  exportList() { return req('GET', '/api/export/list') },
+  exportGet(id) { return req('GET', `/api/export/${encodeURIComponent(id)}`) },
+  exportDelete(id) { return req('POST', `/api/export/${encodeURIComponent(id)}/delete`) },
   // 差异树右键菜单磁盘操作（仅文件夹对比模式）：{ jobId, op:'info'|'delete'|'rename'|'copy', key, newName? }
   // -> { ok, code, message, side, status, info? }
   fileOps(payload) {
@@ -72,16 +75,20 @@ export const api = {
   },
   // -> { report, analyze, classify, threshold }  AI token 预估（成本闸门，P0 #5）。
   // category/prompt 可选：与 report/ai-analyze 口径一致，使预估按分析项区分（后端 handleAiEstimate 读取 POST body）。
-  aiEstimate(id, category, prompt) {
+  // fileKey 非空时为单文件「AI功能总结」预估（后端仅估算该文件的 stageB）。
+  aiEstimate(id, category, prompt, fileKey) {
     const body = {}
     if (category) body.category = category
     if (prompt) body.prompt = prompt
+    if (fileKey) body.fileKey = fileKey
     return req('POST', `/api/job/${encodeURIComponent(id)}/ai-estimate`, body)
   },
   // -> config json（GET 不回显 apiKey，含 hasApiKey）
   getConfig() { return req('GET', '/api/config') },
   // cfg: 部分/完整 config
   putConfig(cfg) { return req('PUT', '/api/config', cfg) },
+  // -> { ok, freedBytes, files, dirs }  手动清理解压/抽取临时文件与遗留运行时目录（退出兜底场景）
+  cleanupTemp() { return req('POST', '/api/admin/cleanup-temp', {}) },
   // -> { ok, rootPath, projectCount, scannedAt, cacheFile, fromCache, javaFileCount, projects[], message }
   // 查询/刷新「上下文目录」递归项目索引（refresh=1 强制重扫）
   contextStatus(dir, refresh) {
@@ -120,7 +127,14 @@ export const api = {
         handlers.onError && handlers.onError({ message: '无法连接后端服务：' + e.message }); return
       }
       if (!res.ok) {
-        handlers.onError && handlers.onError({ message: `${res.status} ${res.statusText}` }); return
+        // 后端 sendError 返回 {"error": "..."}（如「比对尚未完成: RUNNING」）；读取它以给出可读原因，
+        // 而非生硬的 `409 Conflict`。非 JSON 时回退到 HTTP 状态描述。
+        let msg = `${res.status} ${res.statusText}`
+        try {
+          const j = await res.json()
+          if (j && j.error) msg = j.error
+        } catch (e) { /* 非 JSON 响应，保留状态描述 */ }
+        handlers.onError && handlers.onError({ message: msg }); return
       }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()

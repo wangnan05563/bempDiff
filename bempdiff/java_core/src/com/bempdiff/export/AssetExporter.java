@@ -12,6 +12,7 @@ import com.bempdiff.parse.PackageParser;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -52,7 +53,7 @@ public final class AssetExporter {
         // 删除类用老包；其余用新包（新增/修改）
         LogicalEntry srcEntry = (st == DiffStatus.DELETED) ? oe : ne;
         PackageSnapshot srcSnap = (st == DiffStatus.DELETED) ? oldSnap : newSnap;
-        if (srcEntry == null) {
+        if (srcEntry == null || srcEntry.getFileClass() == FileClass.FOLDER) {
             return;
         }
         byte[] bytes = parser.readEntryBytes(srcSnap, srcEntry);
@@ -91,7 +92,7 @@ public final class AssetExporter {
         LogicalEntry oe = oldSnap.getEntries().get(k);
         LogicalEntry srcEntry = (st == DiffStatus.DELETED) ? oe : ne;
         PackageSnapshot srcSnap = (st == DiffStatus.DELETED) ? oldSnap : newSnap;
-        if (srcEntry == null) {
+        if (srcEntry == null || srcEntry.getFileClass() == FileClass.FOLDER) {
             return;
         }
         byte[] bytes = parser.readEntryBytes(srcSnap, srcEntry);
@@ -153,5 +154,66 @@ public final class AssetExporter {
 
     private static boolean isClassEntry(LogicalEntry e) {
         return e != null && e.getFileClass() == FileClass.CLASS && e.getLayer() == Layer.L1;
+    }
+
+    /**
+     * ④ 增量更新资产目录（增量更新场景的主产物）：
+     *  - increment/：新包中所有 ADDED/MODIFIED 的完整文件（含 L1 class 原始字节、/lib jar、资源、其他层），
+     *    严格保持新包相对路径——用户解压 increment/ 直接覆盖到同结构目录即可完成增量部署；
+     *  - deleted/：新包中被删除的文件（读老包字节），单独分类供用户人工处理旧包残留。
+     * 不导出反编译源码/差异片段，所有文件均为源包中的原始字节（class 即编译后的 .class，可直接部署）。
+     */
+    public Path exportIncrement(DiffResult r, PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                                Path outDir) throws IOException {
+        Path incDir = outDir.resolve("increment");
+        Path delDir = outDir.resolve("deleted");
+        Files.createDirectories(incDir);
+        Files.createDirectories(delDir);
+        // 新增/修改 → increment/（读新包）；删除 → deleted/（读老包）
+        for (DiffStatus st : new DiffStatus[]{DiffStatus.ADDED, DiffStatus.MODIFIED}) {
+            for (String k : r.get(st)) {
+                exportIncrementEntry(k, newSnap, incDir);
+            }
+        }
+        for (String k : r.get(DiffStatus.DELETED)) {
+            exportIncrementEntry(k, oldSnap, delDir);
+        }
+        return outDir;
+    }
+
+    private void exportIncrementEntry(String k, PackageSnapshot srcSnap, Path dir) throws IOException {
+        LogicalEntry entry = srcSnap.getEntries().get(k);
+        if (entry == null || entry.getFileClass() == FileClass.FOLDER) {
+            return;
+        }
+        byte[] bytes = parser.readEntryBytes(srcSnap, entry);
+        // 越界防护（Zip Slip）：写盘前确认目标落在目标目录（increment/ 或 deleted/）内
+        Path target = dir.resolve(k).normalize();
+        Path dirNorm = dir.toAbsolutePath().normalize();
+        if (!target.toAbsolutePath().normalize().startsWith(dirNorm)) {
+            throw new IOException("拒绝越界写文件（Zip Slip）: " + k);
+        }
+        Files.createDirectories(target.getParent());
+        Files.write(target, bytes);
+    }
+
+    /** ⑤ 将导出目录树递归打包为 zip（差异 class/jar/全量目录 + 反编译源码包统一归档）。
+     *  保留相对路径；跳过 zipOut 自身，避免迭代写入自身。 */
+    public Path zipTree(Path root, Path zipOut) throws IOException {
+        try (OutputStream fos = Files.newOutputStream(zipOut);
+             BufferedOutputStream bos = new BufferedOutputStream(fos);
+             ZipOutputStream zos = new ZipOutputStream(bos)) {
+            Files.walk(root).filter(Files::isRegularFile).filter(p -> !p.equals(zipOut)).forEach(p -> {
+                try {
+                    String rel = root.relativize(p).toString().replace('\\', '/');
+                    zos.putNextEntry(new ZipEntry(rel));
+                    Files.copy(p, zos);
+                    zos.closeEntry();
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+        }
+        return zipOut;
     }
 }

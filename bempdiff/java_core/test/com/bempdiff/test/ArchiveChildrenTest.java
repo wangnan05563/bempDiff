@@ -170,6 +170,39 @@ public final class ArchiveChildrenTest {
         Asserts.assertTrue("错误应说明不支持", u.getError().contains("不支持") || u.getError().contains("二进制"));
     }
 
+    /** 比对级忽略扩展名应作用于嵌套归档内部：jar 内的 META-INF/MANIFEST.MF 在展开列表中被跳过。
+     *  守护用户反馈"zip 下嵌套 jar 包与 jar 包中的 .MF 未生效"。 */
+    public void testIgnoreExtensionsFiltersNestedMf() throws IOException {
+        // 内层：一个 jar，内含 MANIFEST.MF + 一个正常 class
+        Map<String, byte[]> jar = new LinkedHashMap<>();
+        jar.put("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n".getBytes());
+        jar.put("com/internal/B.class", "b1".getBytes());
+        Map<String, byte[]> jar2 = new LinkedHashMap<>();
+        jar2.put("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nChanged\n".getBytes());
+        jar2.put("com/internal/B.class", "b2".getBytes());
+
+        // 外层：app.zip 只含 lib/bundle.jar
+        Map<String, byte[]> outerOld = new LinkedHashMap<>();
+        outerOld.put("lib/bundle.jar", TestFixtures.makeZip(jar));
+        Map<String, byte[]> outerNew = new LinkedHashMap<>();
+        outerNew.put("lib/bundle.jar", TestFixtures.makeZip(jar2));
+        PackageSnapshot oldSnap = snap("app.zip", outerOld);
+        PackageSnapshot newSnap = snap("app.zip", outerNew);
+
+        // 不忽略默认：jar 内 MANIFEST.MF 应展开出来
+        List<Map<String, Object>> rawInner = ArchiveTree.computeChildren(oldSnap, newSnap, "app.zip!/lib/bundle.jar");
+        Map<String, Map<String, Object>> rawIdx = index(rawInner);
+        Asserts.assertNotNull("默认应含 jar 内 MANIFEST.MF", rawIdx.get("app.zip!/lib/bundle.jar!/META-INF/MANIFEST.MF"));
+
+        // 忽略 .mf：MANIFEST.MF 从展开列表消失，class 保留
+        java.util.List<String> ignores = new ArrayList<>();
+        ignores.add(".mf");
+        List<Map<String, Object>> filtered = ArchiveTree.computeChildren(oldSnap, newSnap, "app.zip!/lib/bundle.jar", ignores);
+        Map<String, Map<String, Object>> filteredIdx = index(filtered);
+        Asserts.assertNull("忽略 .mf 后 jar 内 MANIFEST.MF 不应展开", filteredIdx.get("app.zip!/lib/bundle.jar!/META-INF/MANIFEST.MF"));
+        Asserts.assertNotNull("忽略 .mf 不应误伤 jar 内 class", filteredIdx.get("app.zip!/lib/bundle.jar!/com/internal/B.class"));
+    }
+
     // ===================== 夹具 =====================
 
     /** 用 条目名->字节 构造一个归档：把 zip 落盘，并在快照里登记一个顶层归档条目

@@ -1,8 +1,9 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning } from '../store'
+import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import PathBreadcrumb from './PathBreadcrumb.vue'
+import Downloads from './Downloads.vue'
 
 const props = defineProps({
   onOpenConfig: { type: Function, required: true },
@@ -23,8 +24,12 @@ function onDocClick(e) {
 onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
-function onReport(ai) { showExport.value = false; generateReport(ai) }
+// 收敛：工具栏仅保留「生成纯文本/Markdown 报告（不调用 AI）」；AI 报告入口统一在 InfoPanel / ReportPreview
+function onReport() { showExport.value = false; generateReport(false) }
 function onExport() { showExport.value = false; downloadExport() }
+function onExports() { showExport.value = false; openExports() }
+// 大包异步导出进行中记录数：在「下载管理」入口显示轻量角标提醒（不自动弹面板——方案 B，避免遮挡导出下拉）
+const runningExports = computed(() => state.exportRecords.filter(r => r.status === 'running').length)
 function onClassify() { runAiClassify() }
 // 工具栏 AI 按钮：直接发起一个「整体风险分析」任务（非阻塞，结果落在下方控制台），不再弹阻塞模态。
 function onAiAnalyze() { startAiAnalysis('risk') }
@@ -135,6 +140,7 @@ function toggleTheme() { applyTheme(isDark.value ? 'light' : 'dark') }
 // AI 分析进行中：禁用工具栏的对比按钮与路径输入框，避免干扰正在生成的对比结果。
 // 复用 store.aiAnyRunning 单一判定源，避免双处维护漂移（评审 P2 #15）。
 const aiBusy = computed(() => aiAnyRunning())
+const unpacking = computed(() => isUnpacking())
 
 // 桌面壳（Electron / Tauri）：原生对话框直接拿绝对路径（免上传）；浏览器模式：提示手动输入服务器本机绝对路径。
 async function browse(which) {
@@ -236,27 +242,42 @@ function doCompare() { triggerCompare() }
         <i class="bi bi-filetype-md"></i>
       </button>
       <button class="btn btn-outline-secondary btn-sm" @click="onAiAnalyze"
-              :disabled="!state.job || aiBusy"
-              :title="aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '发起新的 AI 分析（在下方控制台实时流式输出，可并行多类别）'">
+              :disabled="!state.job || aiBusy || unpacking"
+              :title="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '发起新的 AI 分析（在下方控制台实时流式输出，可并行多类别）')">
         <i class="bi bi-cpu"></i>
       </button>
+      <!-- 与右侧「智能分析」一致：只保留图标，文字「智能分类」隐藏，避免工具栏被文字占宽；功能与悬停提示（title）不变。 -->
       <button class="btn btn-outline-secondary btn-sm" @click="onClassify"
               :disabled="!state.job || state.job.status !== 'DONE' || state.classifying || aiBusy"
               :title="state.classifying ? '智能分类中…' : (aiBusy ? 'AI 分析进行中，请稍候' : 'AI 自动对差异文件打标分类并评估风险等级，结果在左侧差异树展示')">
-        <span v-if="state.classifying" class="spinner-border spinner-border-sm me-1"></span>
-        <i v-else class="bi bi-tags"></i>
-        {{ state.classifying ? '分类中' : '智能分类' }}
+        <span v-if="state.classifying" class="spinner-border spinner-border-sm" role="status" aria-label="智能分类中"></span>
+        <i v-else class="bi bi-tags" role="img" aria-label="智能分类" title="智能分类"></i>
       </button>
       <div class="position-relative" ref="exportWrap">
-        <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job" title="导出差异报告或差异资产">
+        <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job || state.exporting" :title="state.exporting ? '导出进行中，完成前禁用' : '导出差异报告或差异资产'">
           <i class="bi bi-file-earmark-arrow-down"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end show py-1" v-if="showExport"
             style="position:absolute;right:0;top:100%;z-index:1000">
-          <li><a class="dropdown-item" href="#" @click.prevent="onReport(false)" title="生成纯文本/Markdown 差异报告（不调用 AI）"><i class="bi bi-filetype-md"></i> 生成报告</a></li>
-          <li><a class="dropdown-item" href="#" :class="{ disabled: aiBusy }" @click.prevent="!aiBusy && onReport(true)" title="调用 AI 生成风险/影响评估报告（需启用 AI 分析并配置模型；AI 分析进行中暂不可用）"><i class="bi bi-cpu"></i> 生成报告(AI)</a></li>
-          <li><a class="dropdown-item" href="#" @click.prevent="onExport" title="导出差异文件、反编译源码、报告等资产为 zip 包"><i class="bi bi-box-seam"></i> 导出差异资产(zip)</a></li>
-        </ul>
+          <li><a class="dropdown-item" href="#" :class="{ disabled: unpacking }" @click.prevent="!unpacking && onReport()" title="生成纯文本/Markdown 差异报告（不调用 AI）"><i class="bi bi-filetype-md"></i> 生成报告</a></li>
+          <!-- AI 分析入口统一收敛到右上角「发起新的 AI 分析」（onAiAnalyze），此处不再重复提供「生成报告(AI)」 -->
+          <li><a class="dropdown-item" href="#" :class="{ disabled: state.exporting || unpacking }" @click.prevent="!state.exporting && !unpacking && onExport()" title="导出过滤后的全部差异文件（class/jar、反编译源码）及差异清单，打包为 zip 供替换/提交参考">
+            <span v-if="state.exporting" class="spinner-border spinner-border-sm align-middle me-1" role="status" aria-hidden="true"></span>
+            <i v-else class="bi bi-box-seam"></i> {{ state.exporting
+              ? (state.exportProgress && state.exportProgress.percent != null ? `导出中 ${state.exportProgress.percent}%` : '导出中…')
+              : '导出差异资产(zip)' }}</a></li>
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item" href="#" @click.prevent="onExports()" title="查看/刷新/删除导出记录，下载已完成的大包导出文件"><i class="bi bi-download"></i> 下载管理<span v-if="runningExports" class="badge text-bg-primary ms-1 align-middle">{{ runningExports }}</span></a></li>
+          </ul>
+      </div>
+      <div v-if="state.exportProgress && state.exportProgress.total > 0"
+           class="position-relative" style="width:7rem">
+        <div class="progress" style="height:8px">
+          <div class="progress-bar" role="progressbar"
+               :style="{ width: state.exportProgress.percent + '%' }"
+               :aria-valuenow="state.exportProgress.percent" aria-valuemin="0" aria-valuemax="100"></div>
+        </div>
+        <span class="text-secondary" style="font-size:.66rem">{{ state.exportProgress.percent }}% {{ state.exportProgress.etaText }}</span>
       </div>
       <button class="btn btn-outline-secondary btn-sm" @click="toggleTheme"
               :title="isDark ? '切换浅色' : '切换深色'">
@@ -264,6 +285,8 @@ function doCompare() { triggerCompare() }
       </button>
       <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
     </div>
+    <!-- 下载管理面板：与导出按钮同级位置，集中展示导出记录（含异步大包导出） -->
+    <Downloads v-if="state.exportsOpen" />
   </div>
 </template>
 

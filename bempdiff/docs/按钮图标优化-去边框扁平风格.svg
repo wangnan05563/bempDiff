@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="360" viewBox="0 0 720 360" font-family="Microsoft YaHei, PingFang SC, sans-serif">
+  <rect width="720" height="360" fill="#f6f7fb"></rect>
+  <text x="40" y="40" font-size="16" font-weight="700" fill="#374151">按钮图标优化 去边框扁平风格</text>
+  <text x="40" y="78" font-size="13" font-weight="600" fill="#6b7280">优化前：outline 描边按钮</text>
+  <g>
+    <rect x="40" y="92" width="52" height="40" rx="6" fill="#ffffff" stroke="#adb5bd" stroke-width="1.2"></rect>
+    <rect x="100" y="92" width="52" height="40" rx="6" fill="#ffffff" stroke="#adb5bd" stroke-width="1.2"></rect>
+    <rect x="160" y="92" width="52" height="40" rx="6" fill="#ffffff" stroke="#0d6efd" stroke-width="1.2"></rect>
+  </g>
+  <text x="40" y="156" font-size="12" fill="#9ca3af">btn-outline-secondary / btn-outline-primary 带 1px 描边</text>
+  <text x="40" y="190" font-size="13" font-weight="600" fill="#6b7280">优化后：去描边 扁平填充</text>
+  <g>
+    <rect x="40" y="204" width="52" height="40" rx="6" fill="#ffffff"></rect>
+    <rect x="100" y="204" width="52" height="40" rx="6" fill="#e9ecef"></rect>
+    <rect x="160" y="204" width="52" height="40" rx="6" fill="#cfe2ff"></rect>
+  </g>
+  <text x="40" y="268" font-size="12" fill="#9ca3af">默认透明 hover 浅灰底 active 主色淡底</text>
+  <text x="40" y="302" font-size="13" font-weight="600" fill="#6b7280">主操作按钮（实底填充，本就无边框，保持不变）</text>
+  <g>
+    <rect x="40" y="314" width="88" height="34" rx="6" fill="#0d6efd"></rect>
+    <text x="84" y="336" font-size="13" text-anchor="middle" fill="#ffffff">开始比对</text>
+    <rect x="140" y="314" width="88" height="34" rx="6" fill="#0d6efd"></rect>
+    <text x="184" y="336" font-size="13" text-anchor="middle" fill="#ffffff">生成报告</text>
+  </g>
+  <g transform="translate(430,80)">
+    <text x="0" y="0" font-size="13" font-weight="600" fill="#374151">覆盖规则（main.css）</text>
+    <g font-size="11.5" fill="#6b7280">
+      <rect x="0" y="16" width="14" height="14" rx="3" fill="#ffffff"></rect><text x="22" y="27">btn-outline-secondary 默认透明</text>
+      <rect x="0" y="38" width="14" height="14" rx="3" fill="#e9ecef"></rect><text x="22" y="49">hover 浅灰底</text>
+      <rect x="0" y="60" width="14" height="14" rx="3" fill="#cfe2ff"></rect><text x="22" y="71">active 主色淡底</text>
+      <rect x="0" y="82" width="14" height="14" rx="3" fill="#0d6efd"></rect><text x="22" y="93">outline-primary active 主色实底</text>
+      <rect x="0" y="104" width="14" height="14" rx="3" fill="#f1aeb5"></rect><text x="22" y="115">outline-danger hover 危险淡底</text>
+    </g>
+  </g>
+</svg>

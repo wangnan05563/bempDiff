@@ -33,6 +33,7 @@ public final class ServerConfig {
     private static final String K_EXPAND_ALL = "expandAll";
     private static final String K_TOP_K = "topK";
     private static final String K_CFR_JAR = "cfrJar";
+    private static final String K_IGNORE_EXTENSIONS = "ignoreExtensions";
     private static final String K_HTTP_PROXY = "httpProxy";
     private static final String K_HTTPS_PROXY = "httpsProxy";
     private static final String K_BLOCK_PRIVATE_ENDPOINTS = "blockPrivateEndpoints";
@@ -46,6 +47,9 @@ public final class ServerConfig {
     private static final String K_FILTER_SHOW_DELETED = "filterShowDeleted";
     private static final String K_FILTER_SHOW_UNCHANGED = "filterShowUnchanged";
     private static final String K_AUTO_AI_ON_COMPARE = "autoAiOnCompare";
+    private static final String K_UNPACK_NESTED = "unpackNested";
+    private static final String K_UNPACK_THREADS = "unpackThreads";
+    private static final String K_UNPACK_MAX_DEPTH = "unpackMaxDepth";
     private static final String K_FALSE = "false";
 
     private String aiProvider = "openai";
@@ -60,6 +64,8 @@ public final class ServerConfig {
     private boolean expandAll = false;
     private int topK = 15;
     private String cfrJar = "";
+    // 比对级忽略扩展名（如 .log/.mf/.properties）。逗号分隔落盘；比对时透传给 ParseConfig 解析阶段过滤。
+    private java.util.List<String> ignoreExtensions = new java.util.ArrayList<>();
     private String httpProxy = "";
     private String httpsProxy = "";
     private boolean blockPrivateEndpoints = false;
@@ -76,7 +82,46 @@ public final class ServerConfig {
     private boolean filterShowUnchanged = true;
     private boolean autoAiOnCompare = true;
 
+    // 自动逐层解包（WAR/ZIP/JAR 嵌套归档多线程物理展开）：默认开启，使嵌套包在比对完成后即自动解包，
+    // AI/导出覆盖嵌套子文件；解包在 DONE 之前完成（job 状态门控保证 AI/导出不会在解包中执行）。
+    private boolean unpackNested = true;
+    private int unpackThreads = 4;
+    private int unpackMaxDepth = 6;
+
     private final Path file;
+
+    // P1-F 异步落盘器：单一后台线程顺序写文件，合并突发 PUT（只落最新快照），请求线程不阻塞于磁盘 IO。
+    private final java.util.concurrent.ExecutorService saveExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "bempdiff-config-save");
+                t.setDaemon(true);
+                return t;
+            });
+    private final java.util.concurrent.atomic.AtomicReference<Properties> pendingSave =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    {
+        // JVM 退出前把未落盘的最新快照写完（shutdown 后已提交任务仍会执行，循环会排空 pending）。
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            saveExecutor.shutdown();
+            try {
+                saveExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+    }
+    /** P1-F：就地更新后异步落盘。每次构建最新快照入队，后台线程循环排空，突发并发写自然合并为最新状态。 */
+    private void scheduleAsyncSave() {
+        pendingSave.set(toProperties());
+        saveExecutor.execute(this::flushPendingSave);
+    }
+    /** P1-F：排空待写快照直到无新内容（合并突发）；getAndSet 原子取走，写期间到达的新快照被同一循环续写。 */
+    private void flushPendingSave() {
+        Properties snap;
+        while ((snap = pendingSave.getAndSet(null)) != null) {
+            writeProperties(snap);
+        }
+    }
 
     public ServerConfig(Path file) {
         this.file = file;
@@ -117,17 +162,21 @@ public final class ServerConfig {
             filterShowDeleted = Boolean.parseBoolean(p.getProperty(K_FILTER_SHOW_DELETED, "true"));
             filterShowUnchanged = Boolean.parseBoolean(p.getProperty(K_FILTER_SHOW_UNCHANGED, "true"));
             autoAiOnCompare = Boolean.parseBoolean(p.getProperty(K_AUTO_AI_ON_COMPARE, "true"));
+            unpackNested = Boolean.parseBoolean(p.getProperty(K_UNPACK_NESTED, "true"));
+            unpackThreads = Integer.parseInt(p.getProperty(K_UNPACK_THREADS, "4"));
+            unpackMaxDepth = Integer.parseInt(p.getProperty(K_UNPACK_MAX_DEPTH, "6"));
+            ignoreExtensions = parseExtList(p.getProperty(K_IGNORE_EXTENSIONS, ""));
         } catch (IOException | NumberFormatException e) {
             LOG.log(Level.WARNING, "加载服务端配置失败", e);
         }
     }
 
     public void save() {
-        try {
-            if (file.getParent() != null) Files.createDirectories(file.getParent());
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "创建配置目录失败", e);
-        }
+        writeProperties(toProperties());
+    }
+
+    /** 把当前内存配置物化为 Properties 快照（供同步 save 与异步合并写共用同一构建逻辑，避免两侧漂移）。 */
+    private Properties toProperties() {
         Properties p = new Properties();
         p.setProperty(K_AI_PROVIDER, aiProvider);
         p.setProperty(K_AI_BASE_URL, aiBaseUrl);
@@ -157,6 +206,19 @@ public final class ServerConfig {
         p.setProperty(K_FILTER_SHOW_DELETED, String.valueOf(filterShowDeleted));
         p.setProperty(K_FILTER_SHOW_UNCHANGED, String.valueOf(filterShowUnchanged));
         p.setProperty(K_AUTO_AI_ON_COMPARE, String.valueOf(autoAiOnCompare));
+        p.setProperty(K_UNPACK_NESTED, String.valueOf(unpackNested));
+        p.setProperty(K_UNPACK_THREADS, String.valueOf(unpackThreads));
+        p.setProperty(K_UNPACK_MAX_DEPTH, String.valueOf(unpackMaxDepth));
+        p.setProperty(K_IGNORE_EXTENSIONS, joinExtList(ignoreExtensions));
+        return p;
+    }
+
+    private void writeProperties(Properties p) {
+        try {
+            if (file.getParent() != null) Files.createDirectories(file.getParent());
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "创建配置目录失败", e);
+        }
         try (OutputStream out = Files.newOutputStream(file)) {
             p.store(out, "BEMP Web Server Config (可能含 API Key，请勿提交/共享)");
         } catch (IOException e) {
@@ -221,6 +283,10 @@ public final class ServerConfig {
         m.put(K_FILTER_SHOW_DELETED, filterShowDeleted);
         m.put(K_FILTER_SHOW_UNCHANGED, filterShowUnchanged);
         m.put(K_AUTO_AI_ON_COMPARE, autoAiOnCompare);
+        m.put(K_UNPACK_NESTED, unpackNested);
+        m.put(K_UNPACK_THREADS, unpackThreads);
+        m.put(K_UNPACK_MAX_DEPTH, unpackMaxDepth);
+        m.put(K_IGNORE_EXTENSIONS, new java.util.ArrayList<>(ignoreExtensions));
         // 仅在用户开启「记住 API Key」时回显明文 Key：此时密钥本就落盘（明文存于 properties），
         // 回显到前端不增加额外暴露；未开启（默认安全模式）则只给 hasApiKey 标记，避免把内存态密钥泄露到 UI。
         m.put("hasApiKey", aiApiKey != null && !aiApiKey.isEmpty());
@@ -230,12 +296,24 @@ public final class ServerConfig {
         return m;
     }
 
-    /** 从 JSON 更新（PUT），并就地保存。 */
+    /** 从 JSON 更新（PUT），并就地保存（同步落盘；保确定性，供测试/需要立即可见落盘的场景）。 */
     public void updateFrom(java.util.Map<String, Object> m) {
+        applyAll(m);
+        save();
+    }
+
+    /** P1-F：从 JSON 就地更新 + 异步合并落盘（HTTP PUT 使用）。
+     *  磁盘写委托给单一后台线程并合并突发（只落最新快照），请求线程不阻塞于 IO，
+     *  使 config-put 延迟从 ~90-178ms 降到内存级（性能报告 §9-F）。 */
+    public void updateFromAsync(java.util.Map<String, Object> m) {
+        applyAll(m);
+        scheduleAsyncSave();
+    }
+
+    private void applyAll(java.util.Map<String, Object> m) {
         applyAiFields(m);
         applyParseAndNetworkFields(m);
         applyProjectAndFilterFields(m);
-        save();
     }
 
     private void applyAiFields(java.util.Map<String, Object> m) {
@@ -260,6 +338,9 @@ public final class ServerConfig {
         if (m.containsKey(K_HTTPS_PROXY)) httpsProxy = Json.str(m, K_HTTPS_PROXY, httpsProxy);
         if (m.containsKey(K_BLOCK_PRIVATE_ENDPOINTS)) blockPrivateEndpoints = Json.bool(m, K_BLOCK_PRIVATE_ENDPOINTS, blockPrivateEndpoints);
         if (m.containsKey(K_PERSIST_API_KEY)) persistApiKey = Json.bool(m, K_PERSIST_API_KEY, persistApiKey);
+        if (m.containsKey(K_UNPACK_NESTED)) unpackNested = Json.bool(m, K_UNPACK_NESTED, unpackNested);
+        if (m.containsKey(K_UNPACK_THREADS)) unpackThreads = Math.max(1, Json.intv(m, K_UNPACK_THREADS, unpackThreads));
+        if (m.containsKey(K_UNPACK_MAX_DEPTH)) unpackMaxDepth = Math.max(1, Json.intv(m, K_UNPACK_MAX_DEPTH, unpackMaxDepth));
     }
 
     private void applyProjectAndFilterFields(java.util.Map<String, Object> m) {
@@ -272,5 +353,33 @@ public final class ServerConfig {
         if (m.containsKey(K_FILTER_SHOW_DELETED)) filterShowDeleted = Json.bool(m, K_FILTER_SHOW_DELETED, filterShowDeleted);
         if (m.containsKey(K_FILTER_SHOW_UNCHANGED)) filterShowUnchanged = Json.bool(m, K_FILTER_SHOW_UNCHANGED, filterShowUnchanged);
         if (m.containsKey(K_AUTO_AI_ON_COMPARE)) autoAiOnCompare = Json.bool(m, K_AUTO_AI_ON_COMPARE, autoAiOnCompare);
+        if (m.containsKey(K_IGNORE_EXTENSIONS)) {
+            Object ig = m.get(K_IGNORE_EXTENSIONS);
+            java.util.List<String> exts = new java.util.ArrayList<>();
+            if (ig instanceof java.util.List) {
+                for (Object x : (java.util.List<?>) ig) {
+                    if (x != null && !String.valueOf(x).trim().isEmpty()) exts.add(String.valueOf(x).trim());
+                }
+            } else if (ig != null) { // 兼容逗号分隔的字符串形态
+                for (String s : String.valueOf(ig).split("[,;\\s]+")) {
+                    if (!s.trim().isEmpty()) exts.add(s.trim());
+                }
+            }
+            ignoreExtensions = exts;
+        }
+    }
+
+    // 扩展名列表 <-> 逗号分隔字符串 互转（持久化用；与 updateFrom 的字符串兼容分支呼应）
+    private static java.util.List<String> parseExtList(String joined) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (joined == null || joined.isEmpty()) return out;
+        for (String s : joined.split("[,;\\s]+")) {
+            if (!s.trim().isEmpty()) out.add(s.trim());
+        }
+        return out;
+    }
+    private static String joinExtList(java.util.List<String> list) {
+        if (list == null || list.isEmpty()) return "";
+        return String.join(",", list);
     }
 }

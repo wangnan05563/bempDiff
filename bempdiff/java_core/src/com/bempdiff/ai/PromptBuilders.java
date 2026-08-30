@@ -3,6 +3,7 @@ package com.bempdiff.ai;
 import com.bempdiff.ai.context.ProjectContext;
 import com.bempdiff.config.AiConfig;
 import com.bempdiff.diff.DiffResult;
+import com.bempdiff.diff.DiffStats;
 import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.FileClass;
@@ -42,8 +43,20 @@ public final class PromptBuilders {
     /** 阶段A prompt（项目级上下文增强）：ctx 非空时注入「项目级上下文」章节并要求产出 contextInfluence。 */
     public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled,
                                      AiConfig cfg, ProjectContext ctx) {
+        return buildStageABody(diff, decompiled, cfg, ctx, null);
+    }
+
+    /** 阶段A prompt（携带顶层统计口径）：头部「差异统计」用 topStats（与折叠树一致），
+     *  文件摘要/深读仍按叶子级（嵌套 zip 内部也要被分析）。topStats 为空则回退叶子计数。 */
+    public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled,
+                                     AiConfig cfg, ProjectContext ctx, DiffStats topStats) {
+        return buildStageABody(diff, decompiled, cfg, ctx, topStats);
+    }
+
+    private static String buildStageABody(DiffResult diff, Map<String, DecompiledUnit> decompiled,
+                                          AiConfig cfg, ProjectContext ctx, DiffStats topStats) {
         StringBuilder p = new StringBuilder();
-        appendDiffHeader(p, diff, cfg);
+        appendDiffHeader(p, diff, cfg, topStats);
         appendContextSection(p, ctx);
         appendFileSummaries(p, diff, decompiled, cfg);
         return sanitize(p.toString(), cfg);
@@ -59,6 +72,10 @@ public final class PromptBuilders {
     }
 
     private static void appendDiffHeader(StringBuilder p, DiffResult diff, AiConfig cfg) {
+        appendDiffHeader(p, diff, cfg, null);
+    }
+
+    private static void appendDiffHeader(StringBuilder p, DiffResult diff, AiConfig cfg, DiffStats topStats) {
         p.append("你是软件构建包（含 Java 后端与前端 JS/HTML/CSS 资源）升级的差异分析助手。下面是新/老两个构建包的差异清单，");
         p.append("请据此以 JSON 返回，字段固定为：\n");
         p.append("- `overallRisk`：整体风险等级(LOW/MEDIUM/HIGH)\n");
@@ -66,10 +83,16 @@ public final class PromptBuilders {
         p.append("- `testThemes`：全局测试要点字符串数组\n");
         p.append("- `fileRisks`：每个改动文件的初评数组，元素含 `key`(文件路径)、`risk`(LOW/MEDIUM/HIGH)、`oneLineReason`(一句话理由)\n\n");
         p.append("## 差异统计\n");
-        p.append("新增=").append(diff.get(DiffStatus.ADDED).size())
-                .append(" 删除=").append(diff.get(DiffStatus.DELETED).size())
-                .append(" 修改=").append(diff.get(DiffStatus.MODIFIED).size())
-                .append(" 未变=").append(diff.get(DiffStatus.UNCHANGED).size()).append("\n\n");
+        // 有顶层统计（与折叠树一致）优先用；否则回退叶子级计数。嵌套 zip 内部不单独计入顶部统计，
+        // 但文件摘要/深读仍覆盖其内部，避免「头部聚合数误导模型」。
+        int add = topStats != null ? topStats.getAdded() : diff.get(DiffStatus.ADDED).size();
+        int del = topStats != null ? topStats.getDeleted() : diff.get(DiffStatus.DELETED).size();
+        int mod = topStats != null ? topStats.getModified() : diff.get(DiffStatus.MODIFIED).size();
+        int unch = topStats != null ? topStats.getUnchanged() : diff.get(DiffStatus.UNCHANGED).size();
+        p.append("新增=").append(add)
+                .append(" 删除=").append(del)
+                .append(" 修改=").append(mod)
+                .append(" 未变=").append(unch).append("\n\n");
         p.append("## 改动文件与 diff 摘要（截断，最多 ").append(cfg.getStageATopK()).append(" 个）\n");
         p.append("> 文件类型：`.class`=Java 后端类；`.js`=前端 JavaScript；`.html`=前端模板；`.css`=前端样式。\n\n");
     }
@@ -219,9 +242,75 @@ public final class PromptBuilders {
     /** 阶段A prompt（聚焦类别增强）：在基础 prompt 后追加聚焦指令，引导模型在指定维度深入。 */
     public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled,
                                      AiConfig cfg, ProjectContext ctx, String focus) {
+        // 历史兼容重载：无显式类别时按聚焦文本反推（仅供非分析项组装路径使用；生产主路径走 6 参版本）
+        return buildStageA(diff, decompiled, cfg, ctx, focus, categoryOfFocus(focus));
+    }
+
+    /** 阶段A prompt（权威类别增强）：与 5 参变体等价，但「分类结论 schema」以显式 {@code category} 为唯一
+     *  事实源（由调用方 normalizeCategory 得出），避免从聚焦文本反推导致 prompt 注入与渲染类别错位的隐患。 */
+    public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled,
+                                     AiConfig cfg, ProjectContext ctx, String focus, String category) {
         StringBuilder p = new StringBuilder(buildStageA(diff, decompiled, cfg, ctx));
         appendFocus(p, focus);
+        appendCategorySchema(p, category);
         return sanitize(p.toString(), cfg);
+    }
+
+    /** 阶段A prompt（权威类别增强 + 顶层统计口径）：头部聚合数用 topStats（与折叠树一致）。 */
+    public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled,
+                                     AiConfig cfg, ProjectContext ctx, String focus, String category, DiffStats topStats) {
+        StringBuilder p = new StringBuilder(buildStageABody(diff, decompiled, cfg, ctx, topStats));
+        appendFocus(p, focus);
+        appendCategorySchema(p, category);
+        return sanitize(p.toString(), cfg);
+    }
+
+    /**
+     * 由聚焦指令解析类别键（breaking/impact/testpoints/risk，其余为空串）。
+     * 与 MockAiAnalyzer.FocusKind.of 的判定口径保持一致，避免「prompt 注入」与「兜底差异化」错位。
+     */
+    public static String categoryOfFocus(String focus) {
+        if (focus == null || focus.trim().isEmpty()) return "";
+        if (focus.contains("破坏性") || focus.contains("兼容性") || focus.contains("接口契约")) return "breaking";
+        if (focus.contains("影响范围") || focus.contains("上下游") || focus.contains("依赖")) return "impact";
+        if (focus.contains("测试") || focus.contains("回归")) return "testpoints";
+        if (focus.contains("风险") || focus.contains("降级") || focus.contains("回滚")) return "risk";
+        return "";
+    }
+
+    /** 分类结论 schema 注入：按权威类别在「conclusion」对象内要求结构化字段；
+     *  空/未知/custom 不注入（渲染端自动回落为整体全面，避免专项结构错配）。 */
+    private static void appendCategorySchema(StringBuilder p, String category) {
+        if (category == null || category.isEmpty() || "custom".equals(category)) {
+            return;
+        }
+        p.append("\n## 分类结论输出（请按本类别返回差异化 JSON 结构）\n");
+        p.append("在返回的 JSON 中额外包含字段 `conclusion`（对象），并按以下结构组织：\n");
+        switch (category) {
+            case "breaking":
+                p.append("- `breakingChanges`：数组，元素含 `file`(文件)、`changeType`(删除/签名变更/接口契约破坏等)、"
+                        + "`change`(具体变更点)、`compatImpact`(兼容性影响)、`severity`(LOW/MEDIUM/HIGH)、"
+                        + "`migrationSuggestion`(迁移改造建议)\n");
+                p.append("- `compatibilityVerdict`：整体兼容性结论（不兼容点数量与严重度分级、需人工核对的接口清单）\n");
+                break;
+            case "impact":
+                p.append("- `affectedModules`：受影响模块/服务\n- `affectedApis`：受影响的对外接口/页面/接口契约\n"
+                        + "- `internalCallers`：受影响内部调用方与依赖链路\n- `diffusion`：影响扩散路径与数据流\n");
+                break;
+            case "testpoints":
+                p.append("- `testPoints`：数组，元素含 `item`(测试项)、`file`(涉及文件)、`scenario`(测试场景)、"
+                        + "`caseIdea`(用例思路)、`verifyFocus`(验证重点)\n");
+                break;
+            case "risk":
+                p.append("- `riskRationale`：整体风险等级判定依据\n- `rollbackPlan`：回滚预案\n"
+                        + "- `degradationPlan`：降级预案\n");
+                break;
+            default:
+                return;
+        }
+        p.append("- `suggestions`：具体、可实施的优化改造建议（Markdown 多行字符串，3~8 条为佳）\n");
+        p.append("`conclusion` 内容请聚焦本分析维度、仅保留与维度直接相关的内容，"
+                + "并紧密结合【项目级上下文】中的模块/依赖/入口/配置，使结论贴合实际项目环境。\n");
     }
 
     /** 阶段B 单文件 prompt（聚焦类别增强）。 */

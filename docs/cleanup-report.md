@@ -60,3 +60,60 @@
 
 ---
 *生成工具：workspace-cleanup skill · 配置驱动六阶段闭环（Recon → Classify → Impact → Execute → Verify → Archive）*
+
+---
+
+# 工作区清理报告（第 2 轮，2026-08-28）
+
+- **日期**：2026-08-28
+- **执行方式**：`workspace-cleanup` skill，配置驱动（`cleanup-config.yaml`），全面清理（含大体积可再生构建产物与 node_modules）
+- **安全策略**：删除前写 `logs/cleanup-20260828-backup-manifest.txt` 目标清单留痕；ctypes 直删（绕过 safe-delete 钩子）；删除后验证关键源码/配置/脚本/文档完整；jar/war/exe 一律不碰（review_categories 确认门）
+
+## 一、清理前后统计
+
+| 指标 | 清理前 | 清理后 |
+|---|---|---|
+| 删除文件总数 | — | **17,319** |
+| 释放空间 | — | **≈ 2.59 GB** |
+| 空目录目标（已删 10/11 个大目录） | — | 10 个 |
+| 锁定残留 | — | 2 个 `.jsa`（JVM CDS 缓存，被已安装 BempDiff 的 `javaw` 进程占用）|
+
+> 清理对象均为可再生构建产物 / 缓存 / 运行时日志 / 临时垃圾；不涉及任何源码、配置、脚本、文档、测试夹具与 jar/war/exe 依赖。
+
+## 二、已删除项（按分类）
+
+| 分类 | 路径 | 说明 |
+|---|---|---|
+| 根目录垃圾 | `Join-Path`、`_repro_dl.js`、`.issues.csv`、`.fix_strategies.json`、`.remaining_issues.csv`、`build_run.log` | PowerShell 编译错误误重定向产物、vite 构建残留、Sonar 扫描临时产物、构建日志 |
+| 运行时日志 | `logs/*`（16 个文件，保留 `logs/` 目录与备份清单） | pid/err/diag/smoke 等运行时日志 |
+| javac 编译产物 | `java_core/out`、`test_classes`、`test_out`、`vr_classes` | 编译中间产物，可 `javac` 重生 |
+| 前端构建产物 | `webui/dist` | vite 构建输出，可 `npm run build` 重生 |
+| node 依赖 | `node_modules` × 3（webui/dev-shell/根级） | 依赖，可 `npm install` 重生 |
+| 后端构建产物 | `dist_input` | 已 gitignored，可重新打包重生 |
+| Tauri/cargo 构建产物 | `src-tauri/target`（1.6 GB） | link 产物，可 `cargo build` 重生 |
+| jlink JRE 工具链 | `toolchain`（340 MB） | Zulu21 JRE，可 jlink 重建 |
+
+## 三、受保护未删除项（验证 PASS）
+
+- 全部 Java 源码：`bempdiff/java_core/src/**`、`test/**`（含 `TestRunner.java` 等）
+- 全部前端源码：`bempdiff/webui/src/**`、配置文件、`vite.config.js`、`package.json`
+- 桌面壳：`dev-shell/main.js`、`preload.js`、`src-tauri/src/*.rs`、`Cargo.toml`、发布产物 `release/win-unpacked/resources/app.asar`、`release_build/*.blockmap`
+- 测试夹具：`java_core/e2e_work/Demo.class.old` 等（jar/war/exe 全保留）
+- 配置/文档：`.gitignore`、`cleanup-config.yaml`、`sonar-project.properties`、`config/`、`tooling/scripts`、`docs/`
+
+## 四、验证结果（Phase 5）
+
+- ✅ 关键源/配置/脚本/文档完整性检查：**全部 OK（无 MISSING）**
+- ✅ git 中无本次误删的已跟踪文件（唯一 `D` 的 `tooling/scripts/启动桌面壳.bat` 系清理前已存在的工作区改动，非本次所致）
+- ✅ 残留 `toolchain/*.jsa` 已被 `bempdiff/.gitignore` 的 `toolchain/` 规则覆盖，不会入库
+- ⚠️ 2 个 `.jsa`（各 ~12.8 MB）被运行中的 BempDiff 应用 `javaw.exe(PID 43792)` 锁定无法删除；无需终止第三方进程，属可再生缓存，可忽略
+
+## 五、复发预防（Phase 6）
+
+根 `.gitignore` 已追加本轮规则：`/Join-Path`、`/_repro_dl.js`、`/build_run.log`、`bempdiff/webui/dist/`、`bempdiff/dev-shell/node_modules/`（+注释说明全局 `node_modules/` 覆盖）、`bempdiff/java_core/{out,test_classes,test_out,vr_classes}/`。
+
+- 建议：node_modules/构建产物按需在 CI/重新构建前 `npm install`/`cargo build` 重生；周期性重跑本 skill 复查 `logs/` 增长与根部堆积垃圾。
+- 审计留痕：`logs/cleanup-20260828-backup-manifest.txt`（完整目标清单）。
+
+---
+*第 2 轮清理完成 · workspace-cleanup 六阶段闭环（Recon → Classify → Impact → Execute → Verify → Archive）*

@@ -124,7 +124,11 @@ public final class OfficeTextDiffTest {
     // ----------------------------- 旧版二进制 OLE -----------------------------
 
     public void testLegacyDocUnsupported() throws java.io.IOException {
-        byte[] ole = "D0 CF 11 E0 不是 zip 的假字节".getBytes(StandardCharsets.UTF_8);
+        // 真实 OLE 容器头魔数（D0CF11E0A1B11AE1）+ 假尾部：isOle=true → 走 extractXls，
+        // 触发「旧版二进制 .doc/.ppt 请另存为 .docx/.pptx」的明确提示。
+        byte[] ole = new byte[64];
+        byte[] magic = { (byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1 };
+        System.arraycopy(magic, 0, ole, 0, magic.length);
         DecompiledUnit u = new OfficeTextDiff().diffBytes(ole, ole, "legacy.doc", FileClass.OFFICE, DiffRules.DEFAULT);
         Asserts.assertFalse("旧版二进制 .doc 应 fail", u.isOk());
         Asserts.assertTrue("错误信息应提示另存为 docx", u.getError().contains("docx"));

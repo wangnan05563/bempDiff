@@ -16,14 +16,13 @@ const showReport = ref(false)
 onMounted(() => init())
 
 // ===== 左右栏拖拽调宽（分隔条） =====
-// 两栏宽度由此统一管理：树栏随拖拽实时改宽；分析栏「仅在用户拖拽过」后用内联样式固定宽度，
+// 两栏宽度由此统一管理：树栏随拖拽实时改宽；分析栏「仅在用户拖拽过」后才固定为内联宽度，
 // 否则保持 CSS + media query 的窄屏自动压缩（避免用户从未拖拽时被意外覆盖）。
+// 注意：宽度必须经 prop 传入组件，而非 :style 透传——DiffTree 渲染为 fragment（含右键菜单/属性弹窗
+// 多个顶层根节点），style 无法 fallthrough 到唯一根元素（曾导致拖拽无效的 bug）。
 const treeW = ref(300)
 const aiW = ref(380)
 const aiResized = ref(false)
-// 收起态时都不下内联宽度，让 .col-* 的 collapsed 类（44px 窄条）生效
-const treeStyle = computed(() => state.treePanelCollapsed ? undefined : { width: treeW.value + 'px' })
-const aiStyle = computed(() => (state.aiPanelCollapsed || !aiResized.value) ? undefined : { width: aiW.value + 'px' })
 
 let dragCtx = null
 function startResize(which, e) {
@@ -81,13 +80,13 @@ function onPreviewClose() {
 
   <!-- 专注模式：隐藏左右栏，中间 diff 占满视野（由 state.focusMode 控制） -->
   <div class="app-main" :class="{ 'focus-mode': state.focusMode }">
-    <DiffTree :style="treeStyle" />
+    <DiffTree :panel-width="treeW" />
     <div v-show="!state.treePanelCollapsed" class="vt-handle" title="拖拽调整差异文件树宽度"
          @mousedown="startResize('tree', $event)"></div>
     <DiffView />
     <div v-show="!state.aiPanelCollapsed" class="vt-handle" title="拖拽调整智能分析面板宽度"
          @mousedown="startResize('ai', $event)"></div>
-    <InfoPanel :style="aiStyle" />
+    <InfoPanel :panel-width="aiResized ? aiW : undefined" />
   </div>
 
   <StatusBar />

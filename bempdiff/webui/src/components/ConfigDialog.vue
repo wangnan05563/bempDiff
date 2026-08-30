@@ -1,7 +1,9 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { state, saveConfig, testConnection, fetchModels, loadContextStatus } from '../store'
+import { state, saveConfig, testConnection, fetchModels, loadContextStatus, toast } from '../store'
+import { api } from '../api/client'
 import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
+import HelpDoc from './HelpDoc.vue'
 
 const props = defineProps({ visible: { type: Boolean, default: false } })
 const emit = defineEmits(['close'])
@@ -19,6 +21,68 @@ const PRESETS = [
   { key: 'doubao',   label: '豆包 (火山方舟)',      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-4.0-241128', local: false },
   { key: 'custom',   label: '自定义 OpenAI 兼容',   baseUrl: '', model: '', local: false }
 ]
+
+// 比对级忽略的常用文件类型（多选）。value 存点号前缀的小写扩展名，与后端 CompareOptions.ignoreExtensions 对齐。
+// 运行时按需增删；勾选后对比会忽略这些类型的条目（日志、临时文件、锁文件、压缩包、图片等常见噪声）。
+const IGNORE_EXT_PRESETS = [
+  { value: '.log',        label: '日志 .log',        hint: '运行日志、控制台输出' },
+  { value: '.tmp',        label: '临时 .tmp',        hint: '临时文件' },
+  { value: '.swp',        label: '交换 .swp',        hint: 'vi/vim 交换文件' },
+  { value: '.bak',        label: '备份 .bak',        hint: '备份副本' },
+  { value: '.class',      label: '字节码 .class',    hint: '编译产物（忽略则只看源码不改）' },
+  { value: '.jar',        label: '归档 .jar',        hint: '第三方 Jar（忽略则跳过整个依赖包）' },
+  { value: '.zip',        label: '压缩 .zip',        hint: 'zip 归档' },
+  { value: '.war',        label: '压缩 .war',        hint: 'war 归档' },
+  { value: '.png',        label: '图片 .png',        hint: '位图资源' },
+  { value: '.jpg',        label: '图片 .jpg/.jpeg',  hint: '位图资源' },
+  { value: '.gif',        label: '图片 .gif',        hint: '动图资源' },
+  { value: '.svg',        label: '矢量 .svg',        hint: '矢量图资源' },
+  { value: '.ico',        label: '图标 .ico',        hint: '站点/应用图标' },
+  { value: '.db',         label: '数据库 .db',       hint: 'SQLite 等本地库文件' },
+  { value: '.lock',       label: '锁 .lock',         hint: '依赖锁/进程锁（忽略可避免伪造差异）' },
+  { value: '.map',        label: '源码映射 .map',    hint: '前端 sourcemap' },
+  { value: '.min.js',     label: '压缩JS .min.js',   hint: '前端压缩产物' },
+  { value: '.txt',        label: '纯文本 .txt',      hint: '说明/README（按需）' }
+]
+
+// 勾选响应：把「是否已勾选」的布尔映射转回扩展名数组（value 即点号扩展名，直接存储）。
+function midToggle(ev, id) {
+  const checked = !!ev && !!ev.target && ev.target.checked
+  const cur = Array.isArray(form.ignoreExtensions) ? form.ignoreExtensions.slice() : []
+  if (!checked) form.ignoreExtensions = cur.filter(v => v !== id)
+  else if (!cur.includes(id)) form.ignoreExtensions = [...cur, id]
+}
+
+// 自定义后缀：输入框内容（如 ".MF" / "properties"，允许带或不带点，允许逗号分隔多个）
+const customExt = ref('')
+// 归一化单个输入为点号小写扩展名；非法（空/含路径分隔符/端点）返回 null
+function normalizeExt(raw) {
+  let v = String(raw || '').trim()
+  if (!v) return null
+  const segs = v.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean)
+  const out = []
+  for (let s of segs) {
+    if (!s.startsWith('.')) s = '.' + s
+    if (s === '.') continue
+    if (s.includes('/') || s.includes('\\')) continue
+    out.push(s.toLowerCase())
+  }
+  return out
+}
+// 添加自定义后缀到忽略列表（立即生效，保存时随 form 一并提交）
+function addCustomExt() {
+  const list = normalizeExt(customExt.value)
+  if (!list || !list.length) { customExt.value = ''; return }
+  const cur = Array.isArray(form.ignoreExtensions) ? form.ignoreExtensions.slice() : []
+  for (const v of list) { if (!cur.includes(v)) cur.push(v) }
+  form.ignoreExtensions = cur
+  customExt.value = ''
+}
+// 从忽略列表移除某扩展名
+function removeCustomExt(v) {
+  if (!Array.isArray(form.ignoreExtensions)) return
+  form.ignoreExtensions = form.ignoreExtensions.filter(x => x !== v)
+}
 
 const cfgTab = ref('ai')
 const form = reactive({})
@@ -110,6 +174,26 @@ async function onSave() {
   // 保存后立即重扫上下文目录（新目录/刚开启都立即生效并展示加载态）
   if (out.projectContextEnabled && out.projectContextDir) await loadContextStatus(true)
 }
+
+// 手动清理临时文件：调后端 /api/admin/cleanup-temp，释放解压残留，避免磁盘爆满。
+const cleaning = ref(false)
+const cleanupMsg = ref('')
+async function onCleanupTemp() {
+  cleaning.value = true
+  cleanupMsg.value = ''
+  try {
+    const r = await api.cleanupTemp()
+    const mb = (r.freedBytes / (1024 * 1024)).toFixed(2)
+    cleanupMsg.value = `已清理 ${r.files} 个文件 / ${r.dirs} 个目录，释放约 ${mb} MB`
+    toast('success', `临时文件清理完成，释放约 ${mb} MB`)
+  } catch (e) {
+    const m = (e && e.message) || String(e)
+    cleanupMsg.value = '清理失败：' + m
+    toast('danger', '临时文件清理失败：' + m)
+  } finally {
+    cleaning.value = false
+  }
+}
 </script>
 
 <template>
@@ -134,6 +218,7 @@ async function onSave() {
             <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='parse'}" @click="cfgTab='parse'">解析与导出</button></li>
             <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='filter'}" @click="cfgTab='filter'">差异树过滤</button></li>
             <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ui'}" @click="cfgTab='ui'">界面与高级</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='help'}" @click="cfgTab='help'">帮助文档</button></li>
           </ul>
 
           <!-- AI 服务 -->
@@ -208,6 +293,26 @@ async function onSave() {
               <input class="form-check-input" type="checkbox" id="cfgExpand" v-model="form.expandAll" title="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类">
               <label class="form-check-label" for="cfgExpand" title="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类">展开全部（含三方 class）</label>
             </div>
+            <!-- 自动逐层解包：WAR/ZIP/JAR 嵌套归档多线程物理解包，比对完成后自动展开；AI/导出/统计覆盖嵌套子文件 -->
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="开启后比对时后端多线程逐层解包所有嵌套归档，嵌套包内部文件进入差异/AI/导出，且树中自动展开；解包完成后才允许 AI 分析与导出资产">
+                自动逐层解包
+              </label>
+              <div class="col-sm-9">
+                <div class="form-check form-check-inline mb-0">
+                  <input class="form-check-input" type="checkbox" id="cfgUnpack" v-model="form.unpackNested" title="开启后嵌套包（zip/war/jar 等）比对完成即自动逐层解包，无需手动点击展开；解包中禁用 AI 与分析。默认开启">
+                  <label class="form-check-label" for="cfgUnpack" title="开启后嵌套包（zip/war/jar 等）比对完成即自动逐层解包，无需手动点击展开；解包中禁用 AI 与分析">开启（默认）</label>
+                </div>
+              </div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="自动逐层解包的并发线程数，越大解包越快但更占内存">解包线程数</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" max="16" v-model.number="form.unpackThreads" title="自动逐层解包的并发线程数，越大解包越快但更占内存"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="自动逐层解包的最大递归深度；超深嵌套会在此深度截断并保留为可手动展开的归档节点">最大解包深度</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" max="12" v-model.number="form.unpackMaxDepth" title="自动逐层解包的最大递归深度；超深嵌套会在此深度截断并保留为可手动展开的归档节点"></div>
+            </div>
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="差异树概览层默认展开的 TOP 节点数">Top-K（概览展开）</label>
               <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.topK" title="差异树概览层默认展开的 TOP 节点数"></div>
@@ -236,6 +341,43 @@ async function onSave() {
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略，不会使比对崩溃）">忽略正则</label>
               <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.ignoreRegex" placeholder="如 \d{4}-\d{2}-\d{2}|@Generated 等" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略）"></div>
+            </div>
+
+            <!-- 比对过滤：多选忽略常见文件类型。勾选后对比会在解析收集阶段跳过这些类型的条目（不进差异树、不参与统计）。 -->
+            <div class="mb-1 mt-2" style="font-size:.78rem;color:var(--bs-secondary-color)">比对过滤（忽略下面勾选的文件类型）：</div>
+            <div class="d-flex flex-wrap gap-2 mb-2">
+              <div v-for="ie in IGNORE_EXT_PRESETS" :key="ie.value" class="form-check form-check-inline mb-1" :title="ie.hint">
+                <input class="form-check-input" type="checkbox" :id="'iex' + ie.value.replace(/[^a-zA-Z0-9]/g, '')"
+                       :checked="Array.isArray(form.ignoreExtensions) && form.ignoreExtensions.includes(ie.value)"
+                       @change="midToggle($event, ie.value)"
+                       :title="ie.hint">
+                <label class="form-check-label" :for="'iex' + ie.value.replace(/[^a-zA-Z0-9]/g, '')" :title="ie.hint">{{ ie.label }}</label>
+              </div>
+            </div>
+            <div v-if="!Array.isArray(form.ignoreExtensions) || !form.ignoreExtensions.includes('.min.js')" class="form-text" style="font-size:.72rem">
+              提示：勾选「字节码 .class」「归档 .jar」等会跳过该类全部差异；默认仅忽略日志/临时/图片等非代码噪声，可随时再次勾选去掉。
+            </div>
+
+            <!-- 自定义后缀：除预置勾选项外，可添加任意文件后缀（如 .MF、.properties），
+                 保存时与预置项一并提交给后端解析阶段过滤。 -->
+            <div class="row g-2 align-items-center mt-1 mb-1">
+              <label class="col-sm-3 col-form-label col-form-label-sm text-nowrap" title="添加任意自定义文件后缀；支持带/不带点、逗号或空格分隔多个，如 .MF、.properties">自定义后缀</label>
+              <div class="col-sm-9">
+                <div class="input-group input-group-sm">
+                  <input class="form-control" v-model="customExt" placeholder="如 .MF、.properties（可多个，逗号分隔）" @keydown.enter.prevent="addCustomExt"
+                         title="添加任意自定义文件后缀；支持带/不带点、逗号或空格分隔多个">
+                  <button class="btn btn-outline-secondary" type="button" @click="addCustomExt" title="把输入的后缀加入忽略列表">添加</button>
+                </div>
+                <div v-if="Array.isArray(form.ignoreExtensions) && form.ignoreExtensions.length" class="mt-1 d-flex flex-wrap gap-1">
+                  <span v-for="ie in form.ignoreExtensions" :key="ie"
+                        class="badge rounded-pill text-bg-secondary cursor-pointer d-inline-flex align-items-center gap-1"
+                        style="font-size:.7rem" role="button" @click="removeCustomExt(ie)"
+                        :title="'点击移除，忽略 ' + ie + ' 类型'">
+                    {{ ie }} <i class="bi bi-x-lg" style="font-size:.6rem"></i>
+                  </span>
+                </div>
+                <div class="form-text mb-0" style="font-size:.72rem">当前已忽略 {{ Array.isArray(form.ignoreExtensions) ? form.ignoreExtensions.length : 0 }} 项，点徽章可移除。</div>
+              </div>
             </div>
           </div>
 
@@ -326,6 +468,24 @@ async function onSave() {
                 </div>
               </div>
             </div>
+            <!-- 手动清理临时文件：解压残留导致的磁盘爆满时按需回收（不中断进行中任务） -->
+            <div class="card card-body py-2 mb-0" style="font-size:.76rem">
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold text-nowrap"><i class="bi bi-broom"></i> 临时文件清理</span>
+                <span class="text-secondary">清理解压/抽取残留临时文件与遗留作业目录，释放磁盘空间（反编译缓存与近期日志保留）。</span>
+                <button class="btn btn-outline-danger btn-sm ms-auto" type="button" :disabled="cleaning"
+                        @click="onCleanupTemp"
+                        title="立即回收系统临时目录与 .bempdiff/runtime 下的残留临时文件，避免磁盘爆满；不会中断正在进行的解压任务">
+                  <i class="bi" :class="cleaning ? 'bi-arrow-repeat' : 'bi-broom'"></i> {{ cleaning ? '清理中…' : '手动清理临时文件' }}
+                </button>
+              </div>
+              <div v-if="cleanupMsg" class="mt-2 text-success" style="font-size:.72rem"><i class="bi bi-check-circle"></i> {{ cleanupMsg }}</div>
+            </div>
+          </div>
+
+          <!-- 帮助文档 -->
+          <div v-show="cfgTab==='help'" class="help-tab">
+            <HelpDoc />
           </div>
         </div>
 
@@ -342,8 +502,17 @@ async function onSave() {
 <style scoped>
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,.4);
-  display: flex; align-items: flex-start; justify-content: center; z-index: 1500; padding-top: 5vh;
+  display: flex; align-items: flex-start; justify-content: center; z-index: 1500; padding-top: 4vh; padding-bottom: 4vh;
 }
-.modal-content { width: 100%; background-color: var(--bs-body-bg); color: var(--bs-body-color); }
-.modal-body { padding: 1rem 1.5rem; }
+/* 自适应高度：内容再多也不会超出视口被截断。
+   flex 列布局让 header/footer 固定、body 内部滚动（下拉条只作用于 body 内容区）。
+   max-height 用 viewport 高度减上下留白，短屏/小窗口下 body 自动压缩出滚动条。 */
+.modal-content {
+  width: 100%;
+  max-height: calc(100vh - 8vh);   /* 兜底：老引擎无 dvh 时不支持则用 vh */
+  max-height: calc(100dvh - 8vh);
+  display: flex; flex-direction: column;
+  background-color: var(--bs-body-bg); color: var(--bs-body-color);
+}
+.modal-body { padding: 1rem 1.5rem; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 </style>

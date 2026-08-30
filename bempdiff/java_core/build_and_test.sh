@@ -6,6 +6,8 @@ ROOT="D:/code/otherProjects/18_comparePakage"
 JAVAC="$ROOT/bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/javac.exe"
 JAVA="$ROOT/bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/java.exe"
 CFR="$ROOT/bempdiff/cfr.jar"
+# Office/POI and dependency jars (required to compile/run OfficeTextDiff); trailing wildcard expands to all jars
+POI_LIBS="$ROOT/bempdiff/toolchain/lib/*"
 CORE_SRC="$ROOT/bempdiff/java_core/src"
 TEST_SRC="$ROOT/bempdiff/java_core/test"
 CORE_OUT="$ROOT/bempdiff/java_core/out"
@@ -18,21 +20,21 @@ mkdir -p "$CORE_OUT" "$TEST_OUT"
 
 echo "==> 编译 core src"
 CORE_FILES=$(find "$CORE_SRC" -name '*.java')
-"$JAVAC" -cp "$CFR" -encoding UTF-8 -Xlint:-unchecked -d "$CORE_OUT" $CORE_FILES
+"$JAVAC" -cp "$CFR;$POI_LIBS" -encoding UTF-8 -Xlint:-unchecked -d "$CORE_OUT" $CORE_FILES
 CORE_RC=$?
 echo "core exit: $CORE_RC"
 if [ "$CORE_RC" -ne 0 ]; then echo "core 编译失败"; exit 1; fi
 
 echo "==> 编译 test"
 TEST_FILES=$(find "$TEST_SRC" -name '*.java')
-"$JAVAC" -cp "$CORE_OUT;$CFR" -encoding UTF-8 -Xlint:-unchecked -d "$TEST_OUT" $TEST_FILES
+"$JAVAC" -cp "$CORE_OUT;$CFR;$POI_LIBS" -encoding UTF-8 -Xlint:-unchecked -d "$TEST_OUT" $TEST_FILES
 TEST_RC=$?
 echo "test exit: $TEST_RC"
 if [ "$TEST_RC" -ne 0 ]; then echo "test 编译失败"; exit 1; fi
 
 echo "==> 运行 TestRunner"
 "$JAVA" \
-  -cp "$TEST_OUT;$CORE_OUT;$CFR" \
+  -cp "$TEST_OUT;$CORE_OUT;$CFR;$POI_LIBS" \
   -Dfile.encoding=UTF-8 \
   com.bempdiff.test.TestRunner \
   com.bempdiff.test.ParseTest \
@@ -60,5 +62,6 @@ echo "==> 运行 TestRunner"
   com.bempdiff.test.ProjectIndexerTest \
   com.bempdiff.test.ProjectContextServiceTest \
   com.bempdiff.test.ContextPromptTest \
-  com.bempdiff.test.ContextAiTest
+  com.bempdiff.test.ContextAiTest \
+  com.bempdiff.test.UnpackTest
 echo "testrunner exit: $?"

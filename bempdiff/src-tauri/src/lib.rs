@@ -18,7 +18,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// 受管状态：保存 Java 后端子进程，便于退出时回收。
 struct AppState {
@@ -26,8 +26,16 @@ struct AppState {
 }
 
 /// 拼接 classpath（Windows 用 `;`，与其他平台 `:`）。本应用仅发布 Windows，直接用 `;`。
-fn classpath(bempdiff_jar: &Path, cfr_jar: &Path) -> String {
-    format!("{};{}", bempdiff_jar.display(), cfr_jar.display())
+/// 除 bempdiff.jar/cfr.jar 外，还追加随包分发的三方 `app/lib/*`（Apache POI 等，解析旧 .xls 用）；
+/// `dir/*` 是 Java 支持的目录通配，lib_dir（开发态缺 lib 时返回 None）不参与拼接。
+fn classpath(bempdiff_jar: &Path, cfr_jar: &Path, lib_dir: Option<&Path>) -> String {
+    let mut cp = format!("{};{}", bempdiff_jar.display(), cfr_jar.display());
+    if let Some(lib) = lib_dir {
+        cp.push(';');
+        // 用通配 `dir/*` 而非枚举单 jar：发布侧 lib 数量可能随 POI 版本变化，通配免维护且全量加载
+        cp.push_str(&format!("{}*", lib.display()));
+    }
+    cp
 }
 
 /// 探测一组基准目录，返回首个存在 `rel` 的绝对路径。
@@ -79,9 +87,12 @@ fn pick_free_port() -> u16 {
 }
 
 /// TCP 探活：后端 HttpServer.start() 返回即已监听，连上即说明就绪。
-fn wait_for_server(port: u16, timeout: Duration) -> bool {
+/// `progress` 在等待期间周期回调（0~100），供启动图展示「等待后端就绪」的真实等待时长，
+/// 避免进度条在最长 30s 的阻塞期完全静止（也对应 splash.html 的 waiting 阶段）。
+fn wait_for_server<F: FnMut(u8)>(port: u16, timeout: Duration, mut progress: F) -> bool {
     let addr = format!("127.0.0.1:{port}");
     let start = Instant::now();
+    let mut ticks = 0u8;
     loop {
         if let Ok(_) = TcpStream::connect_timeout(
             &addr.parse().unwrap(),
@@ -92,12 +103,28 @@ fn wait_for_server(port: u16, timeout: Duration) -> bool {
         if start.elapsed() > timeout {
             return false;
         }
+        ticks += 1;
+        // 每 ~0.2s 推进 1 点，从 76 缓涨到 90 后停住，等待真实就绪事件推进到 100。
+        progress((76 + ticks.min(14)).min(90));
         std::thread::sleep(Duration::from_millis(200));
     }
 }
 
+/// 向启动图（splash 窗口）广播真实启动进度。
+/// stage 与 splash.html 的 STAGES 映射一致（resolving/spawning/waiting/ready/error）；
+/// percent 为 0~100 整数，前端据此设置进度条宽度。
+fn splash(app: &tauri::AppHandle, stage: &str, percent: u8) {
+    // 无窗口失败无伤大雅：进度丢失只影响观感，不阻塞启动主流程。
+    let _ = app.emit(
+        "splash-progress",
+        serde_json::json!({ "stage": stage, "percent": percent }),
+    );
+}
+
 /// 仅负责拉起 Java 后端并等就绪（**不创建窗口**）。窗口由 run() 在 setup 主线程创建。
 fn launch_java(app: &tauri::AppHandle, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    // 阶段①：定位随包 JRE / jar / webroot（通常为毫秒级，给 10% 底子即可）。
+    splash(app, "resolving", 10);
     let java_exe = resolve_asset(app, "jre/bin/java.exe")
         .or_else(|| {
             // 开发态未 jlink 时，退而求其次用系统 JAVA_HOME / PATH 的 java
@@ -122,10 +149,14 @@ fn launch_java(app: &tauri::AppHandle, port: u16) -> Result<(), Box<dyn std::err
         .ok_or("未找到 cfr.jar（反编译引擎，必须与 bempdiff.jar 同目录）")?;
     let webroot = resolve_asset(app, "webui")
         .ok_or("未找到前端 webui 目录（应随包在 resources/webui 或开发态 dist_input/webui）")?;
+    // 三方依赖目录（POI 等），随 resources 打包为 app/lib；开发态缺该目录则 classpath 不追加。
+    let lib_dir = resolve_asset(app, "app/lib");
 
-    let cp = classpath(&bempdiff_jar, &cfr_jar);
+    let cp = classpath(&bempdiff_jar, &cfr_jar, lib_dir.as_deref());
+    // 阶段②：资源就绪，即将拉起 Java 子进程。
+    splash(app, "spawning", 45);
     rust_log(&format!(
-        "启动后端：{} -cp {} com.bempdiff.Main server --webroot {} --port {}",
+        "启动后端：{} -Xmx 2g -cp {} com.bempdiff.Main server --webroot {} --port {}",
         java_exe.display(),
         cp,
         webroot.display(),
@@ -140,8 +171,10 @@ fn launch_java(app: &tauri::AppHandle, port: u16) -> Result<(), Box<dyn std::err
 
     let child = Command::new(&java_exe)
         .args([
+            "-Xmx",
+            "2g",
             "-cp",
-            &classpath(&bempdiff_jar, &cfr_jar),
+            &classpath(&bempdiff_jar, &cfr_jar, lib_dir.as_deref()),
             "com.bempdiff.Main",
             "server",
             "--webroot",
@@ -160,7 +193,11 @@ fn launch_java(app: &tauri::AppHandle, port: u16) -> Result<(), Box<dyn std::err
         }
     }
 
-    if wait_for_server(port, Duration::from_secs(30)) {
+    // 阶段③：子进程已拉起，进入等待就绪阶段（wait_for_server 内部周期推进 76→90）。
+    splash(app, "waiting", 75);
+    if wait_for_server(port, Duration::from_secs(30), |p| {
+        splash(app, "waiting", p)
+    }) {
         rust_log(&format!(
             "后端已就绪（端口 {}），Java 日志：{}",
             port,
@@ -233,44 +270,120 @@ pub fn run() {
             rust_log("setup entered");
             // 主窗口必须在**主线程（setup 内）**创建：
             // ① 避免从后台线程建 WebView2 窗口在 Windows 上直接失败/无窗口（闪退）；
-            // ② 事件循环就绪前也不应建窗口。窗口先开，后端随后拉起，
-            //    后端就绪前页面短暂连不上，就绪后自动加载（无需先等 30s 黑屏）。
+            // ② 事件循环就绪前也不应建窗口。
             let port = pick_free_port();
             rust_log(&format!("picked port {port}"));
 
-            // 开发态指向 vite dev server（后端按文档手动 `java ... server --port 18765`，由 vite 代理 /api）；
-            // 生产态指向内嵌 Java 服务（同随机端口）。
-            #[cfg(debug_assertions)]
-            let window_url = "http://localhost:5173/".to_string();
-            #[cfg(not(debug_assertions))]
-            let window_url = format!("http://127.0.0.1:{port}/");
-
-            match WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(window_url.parse::<url::Url>().expect("invalid window url")),
-            )
-            .title("BempDiff — 差异化对比工具")
-            .inner_size(1366.0, 800.0)
-            .min_inner_size(1024.0, 640.0)
-            .resizable(true)
-            .build()
-            {
-                Ok(_win) => rust_log("main window created OK"),
-                // 窗口创建失败（常见为 WebView2 不可用）：记录原因后继续，
-                // 进程以无窗口态运行，便于从日志定位根因。
-                Err(e) => rust_log(&format!("FAILED to create main window: {e:?}")),
-            }
-
-            // 生产态：在后台线程拉起随包 JRE + bempdiff.jar；开发态沿用 vite + 手动后端，不自动拉起。
+            // —— 生产态：先显示本地启动图（splash，不依赖后端秒显），主窗口隐藏待后端就绪后再亮出。
+            //    开发态：无 splash，直接显示指向 vite dev server 的主窗口（后端手动启动）。
             #[cfg(not(debug_assertions))]
             {
+                // —— 窗口尺寸适配：主窗口默认 1366x800，若主屏工作区更小则收缩，
+                //    避免窗口比屏幕大而被系统摆到屏外（低分辨率屏上用户会看不到窗口）。
+                //    work_area() 返回物理像素，需除以 scale_factor 换成与 inner_size 一致的逻辑尺寸。
+                let (mut win_w, mut win_h) = (1366.0_f64, 800.0_f64);
+                if let Ok(Some(m)) = app.primary_monitor() {
+                    let sf = m.scale_factor();
+                    let wa = m.work_area();
+                    let avail_w = wa.size.width as f64 / sf;
+                    let avail_h = wa.size.height as f64 / sf;
+                    if avail_w > 0.0 && avail_h > 0.0 {
+                        win_w = win_w.min(avail_w);
+                        win_h = win_h.min(avail_h);
+                    }
+                }
+                rust_log(&format!("main window size adapted to {win_w}x{win_h}"));
+
+                // 启动图窗口：加载被嵌入二进制的 dist_input/webui/splash.html
+                // （withGlobalTauri=true 注入 window.__TAURI__，可订阅 splash-progress 事件）。
+                // 无边框 + 置顶，营造轻量品牌启动画面。
+                match WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
+                    .title("BempDiff — 启动中")
+                    .inner_size(440.0, 520.0)
+                    .resizable(false)
+                    .decorations(false)
+                    .always_on_top(true)
+                    .build()
+                {
+                    Ok(_) => rust_log("splash window created OK"),
+                    Err(e) => rust_log(&format!("FAILED to create splash window: {e:?}")),
+                }
+
+                // 主窗口先建好但隐藏；后端就绪后由后台线程 show()（避免启动空窗，也就绪即可用）。
+                match WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    WebviewUrl::External(
+                        format!("http://127.0.0.1:{port}/")
+                            .parse::<url::Url>()
+                            .expect("invalid window url"),
+                    ),
+                )
+                .title("BempDiff — 差异化对比工具")
+                .inner_size(win_w, win_h)
+                .min_inner_size(1024.0, 640.0)
+                .resizable(true)
+                .visible(false)
+                .build()
+                {
+                    Ok(win) => {
+                        // 创建后立即居中（隐藏窗口也可设置位置），确保 show() 时位于主屏可见区域
+                        if let Err(e) = win.center() {
+                            rust_log(&format!("main window center failed: {e:?}"));
+                        }
+                        // 居中按外框计算，边框/阴影会使外框左上角略越出工作区（负数），再钳回 (0,0) 保证完全可见
+                        if let Ok(pos) = win.outer_position() {
+                            let nx = pos.x.max(0);
+                            let ny = pos.y.max(0);
+                            if nx != pos.x || ny != pos.y {
+                                let _ = win.set_position(tauri::PhysicalPosition::new(nx, ny));
+                                rust_log(&format!("clamped window outer from ({},{}) to ({},{})", pos.x, pos.y, nx, ny));
+                            }
+                        }
+                        rust_log("main window created (hidden) OK")
+                    }
+                    Err(e) => rust_log(&format!("FAILED to create main window: {e:?}")),
+                }
+
+                // 在后台线程拉起随包 JRE + bempdiff.jar，并按真实阶段广播进度；就绪后切窗。
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    if let Err(e) = launch_java(&handle, port) {
+                    let result = launch_java(&handle, port);
+                    // 终结态：无论成败都推进到 100，关闭 splash、亮出主窗口（失败时由前端连接自愈兜底）。
+                    splash(&handle, "ready", 100);
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Some(spl) = h.get_webview_window("splash") {
+                            let _ = spl.destroy();
+                        }
+                        if let Some(main) = h.get_webview_window("main") {
+                            let _ = main.show();
+                        }
+                    });
+                    if let Err(e) = result {
                         rust_log(&format!("启动后端失败：{e}"));
                     }
                 });
+            }
+            #[cfg(debug_assertions)]
+            {
+                let window_url = "http://localhost:5173/".to_string();
+                match WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    WebviewUrl::External(window_url.parse::<url::Url>().expect("invalid window url")),
+                )
+                .title("BempDiff — 差异化对比工具")
+                .inner_size(1366.0, 800.0)
+                .min_inner_size(1024.0, 640.0)
+                .resizable(true)
+                .build()
+                {
+                    Ok(_) => rust_log("main window created OK"),
+                    // 窗口创建失败（常见为 WebView2 不可用）：记录原因后继续，
+                    // 进程以无窗口态运行，便于从日志定位根因。
+                    Err(e) => rust_log(&format!("FAILED to create main window: {e:?}")),
+                }
             }
 
             rust_log("setup done");

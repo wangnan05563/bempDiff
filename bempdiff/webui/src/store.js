@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { api } from './api/client'
-import { activateTab as activateTabImpl, closeTabReducer as closeTabImpl, findActiveTab } from './lib/tabs'
+import { activateTab as activateTabImpl, closeTabReducer as closeTabImpl, pinTabReducer as pinTabImpl,
+  closeOtherTabsReducer as closeOtherTabsImpl, closeAllTabsReducer as closeAllTabsImpl, findActiveTab } from './lib/tabs'
 import { extractFromFileName, sameBaseDifferentVersion, orderOldNew } from './lib/version'
 import { loadIgnoreRules, saveIgnoreRules, addRule as addRuleFn, removeRule as removeRuleFn } from './lib/ignore'
 
@@ -38,11 +39,19 @@ export const state = reactive({
   aiPanelTab: 'file',      // 智能分析栏内容子视图：file/global/break/audit/console（控制台为独立 tab，独占内容区高度）
   aiClassify: {},          // 智能分类结果：key -> { risk(HIGH/MEDIUM/LOW), category, reason }（A1+B2）
   classifying: false,      // 智能分类进行中
+  exporting: false,        // 差异资产导出中（驱动导出按钮的加载态，避免重复点击）
+  exportProgress: null,    // 同步导出实时进度 { loaded, total, percent, etaText } 或 null
+  exportRecords: [],       // 下载管理：导出记录列表（含异步进行中/已完成）
+  syncExports: loadSyncExports(), // 下载管理：同步导出资产（本机浏览器下载目录，客户端持久化以便回溯）
+  exportsOpen: false,      // 下载管理面板开关
   aiEstimate: null,        // 成本闸门：AI token 预估缓存 { report, analyze, classify, threshold }
   aiEstimateKey: null,     // 成本闸门：当前 aiEstimate 对应的缓存键（category|prompt 指纹），用于按分析项失效缓存
   costGate: null,          // 成本闸门：强制确认弹窗载荷 { action, estimate, threshold }（非 null 即弹窗）
   // 比对任务的实时进度（后端异步，前端轮询）：{ status, progress, phase, message } 或 null
   jobProgress: null,
+  compareStartedAt: null,  // RUNNING 起始时刻（用于比对超时提醒）
+  compareStalled: false,   // RUNNING 持继超过阈值仍未结束
+  stallNotified: false,    // 超时提醒已弹（仅一次），避免重复打扰
   activeCompareId: null,   // 当前正在轮询的比对 jobId；变化即视为中止旧轮询（支持重开/取消）
   config: null,
   // 项目级上下文（上下文目录递归识别）状态：{ loading, data, error }
@@ -122,6 +131,7 @@ export function defaultConfig() {
     ignoreWhitespace: false,
     ignoreComments: false,
     ignoreRegex: '',
+    ignoreExtensions: [], // 比对级忽略扩展名（多选，如 .log/.tmp）：解析收集阶段直接跳过，不参与差异比对
     httpProxy: '',
     httpsProxy: '',
     blockPrivateEndpoints: false,
@@ -139,6 +149,11 @@ export function defaultConfig() {
     sortByRisk: false,      // 差异树按 AI 风险等级排序（高→低）
     filterRisk: ['HIGH', 'MEDIUM', 'LOW'], // 差异树风险过滤（多选；空=不过滤）
     autoAiOnCompare: true,
+    // 自动逐层解包（WAR/ZIP/JAR 嵌套归档多线程物理展开）：默认开启，比对时后端多线程逐层解包，
+    // AI/导出覆盖嵌套子文件；解包完成后才置 DONE（解包中 AI/导出被禁用）。
+    unpackNested: true,
+    unpackThreads: 4,        // 解包并发线程数
+    unpackMaxDepth: 6,       // 最大递归解包深度
     hasApiKey: false
   }
 }
@@ -210,6 +225,9 @@ export async function runCompare({ leftType, leftPath, rightPath, options }) {
     state.archiveChildren = {}   // 新一轮比对：清空归档展开缓存
     state.expandedArchives = {}
     toast('success', `比对完成：新增 ${final.stats.added} · 删除 ${final.stats.deleted} · 修改 ${final.stats.modified}`)
+    // 自动逐层解包展示（B 机制）：比对完成即后台递归展开所有归档节点（/api/entry/recursive），
+    // 无需手动点击即可查看嵌套包内部；异步 fire-and-forget，不阻塞差异树首屏渲染。
+    if (state.config && state.config.unpackNested !== false) autoExpandArchives(final.tree)
     if (state.config && state.config.autoAiOnCompare && state.config.aiEnabled) {
       generateReport(true, { silent: true })
     }
@@ -240,7 +258,12 @@ export function buildOptions() {
     cfrJar: c.cfrJar || '',
     ignoreWhitespace: !!c.ignoreWhitespace,
     ignoreComments: !!c.ignoreComments,
-    ignoreRegex: c.ignoreRegex || ''
+    ignoreRegex: c.ignoreRegex || '',
+    ignoreExtensions: Array.isArray(c.ignoreExtensions) ? c.ignoreExtensions : [],
+    // 自动逐层解包：默认开启（后端多线程物理解包），可配线程数与深度
+    unpackNested: c.unpackNested !== false,
+    unpackThreads: Math.max(1, Number(c.unpackThreads) || 4),
+    unpackMaxDepth: Math.max(1, Number(c.unpackMaxDepth) || 6)
   }
 }
 
@@ -320,10 +343,29 @@ async function pollJob(jobId) {
       phase: s.phase || '',
       message: s.message || ''
     }
+    // 比对超时提醒：RUNNING 持续超过阈值仍未结束，触发一次显式通知（不阻塞、不中断比对）。
+    // 竞态下后端可能在 RUNNING 时拒绝 AI 分析/智能分类（“比对尚未完成: RUNNING”），此提示与之一致。
+    if (s.status === 'RUNNING') {
+      if (!state.compareStartedAt) state.compareStartedAt = Date.now()
+      if (!state.compareStalled && Date.now() - state.compareStartedAt > COMPARE_TIMEOUT_MS) {
+        state.compareStalled = true
+        if (!state.stallNotified) {
+          state.stallNotified = true
+          toast('warning', '比对进行已超过 ' + Math.round(COMPARE_TIMEOUT_MS / 60000) + ' 分钟仍未完成；可继续等待，若长时间无进展请检查磁盘/网络后重启工具')
+        }
+      }
+    } else if (s.status === 'DONE' || s.status === 'ERROR' || s.status === 'CANCELLED') {
+      // 终态：清空超时统计，下次比对重新计数/提醒
+      state.compareStartedAt = null
+      state.compareStalled = false
+      state.stallNotified = false
+    }
     if (s.status === 'DONE') return s
     if (s.status === 'ERROR') throw new Error(s.error || '比对失败')
     if (s.status === 'CANCELLED') return null
-    await new Promise(res => setTimeout(res, 350))
+    // 退避轮询：解包等瞬态阶段高频捕捉 phase；稳定运行阶段降频（终态已在循环内 return，不受此等待影响）
+    const waitMs = s.phase === 'unpacking' ? POLL_FAST_MS : POLL_NORM_MS
+    await new Promise(res => setTimeout(res, waitMs))
   }
   return null // activeCompareId 已变（取消 / 新比对）→ 中止
 }
@@ -368,7 +410,7 @@ export async function selectEntry(key) {
       t.decompile = dec
       t.busy = false
       if (!dec.ok) {
-        toast('warning', `「${node ? node.key : key}」无法反编译：${dec.engine || 'unknown'}`)
+        toast('warning', `「${node ? node.key : key}」无法反编译：${dec.error || dec.engine || 'unknown'}`)
       }
     }
   } catch (e) {
@@ -384,6 +426,27 @@ export async function selectEntry(key) {
 /** 关闭一个 tab。若关的就是当前激活的，则激活邻居（右 → 左 → null）。状态机纯函数在 lib/tabs.js。 */
 export function closeTab(key) {
   const r = closeTabImpl(state.tabs, state.activeKey, key)
+  state.tabs = r.tabs
+  state.activeKey = r.activeKey
+}
+
+/** 切换「固定/取消固定」当前 tab：pinned 置顶，关闭类操作会跳过它。 */
+export function pinTab(key) {
+  const r = pinTabImpl(state.tabs, state.activeKey, key)
+  state.tabs = r.tabs
+  state.activeKey = r.activeKey
+}
+
+/** 关闭除 keepKey 之外的所有 tab（保留固定项）。 */
+export function closeOtherTabs(keepKey) {
+  const r = closeOtherTabsImpl(state.tabs, state.activeKey, keepKey)
+  state.tabs = r.tabs
+  state.activeKey = r.activeKey
+}
+
+/** 关闭全部 tab（保留固定项）。 */
+export function closeAllTabs() {
+  const r = closeAllTabsImpl(state.tabs, state.activeKey)
   state.tabs = r.tabs
   state.activeKey = r.activeKey
 }
@@ -453,9 +516,11 @@ export function startFileAiSummary(node) {
     toast('warning', '请先完成一次「开始比对」')
     return
   }
-  const key = node.key
-  const st = node.status || '未知'
-  startAiAnalysis('custom', `请对差异文件「${key}」进行总结：说明其变更类型（${st}）、变更内容要点与影响。仅聚焦该文件，不要展开其他文件。`)
+  // 传 fileKey 走后端「单文件聚焦」管线：仅计算并分析该文件的差异内容，
+  // 而非把文件名拼进自定义 prompt（那样后端仍分析全量差异，结论与整体风险分析雷同）。
+  // fileStatus 必须透传：归档内部条目（复合键）不在后端顶层 DiffResult 里，
+  // 后端 statusOf 对其一律误判 MODIFIED，前端树节点的 status 才是权威值（评审 H1）
+  startAiAnalysis('file', '', { fileKey: node.key, fileStatus: node.status || '' })
 }
 
 /**
@@ -519,6 +584,20 @@ function seedArchiveTree(nodes) {
       state.archiveChildren[n.key] = { loading: false, error: null, children: n.children }
       state.expandedArchives[n.key] = true
       seedArchiveTree(n.children)
+    }
+  }
+}
+
+/**
+ * 自动递归展开所有顶层归档节点（B 机制）：比对完成后由 runCompare 触发，无需手动点击即可
+ * 查看嵌套包内部。顺序逐个拉取（/api/entry/recursive，一次返回完整嵌套树 + 递归标记展开），
+ * 单节点失败不影响其余（try/catch 吞掉，避免一个坏归档阻塞整体浏览）。
+ */
+async function autoExpandArchives(tree) {
+  if (!Array.isArray(tree)) return
+  for (const n of tree) {
+    if (n && (n.fileClass === 'ARCHIVE' || n.fileClass === 'JAR')) {
+      try { await fetchRecursiveTree(n.key) } catch (_) { /* 单点失败不阻塞其余归档展开 */ }
     }
   }
 }
@@ -596,7 +675,9 @@ export async function generateReport(ai, opts = {}) {
 
 /** AI 智能分类与优先级（B2 自动打标 + A1 风险分级）：对差异树文件打标并在左树展示。 */
 export async function runAiClassify() {
+  // 比对进行中（含解析/解包/对比）直接拦截并给进度引导，避免竞态下后端返回「409 比对尚未完成: RUNNING」。
   if (!state.job || state.job.status !== 'DONE') { toast('warning', '请先完成一次比对，再进行智能分类'); return }
+  if (isRunning()) { toast('warning', '比对仍在进行中，请等待比对完成后，再进行智能分类'); return }
   if (state.classifying) return
   // 成本闸门（P0 #5）：超阈值强制确认
   const ok = await ensureAiBudget('classify')
@@ -612,7 +693,13 @@ export async function runAiClassify() {
     const total = data.totalChanged || 0
     toast('success', `智能分类完成：已标注 ${cov}/${total} 个变更文件`)
   } catch (e) {
-    toast('danger', '智能分类失败：' + e.message)
+    const msg = (e && e.message) || String(e)
+    toast('danger', '智能分类失败：' + msg)
+    // 竞态/结果吻合：后端在比对 RUNNING 时拒绝（“比对尚未完成: RUNNING”）。
+    // 不改错误含义，仅补充操作指引；底部「比对进行中」横条会同步显示归属阶段。
+    if (/RUNNING|尚未完成|比对还在|仍不是 DONE/i.test(msg)) {
+      toast('info', '比对仍在进行中，请在底部查看“比对进行中”的进度说明，等待比对完成后重试。若超过 5 分钟无进展，请检查磁盘/网络后重启工具。')
+    }
   } finally {
     state.classifying = false
   }
@@ -641,17 +728,69 @@ export function aiAnyRunning() {
   return state.aiTasks.some(t => t.status === 'thinking' || t.status === 'streaming')
 }
 
-/** 发起一个新的 AI 分析任务（非阻塞）。category 取自 AI_CATEGORIES；custom 时传 prompt。 */
-export function startAiAnalysis(category = 'risk', prompt = '') {
+/** 是否正处于「逐层解包」阶段。解包是异步多线程逐层展开，后端 phase=unpacking 时禁止一切 AI 分析
+ *  与报告生成（须待解包完全完成、快照就绪后方可分析，否则分析不全面）。
+ *  与 aiAnyRunning 一样作单一判定源，供 StatusBar/AiConsole/ToolBar 共用，避免双处维护漂移。 */
+export function isUnpacking() {
+  return !!state.jobProgress && state.jobProgress.phase === 'unpacking'
+}
+
+/** 比对超时提醒阈值：RUNNING 持续超过此值时提示用户（默认 5 分钟）。 */
+const COMPARE_TIMEOUT_MS = 5 * 60 * 1000
+// 轮询退避：仅「自动迭代解包」等瞬态阶段需高频轮询以捕捉瞬时 phase（此前一律 80ms 造成比对全程高频请求）；
+// 稳定运行阶段用更低频，减少比对生命周期内的无谓后端请求。
+const POLL_FAST_MS = 80
+const POLL_NORM_MS = 200
+
+/** 是否正处于比对进行中（QUEUED/RUNNING，覆盖解析/解包/比对各阶段）。 */
+export function isRunning() {
+  const st = (state.jobProgress && state.jobProgress.status) || ''
+  return st === 'RUNNING' || st === 'QUEUED' || st === 'queued'
+}
+
+/** 当前处理阶段的可读文案（与“比对尚未完成: RUNNING”逻辑呼应）。 */
+export function phaseLabel() {
+  const ph = (state.jobProgress && state.jobProgress.phase) || ''
+  switch (ph) {
+    case 'parsing': return '正在解析包…'
+    case 'unpacking': return '正在自动迭代解包…'
+    case 'diffing': return '正在比对 / 计算差异…'
+    default: return '比对进行中…'
+  }
+}
+
+function fileSummaryLabel(fileKey) {
+  const k = String(fileKey || '')
+  const i = k.lastIndexOf('!/')
+  if (i < 0) return k.split('/').pop() || k
+  const outer = k.slice(0, i).split('/').pop()
+  const inner = k.slice(i + 2).split('/').pop()
+  return outer + '!/' + inner
+}
+
+/** 发起一个新的 AI 分析任务（非阻塞）。category 取自 AI_CATEGORIES；custom 时传 prompt；
+ *  opts.fileKey 非空时为单文件「AI功能总结」任务（仅分析该文件）。 */
+export function startAiAnalysis(category = 'risk', prompt = '', opts = {}) {
+  // 比对进行中（含解析/解包/对比）直接拦截并给进度引导，避免竞态下后端返回「409 比对尚未完成: RUNNING」。
+  if (isRunning()) {
+    toast('warning', '比对仍在进行中，请等待比对完成后，再发起 AI 分析')
+    return
+  }
   if (!state.job || state.job.status !== 'DONE') {
     toast('warning', '请先完成一次「开始比对」，再发起 AI 分析')
     return
   }
-  const cat = AI_CATEGORIES.find(c => c.key === category) || AI_CATEGORIES[0]
+  // 'file' 不在下拉目录中（仅右键入口使用），找不到时构造虚拟类别避免误标为「整体风险分析」
+  const cat = AI_CATEGORIES.find(c => c.key === category) || { key: category, label: '文件总结', icon: 'bi-file-earmark-text' }
+  const fileKey = opts.fileKey || null
+  const fileStatus = opts.fileStatus || null
   const id = 'ai-' + (++aiTaskSeq)
-  const title = cat.key === 'custom' ? '自定义：' + (prompt || '').slice(0, 18) : cat.label
+  const title = cat.key === 'custom'
+    ? '自定义：' + (prompt || '').slice(0, 18)
+    : (fileKey ? '文件总结：' + fileSummaryLabel(fileKey) : cat.label)
   const task = {
     id, category: cat.key, title, prompt: cat.key === 'custom' ? (prompt || '') : '',
+    fileKey, fileStatus,
     status: 'thinking', thinking: [], answer: '', error: '', createdAt: Date.now(),
     alive: true,          // 任务存活令牌：中断/关闭后置 false；闸门等待窗口内被中断则不再启动流（评审 P0 #2）
     thinkingCollapsed: true // 思维链折叠态（显式初始化，避免依赖 undefined 隐式语义，评审 P2 #12）
@@ -661,7 +800,7 @@ export function startAiAnalysis(category = 'risk', prompt = '') {
   state.aiActiveTaskId = id
   state.aiPanelCollapsed = false // 展开智能分析栏以露出控制台
   state.aiPanelTab = 'console'    // 自动切到「控制台」tab，确保用户即时看到流式输出
-  ensureAiBudget('analyze', { category: cat.key, prompt: cat.key === 'custom' ? (prompt || '') : '' }).then((ok) => {
+  ensureAiBudget('analyze', { category: cat.key, prompt: cat.key === 'custom' ? (prompt || '') : '', fileKey }).then((ok) => {
     if (!t.alive) return // 等待闸门期间任务已被中断/关闭，丢弃，不复活（评审 P0 #2）
     if (!ok) {
       t.status = 'error'
@@ -681,6 +820,12 @@ function runAiTaskStream(t) {
   t.answer = ''
   t.error = ''
   const body = { category: t.category, prompt: t.prompt || '' }
+  // 单文件任务：透传 fileKey/fileStatus，后端走「单文件聚焦」管线（仅分析该文件）；
+  // fileStatus 为前端树节点权威变更类型，复合键场景后端无法自行判定（评审 H1）
+  if (t.fileKey) {
+    body.fileKey = t.fileKey
+    if (t.fileStatus) body.fileStatus = t.fileStatus
+  }
   // 项目级上下文目录：配置开启时随流式分析透传（后端未收到时亦会回退服务端配置）
   if (state.config && state.config.projectContextEnabled && state.config.projectContextDir) {
     body.projectDir = state.config.projectContextDir
@@ -731,7 +876,7 @@ export function restartAiAnalysis(id) {
   t.thinking = []
   t.answer = ''
   t.error = ''
-  ensureAiBudget('analyze', { category: t.category, prompt: t.prompt }).then((ok) => {
+  ensureAiBudget('analyze', { category: t.category, prompt: t.prompt, fileKey: t.fileKey }).then((ok) => {
     if (!t.alive) return // 等待闸门期间任务被中断/关闭，丢弃
     if (!ok) {
       t.status = 'error'
@@ -767,21 +912,195 @@ export function closeReportPreview() {
   state.previewMd = null
 }
 
-export async function downloadExport() {
-  if (!state.job) return
+export function downloadExport() {
+  // 兼容旧入口：一律走「小包同步 / 大包异步」的新机制。
+  return startExport()
+}
+
+/** 格式化字节为可读字符串。 */
+export function fmtBytes(n) {
+  if (!n || n <= 0) return '—'
+  const u = ['B', 'KB', 'MB', 'GB']
+  let i = 0, v = Number(n)
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`
+}
+
+/** 打开/关闭「下载管理」面板，并拉取最新导出记录。 */
+export function openExports() { state.exportsOpen = true; refreshExports() }
+export function closeExports() { state.exportsOpen = false }
+export function toggleExports() {
+  state.exportsOpen = !state.exportsOpen
+  if (state.exportsOpen) refreshExports()
+}
+export async function refreshExports(list) {
   try {
-    const blob = await api.exportZip(state.job.jobId)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `bempdiff-export-${state.job.jobId}.zip`
-    document.body.appendChild(a); a.click(); a.remove()
-    URL.revokeObjectURL(url)
-    toast('success', '差异资产已导出')
+    const r = await api.exportList()
+    if (Array.isArray(r)) { state.exportRecords = r; return r }
+  } catch (e) { /* 后端不可用等，静默 */ }
+  return state.exportRecords
+}
+export async function deleteExport(id) {
+  try {
+    await api.exportDelete(id)
+    state.exportRecords = state.exportRecords.filter(x => x.id !== id)
   } catch (e) {
-    toast('danger', '导出失败：' + e.message)
+    toast('danger', '删除导出记录失败：' + (e.message || e))
   }
 }
+
+// ---- 同步导出资产（客户端记录，随浏览器下载目录留存，供「下载管理」回溯） ----
+const SYNC_EXPORT_KEY = 'bempdiff-sync-exports'
+const SYNC_EXPORT_CAP = 50 // 菜单项数量上限：仅保留最近 50 条，避免无限累积
+/** 从 localStorage 载入同步导出记录（数组缺失/损坏时兜底为空）。 */
+function loadSyncExports() {
+  try {
+    const raw = localStorage.getItem(SYNC_EXPORT_KEY)
+    const arr = raw ? JSON.parse(raw) : []
+    return Array.isArray(arr) ? arr : []
+  } catch (e) { return [] }
+}
+/** 记录一次同步导出完成（unshift 最新在前，超出上限截断并持久化）。 */
+export function recordSyncExport(entry) {
+  const next = [{ filename: entry.filename, size: entry.size || 0, createdAt: entry.createdAt || Date.now() }, ...state.syncExports]
+  const capped = next.slice(0, SYNC_EXPORT_CAP)
+  state.syncExports = capped
+  try { localStorage.setItem(SYNC_EXPORT_KEY, JSON.stringify(capped)) } catch (e) { /* 存储不可用则仅内存 */ }
+}
+/** 从同步导出列表中移除一条（按 createdAt 定位，仅本机记录，不影响浏览器已下载文件）。 */
+export function removeSyncExport(createdAt) {
+  state.syncExports = state.syncExports.filter(x => x.createdAt !== createdAt)
+  try { localStorage.setItem(SYNC_EXPORT_KEY, JSON.stringify(state.syncExports)) } catch (e) { /* 忽略 */ }
+}
+
+// 当前同步导出请求的取消句柄；非空表示导出进行中，可被用户取消（底部状态栏“导出中”旁的 ×）。
+let exportAbort = null
+
+/** 主动取消本次导出：中断请求、恢复按钮与提示（取消/异常均走 startExport 的 finally 兜底复位）。 */
+export function cancelExport() {
+  const c = exportAbort
+  exportAbort = null
+  if (c) { try { c.abort() } catch (e) { /* 忽略 */ } }
+  state.exporting = false
+  state.exportProgress = null
+  toast('info', '已取消导出')
+}
+
+/** 差异资产导出入口：由后端按规模分流 —— 小包同步流式（读流显示进度）、大包异步（后台生成 + 下载管理页）。 */
+export async function startExport() {
+  if (!state.job || state.exporting) return
+  // 解包中禁止导出：须待自动逐层解包比对完成后（job DONE）方可导出差异资产；
+  // 后端 /export/start 同样以 status==DONE 兜底 409，此处前端先行拦截以给出友好提示。
+  if (isUnpacking()) { toast('warning', '正在自动逐层解包，请稍候解包完成后导出'); return }
+  state.exporting = true
+  state.exportProgress = null
+  const ctrl = new AbortController()
+  exportAbort = ctrl
+  try {
+    const res = await fetch(`/api/job/${encodeURIComponent(state.job.jobId)}/export/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: ctrl.signal
+    })
+    const ct = (res.headers.get('content-type') || '').toLowerCase()
+    if (ct.includes('application/json')) {
+      // 大包：异步任务已启动，写入下载管理并轮询状态
+      let rec
+      try { rec = await res.json() } catch (e) { rec = {} }
+      toast('info', `导出已启动，预计 ${rec.etaText || '若干时间'} 完成，可在「下载管理」查看`)
+      await refreshExports(rec)
+      // 方案 B：不自动弹出「下载管理」面板——避免覆盖工具栏区域的导出下拉菜单（遮挡其可见项/导出按钮）。
+      // 保持『导出差异资产』为纯手动触发：用户按上一条 toast 指引点「下载管理」（openExports）再查看/下载。
+      if (rec && rec.id) pollExport(rec.id)
+    } else {
+      // 小包：同步读流，展示实时进度；完成后触发浏览器保存
+      await consumeExportStream(res)
+    }
+  } catch (e) {
+    // 用户取消（AbortError）不应视为失败；取消提示已由 cancelExport 给出。
+    if (!(e && e.name === 'AbortError')) {
+      toast('danger', '导出失败：' + (e.message || e))
+    }
+  } finally {
+    exportAbort = null
+    state.exporting = false
+    state.exportProgress = null
+  }
+}
+
+/** 同步导出：读取响应体并实时更新进度，写完转为 Blob 下载。 */
+async function consumeExportStream(res) {
+  if (!res || !res.ok) {
+    let msg = `${res ? res.status : ''} ${res ? res.statusText : '无法连接'}`
+    try { if (res) { const j = await res.json(); if (j && j.error) msg = j.error } } catch (e) { /* 非 JSON 忽略 */ }
+    throw new Error(msg || '导出失败')
+  }
+  const total = Number(res.headers.get('content-length') || 0)
+  const reader = res.body.getReader()
+  const chunks = []
+  let loaded = 0
+  const started = Date.now()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) { chunks.push(value); loaded += value.length }
+      if (total > 0) {
+        const percent = Math.min(100, Math.round((loaded / total) * 100))
+        const speed = loaded / Math.max(1, (Date.now() - started) / 1000)
+        const remainSec = speed > 0 ? Math.max(0, (total - loaded) / speed) : 0
+        state.exportProgress = {
+          loaded, total, percent,
+          etaText: fmtEta(remainSec)
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const blob = new Blob(chunks, { type: 'application/zip' })
+  const url = URL.createObjectURL(blob)
+  const filename = `bempdiff-export-${state.job.jobId}.zip`
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 4000)
+  toast('success', '导出完成，已开始下载')
+  // 同步导出同样记入客户端「下载管理」的同步资产列表，便于回溯（文件本体存于浏览器下载目录）。
+  recordSyncExport({ filename, size: loaded, createdAt: Date.now() })
+}
+
+function fmtEta(secs) {
+  if (!secs || secs <= 0) return ''
+  if (secs < 60) return `约剩 ${Math.ceil(secs)} 秒`
+  return `约剩 ${Math.ceil(secs / 60)} 分钟`
+}
+
+/** 异步导出：轮询记录直至 done/error，done 后刷新下载管理列表。 */
+async function pollExport(id, attempts = 0) {
+  try {
+    const rec = await api.exportGet(id)
+    if (rec && (rec.status === 'done' || rec.status === 'error')) {
+      await refreshExports()
+      if (rec.status === 'done') {
+        toast('success', '导出完成，点击「下载管理」中的下载即可获取')
+      } else {
+        toast('danger', rec.message || '导出失败，请在下载管理查看')
+      }
+      return
+    }
+    if (attempts < 600) {
+      setTimeout(() => pollExport(id, attempts + 1), 2000)
+    }
+  } catch (e) {
+    // 网络抖动等，隔几秒重试直至不再增长
+    if (attempts < 120) setTimeout(() => pollExport(id, attempts + 1), 3000)
+  }
+}
+
+export { fmtBytes as formatBytes }
 
 export async function saveConfig(cfg) {
   try {
@@ -899,17 +1218,19 @@ export async function ensureAiBudget(action, opts = {}) {
   if (!state.config) return true
   const threshold = state.config.costGateWarnTokens || 0
   if (threshold <= 0) return true // 闸门未启用
-  // 取预估（per-job 缓存；缓存键绑定「分析项 + prompt 指纹」，换类别或换自定义问题即失效，避免闸门估算与实际消耗脱节）。
+  // 取预估（per-job 缓存；缓存键绑定「分析项 + prompt 指纹 + 单文件键」，换类别、换自定义问题
+  // 或换目标文件即失效，避免闸门估算与实际消耗脱节）。
   // 不同分析项的 prompt 不同、token 预估不同；同一 category 下 custom 换问题也要失效（评审 P1 #5）。
   const cat = opts.category || null
   const pr = opts.prompt || null
-  const estKey = (cat || '') + '|' + (pr || '')
+  const fk = opts.fileKey || null
+  const estKey = (cat || '') + '|' + (pr || '') + '|' + (fk || '')
   if (state.aiEstimate && state.aiEstimateKey !== estKey) {
     state.aiEstimate = null
   }
   if (!state.aiEstimate && state.job) {
     try {
-      state.aiEstimate = await api.aiEstimate(state.job.jobId, cat, pr)
+      state.aiEstimate = await api.aiEstimate(state.job.jobId, cat, pr, fk)
       state.aiEstimateKey = estKey
     }
     catch (e) { return true }

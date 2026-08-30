@@ -1,15 +1,17 @@
 {
   "name": "bempdiff",
-  "version": "0.1.0",
+  "version": "0.1.2026083020",
   "private": true,
   "description": "BempDiff 桌面应用根（Electron 桌面壳 + Web 前端 + Java 后端 sidecar）",
   "scripts": {
     "dev": "cd webui && npm run dev",
     "build": "cd webui && npm run build",
     "dist": "electron-builder",
-    "dist:dir": "electron-builder --dir"
+    "dist:dir": "electron-builder --dir",
+    "tauri": "tauri"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "electron-builder": "^24.13.3"
   },
   "build": {
@@ -19,7 +21,7 @@
     "copyright": "Copyright © 2026 BempDiff",
     "directories": {
       "app": "dev-shell",
-      "output": "../dist"
+      "output": "../release"
     },
     "files": [
       "main.js",
@@ -28,17 +30,26 @@
     ],
     "extraResources": [
       {
-        "from": "dist_input",
-        "to": "bempdiff/dist_input"
+        "from": "dist_input/app",
+        "to": "bempdiff/dist_input/app"
       },
       {
-        "from": "webui/dist",
-        "to": "bempdiff/webui/dist"
+        "from": "dist_input/jre",
+        "to": "bempdiff/dist_input/jre"
+      },
+      {
+        "from": "dist_input/webui",
+        "to": "bempdiff/dist_input/webui"
       },
       {
         "from": "bempdiff-logo.png",
         "to": "bempdiff-logo.png"
       }
+    ],
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
     ],
     "win": {
       "target": "nsis",
@@ -48,7 +59,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "BempDiff-${version}-setup.${ext}"
+      "artifactName": "BempDiff-${version}-setup.${ext}",
+      "include": "build/installer.nsh"
     }
   }
 }
