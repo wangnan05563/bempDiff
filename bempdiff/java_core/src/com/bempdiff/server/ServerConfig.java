@@ -28,6 +28,9 @@ public final class ServerConfig {
     private static final String K_AI_MODEL = "aiModel";
     private static final String K_AI_ENABLED = "aiEnabled";
     private static final String K_STAGE_B_TOP_K = "stageBTopK";
+    private static final String K_STAGE_A_TOP_K = "stageATopK";
+    private static final String K_STAGE_A_FILE_SAMPLE_LINES = "stageAFileSampleLines";
+    private static final String K_MAX_PROMPT_TOKENS = "maxPromptTokens";
     private static final String K_COST_GATE_WARN_TOKENS = "costGateWarnTokens";
     private static final String K_INTERNAL_PREFIXES = "internalPrefixes";
     private static final String K_EXPAND_ALL = "expandAll";
@@ -58,6 +61,9 @@ public final class ServerConfig {
     private String aiModel = "gpt-4o-mini";
     private boolean aiEnabled = false;
     private int stageBTopK = 15;
+    private int stageATopK = 30;               // 阶段A 概览纳入文件上限（默认对齐 AiConfig）
+    private int stageAFileSampleLines = 80;    // 阶段A 单文件 diff 摘要行数上限
+    private int maxPromptTokens = 120_000;     // 单次请求最大输入 token（模型上下文窗口护栏）
     private double costGateWarnTokens = 8000;
 
     private String internalPrefixes = "com.hundsun";
@@ -144,6 +150,9 @@ public final class ServerConfig {
             aiModel = p.getProperty(K_AI_MODEL, aiModel);
             aiEnabled = Boolean.parseBoolean(p.getProperty(K_AI_ENABLED, K_FALSE));
             stageBTopK = Integer.parseInt(p.getProperty(K_STAGE_B_TOP_K, "15"));
+            stageATopK = Math.max(1, Integer.parseInt(p.getProperty(K_STAGE_A_TOP_K, "30")));
+            stageAFileSampleLines = Math.max(1, Integer.parseInt(p.getProperty(K_STAGE_A_FILE_SAMPLE_LINES, "80")));
+            maxPromptTokens = Math.max(1000, Integer.parseInt(p.getProperty(K_MAX_PROMPT_TOKENS, "120000")));
             costGateWarnTokens = Double.parseDouble(p.getProperty(K_COST_GATE_WARN_TOKENS, "8000"));
             internalPrefixes = p.getProperty(K_INTERNAL_PREFIXES, internalPrefixes);
             expandAll = Boolean.parseBoolean(p.getProperty(K_EXPAND_ALL, K_FALSE));
@@ -189,6 +198,9 @@ public final class ServerConfig {
         p.setProperty(K_AI_MODEL, aiModel);
         p.setProperty(K_AI_ENABLED, String.valueOf(aiEnabled));
         p.setProperty(K_STAGE_B_TOP_K, String.valueOf(stageBTopK));
+        p.setProperty(K_STAGE_A_TOP_K, String.valueOf(stageATopK));
+        p.setProperty(K_STAGE_A_FILE_SAMPLE_LINES, String.valueOf(stageAFileSampleLines));
+        p.setProperty(K_MAX_PROMPT_TOKENS, String.valueOf(maxPromptTokens));
         p.setProperty(K_COST_GATE_WARN_TOKENS, String.valueOf(costGateWarnTokens));
         p.setProperty(K_INTERNAL_PREFIXES, internalPrefixes);
         p.setProperty(K_EXPAND_ALL, String.valueOf(expandAll));
@@ -245,6 +257,9 @@ public final class ServerConfig {
         c.setApiKey(aiApiKey);
         c.setModel(aiModel);
         c.setStageBTopK(stageBTopK);
+        c.setStageATopK(stageATopK);
+        c.setStageAFileSampleLines(stageAFileSampleLines);
+        c.setMaxPromptTokens(maxPromptTokens);
         c.setCostGateWarnTokens(costGateWarnTokens);
         c.setHttpProxy(httpProxy);
         c.setHttpsProxy(httpsProxy);
@@ -265,6 +280,9 @@ public final class ServerConfig {
         m.put(K_AI_MODEL, aiModel);
         m.put(K_AI_ENABLED, aiEnabled);
         m.put(K_STAGE_B_TOP_K, stageBTopK);
+        m.put(K_STAGE_A_TOP_K, stageATopK);
+        m.put(K_STAGE_A_FILE_SAMPLE_LINES, stageAFileSampleLines);
+        m.put(K_MAX_PROMPT_TOKENS, maxPromptTokens);
         m.put(K_COST_GATE_WARN_TOKENS, costGateWarnTokens);
         m.put(K_INTERNAL_PREFIXES, internalPrefixes);
         m.put(K_EXPAND_ALL, expandAll);
@@ -322,6 +340,9 @@ public final class ServerConfig {
         if (m.containsKey(K_AI_MODEL)) aiModel = Json.str(m, K_AI_MODEL, aiModel);
         if (m.containsKey(K_AI_ENABLED)) aiEnabled = Json.bool(m, K_AI_ENABLED, aiEnabled);
         if (m.containsKey(K_STAGE_B_TOP_K)) stageBTopK = Json.intv(m, K_STAGE_B_TOP_K, stageBTopK);
+        if (m.containsKey(K_STAGE_A_TOP_K)) stageATopK = Math.max(1, Json.intv(m, K_STAGE_A_TOP_K, stageATopK));
+        if (m.containsKey(K_STAGE_A_FILE_SAMPLE_LINES)) stageAFileSampleLines = Math.max(1, Json.intv(m, K_STAGE_A_FILE_SAMPLE_LINES, stageAFileSampleLines));
+        if (m.containsKey(K_MAX_PROMPT_TOKENS)) maxPromptTokens = Math.max(1000, Json.intv(m, K_MAX_PROMPT_TOKENS, maxPromptTokens));
         if (m.containsKey(K_COST_GATE_WARN_TOKENS)) costGateWarnTokens = Json.intv(m, K_COST_GATE_WARN_TOKENS, (int) costGateWarnTokens);
         if (m.containsKey(K_AI_API_KEY)) {
             String k = Json.str(m, K_AI_API_KEY, "");

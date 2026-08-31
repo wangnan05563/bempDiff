@@ -149,4 +149,64 @@ public final class ServerConfigTest {
             throw new AssertionError("unpackMaxDepth 重启后丢失/不符: " + j.get("unpackMaxDepth"));
         Files.deleteIfExists(f);
     }
+
+    /**
+     * 阶段A 截断参数（stageATopK/stageAFileSampleLines）与上下文窗口护栏（maxPromptTokens）
+     * 必须跨重启持久化，且 toAiConfig 正确透传。
+     * 历史缺陷：stageATopK/stageAFileSampleLines 从未映射进 AiConfig，
+     * 配置中心改了也不生效（token 超限事故的加重因子，2026-08-31 修复）。
+     */
+    public void testStageAParamsAndMaxPromptTokensSurviveRestartAndToAiConfig() throws Exception {
+        Path f = tempFile();
+        ServerConfig a = new ServerConfig(f);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("stageATopK", 10);
+        m.put("stageAFileSampleLines", 40);
+        m.put("maxPromptTokens", 32000);
+        a.updateFrom(m);
+
+        ServerConfig b = new ServerConfig(f); // 模拟重启：读磁盘
+        java.util.Map<String, Object> j = b.toJson();
+        if (!Integer.valueOf(10).equals(j.get("stageATopK")))
+            throw new AssertionError("stageATopK 重启后丢失/不符: " + j.get("stageATopK"));
+        if (!Integer.valueOf(40).equals(j.get("stageAFileSampleLines")))
+            throw new AssertionError("stageAFileSampleLines 重启后丢失/不符: " + j.get("stageAFileSampleLines"));
+        if (!Integer.valueOf(32000).equals(j.get("maxPromptTokens")))
+            throw new AssertionError("maxPromptTokens 重启后丢失/不符: " + j.get("maxPromptTokens"));
+
+        // toAiConfig 必须透传三参（核心守护：此前 stageATopK 在此被遗漏，配置改了也不生效）
+        com.bempdiff.config.AiConfig ai = b.toAiConfig();
+        if (ai.getStageATopK() != 10)
+            throw new AssertionError("toAiConfig 未透传 stageATopK（配置中心改动不生效）: " + ai.getStageATopK());
+        if (ai.getStageAFileSampleLines() != 40)
+            throw new AssertionError("toAiConfig 未透传 stageAFileSampleLines: " + ai.getStageAFileSampleLines());
+        if (ai.getMaxPromptTokens() != 32000)
+            throw new AssertionError("toAiConfig 未透传 maxPromptTokens: " + ai.getMaxPromptTokens());
+        Files.deleteIfExists(f);
+    }
+
+    /** PUT 非法值（≤0 / 低于下限）应被钳制到安全下限，load 手改磁盘非法值同样被钳制。 */
+    public void testStageAParamsRejectNonPositive() throws Exception {
+        Path f = tempFile();
+        ServerConfig a = new ServerConfig(f);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("stageATopK", 0);
+        m.put("stageAFileSampleLines", -5);
+        m.put("maxPromptTokens", 0);
+        a.updateFrom(m);
+        if ((Integer) a.toJson().get("stageATopK") < 1)
+            throw new AssertionError("stageATopK 应钳制到 ≥1: " + a.toJson().get("stageATopK"));
+        if ((Integer) a.toJson().get("stageAFileSampleLines") < 1)
+            throw new AssertionError("stageAFileSampleLines 应钳制到 ≥1");
+        if ((Integer) a.toJson().get("maxPromptTokens") < 1000)
+            throw new AssertionError("maxPromptTokens 应钳制到 ≥1000");
+
+        // 重启（load）后仍保持钳制后的合法值
+        ServerConfig b = new ServerConfig(f);
+        if ((Integer) b.toJson().get("stageATopK") < 1
+                || (Integer) b.toJson().get("stageAFileSampleLines") < 1
+                || (Integer) b.toJson().get("maxPromptTokens") < 1000)
+            throw new AssertionError("重启后配置应保持合法下限之内");
+        Files.deleteIfExists(f);
+    }
 }

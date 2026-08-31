@@ -169,6 +169,9 @@ async function onSave() {
   const out = JSON.parse(JSON.stringify(form))
   if (out.topK !== undefined && out.topK !== null && out.topK !== '') out.topK = Number(out.topK)
   if (out.stageBTopK !== undefined && out.stageBTopK !== null && out.stageBTopK !== '') out.stageBTopK = Number(out.stageBTopK)
+  if (out.stageATopK !== undefined && out.stageATopK !== null && out.stageATopK !== '') out.stageATopK = Number(out.stageATopK)
+  if (out.stageAFileSampleLines !== undefined && out.stageAFileSampleLines !== null && out.stageAFileSampleLines !== '') out.stageAFileSampleLines = Number(out.stageAFileSampleLines)
+  if (out.maxPromptTokens !== undefined && out.maxPromptTokens !== null && out.maxPromptTokens !== '') out.maxPromptTokens = Number(out.maxPromptTokens)
   if (out.costGateWarnTokens !== undefined && out.costGateWarnTokens !== null && out.costGateWarnTokens !== '') out.costGateWarnTokens = Number(out.costGateWarnTokens)
   await saveConfig(out)
   // 保存后立即重扫上下文目录（新目录/刚开启都立即生效并展示加载态）
@@ -320,6 +323,18 @@ async function onCleanupTemp() {
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高">StageB Top-K</label>
               <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.stageBTopK" title="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="阶段A 全局概览最多纳入的变更文件数；数值越大概览越全、prompt 越大">StageA Top-K（概览文件数）</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" v-model.number="form.stageATopK" title="阶段A 全局概览最多纳入的变更文件数；数值越大概览越全、prompt 越大"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="阶段A 每个文件的 diff 摘要最多保留的行数（超长单行另受字符上限保护）">StageA 单文件摘要行数</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" v-model.number="form.stageAFileSampleLines" title="阶段A 每个文件的 diff 摘要最多保留的行数（超长单行另受字符上限保护）"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）">单次请求最大输入 Token</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1000" v-model.number="form.maxPromptTokens" title="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单">成本闸门告警 token</label>
