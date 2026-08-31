@@ -35,6 +35,27 @@ public final class PromptBuilders {
      */
     public static final int STAGE_B_DIFF_CHAR_CAP = 60_000;
 
+    /**
+     * 阶段A 单文件 diff 摘要的字符上限。
+     *
+     * <p><b>缺陷背景（实测事故）</b>：阶段A 原先<b>只有行数截断</b>（{@code stageAFileSampleLines}），
+     * 挡不住「单行超长」——压缩 JS / 整文件重写 / 反编译长行，单行即可达数万字符。
+     * 叠加 {@code stageATopK} 个文件后 prompt 膨胀到 195504 tokens，
+     * 触发供应商 <code>HTTP 400 number of input tokens has exceeded max_prompt_tokens (131072)</code>。
+     * 阶段B 早有 {@link #STAGE_B_DIFF_CHAR_CAP} 字符护栏，阶段A 缺失 → 护栏不对称是本次事故根因。
+     */
+    public static final int STAGE_A_FILE_CHAR_CAP = 8_000;
+
+    /**
+     * 阶段A 全部文件摘要的字符总量上限。
+     * 与 {@link #STAGE_B_DIFF_CHAR_CAP} 同量级，保证最坏情况（{@code stageATopK} 个文件全部超长）
+     * 也远低于主流模型 128K 上下文窗口，杜绝「成本闸门确认通过、请求仍被模型拒收」。
+     */
+    public static final int STAGE_A_TOTAL_CHAR_CAP = 60_000;
+
+    /** 阶段A 追加下一个文件所需的最小剩余预算：低于此值停止追加，避免产出零碎无意义的截断片段。 */
+    private static final int STAGE_A_MIN_FILE_BUDGET = 500;
+
     /** 阶段A prompt：让模型产出 JSON（整体风险/影响/测试主题 + 每文件初评）。 */
     public static String buildStageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         return buildStageA(diff, decompiled, cfg, null);
@@ -97,12 +118,26 @@ public final class PromptBuilders {
         p.append("> 文件类型：`.class`=Java 后端类；`.js`=前端 JavaScript；`.html`=前端模板；`.css`=前端样式。\n\n");
     }
 
+    /**
+     * 追加全部文件摘要，并受 {@link #STAGE_A_TOTAL_CHAR_CAP} 总量护栏约束。
+     * 预算耗尽时停止追加并标注被省略的文件数，引导用户改用单文件「AI功能总结」深读。
+     */
     private static void appendFileSummaries(StringBuilder p, DiffResult diff,
                                             Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         List<String> files = collectChangedFiles(diff);
         int limit = Math.min(files.size(), cfg.getStageATopK());
+        int budget = STAGE_A_TOTAL_CHAR_CAP;
+        int omitted = 0;
         for (int i = 0; i < limit; i++) {
-            appendSingleFileSummary(p, files.get(i), diff, decompiled, cfg);
+            // 剩余预算不足以容纳一个有意义的文件摘要时停止，避免产出零碎截断内容
+            if (budget < STAGE_A_MIN_FILE_BUDGET) { omitted = limit - i; break; }
+            budget -= appendSingleFileSummary(p, files.get(i), diff, decompiled, cfg, budget);
+        }
+        if (omitted > 0) {
+            p.append("\n... (阶段A 概览已达字符上限 ").append(STAGE_A_TOTAL_CHAR_CAP)
+             .append("，另有 ").append(omitted)
+             .append(" 个变更文件未纳入；完整清单见报告「变更文件」章节，"
+                     + "可用差异树右键「AI功能总结」对单个文件深读)\n");
         }
     }
 
@@ -115,9 +150,16 @@ public final class PromptBuilders {
         return files;
     }
 
-    /** 提取单文件摘要追加逻辑，降低 appendFileSummaries 的认知复杂度。 */
-    private static void appendSingleFileSummary(StringBuilder p, String k, DiffResult diff,
-                                                Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
+    /**
+     * 提取单文件摘要追加逻辑，降低 appendFileSummaries 的认知复杂度。
+     *
+     * @param budget 本文件可用的剩余字符预算（阶段A 总量护栏）
+     * @return 实际消耗的字符数，供调用方扣减预算
+     */
+    private static int appendSingleFileSummary(StringBuilder p, String k, DiffResult diff,
+                                               Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                               int budget) {
+        int before = p.length();
         p.append("\n### ").append(k).append(" (").append(statusName(stOf(diff, k)));
         FileClass fc = fileClassOf(k);
         if (fc != null) p.append("，").append(frontendLabel(fc));
@@ -126,11 +168,24 @@ public final class PromptBuilders {
         if (u != null && u.isOk() && u.getDiffText() != null) {
             String[] lines = u.getDiffText().split("\n");
             int lim = Math.min(lines.length, cfg.getStageAFileSampleLines());
-            for (int i = 0; i < lim; i++) p.append(lines[i]).append("\n");
-            if (lines.length > lim) p.append("... (截断，共 ").append(lines.length).append(" 行)\n");
+            StringBuilder body = new StringBuilder();
+            for (int i = 0; i < lim; i++) body.append(lines[i]).append("\n");
+            if (lines.length > lim) body.append("... (截断，共 ").append(lines.length).append(" 行)\n");
+            String s = body.toString();
+            // 字符级护栏：行数截断挡不住「单行超长」（压缩 JS / 整文件重写 / 反编译长行），必须再按字符兜底
+            if (s.length() > STAGE_A_FILE_CHAR_CAP) {
+                s = s.substring(0, STAGE_A_FILE_CHAR_CAP)
+                        + "\n... (单文件摘要超长已截断：上限 " + STAGE_A_FILE_CHAR_CAP + " 字符)\n";
+            }
+            // 总量护栏：最后一个文件只追加剩余预算
+            if (s.length() > budget) {
+                s = s.substring(0, budget) + "\n... (已达阶段A 总字符上限)\n";
+            }
+            p.append(s);
         } else {
             p.append("(无源码/未纳入 Top-K)\n");
         }
+        return p.length() - before;
     }
 
     /** 阶段B 单文件 prompt：仅发完整 diffText；按文件类型切换领域措辞（Java / 前端）。 */

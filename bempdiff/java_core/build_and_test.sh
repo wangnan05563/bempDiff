@@ -5,6 +5,15 @@ set -u
 ROOT="D:/code/otherProjects/18_comparePakage"
 JAVAC="$ROOT/bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/javac.exe"
 JAVA="$ROOT/bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64/bin/java.exe"
+RELEASE_FLAG=""
+# 工具链缺失（bin 被清空等）时回退打包快照内的 JDK（dist_input/jre 为完整 JDK，含 javac），
+# 用 --release 21 保证字节码与 Zulu21 产物一致（虚拟线程 API JDK21 已 finalized，25 编译兼容）。
+if [ ! -f "$JAVAC" ]; then
+  JAVAC="$ROOT/bempdiff/dist_input/jre/bin/javac.exe"
+  JAVA="$ROOT/bempdiff/dist_input/jre/bin/java.exe"
+  RELEASE_FLAG="--release 21"
+  echo "[WARN] Zulu21 工具链缺失，回退 dist_input/jre (JDK25) + --release 21"
+fi
 CFR="$ROOT/bempdiff/cfr.jar"
 # Office/POI and dependency jars (required to compile/run OfficeTextDiff); trailing wildcard expands to all jars
 POI_LIBS="$ROOT/bempdiff/toolchain/lib/*"
@@ -20,14 +29,14 @@ mkdir -p "$CORE_OUT" "$TEST_OUT"
 
 echo "==> 编译 core src"
 CORE_FILES=$(find "$CORE_SRC" -name '*.java')
-"$JAVAC" -cp "$CFR;$POI_LIBS" -encoding UTF-8 -Xlint:-unchecked -d "$CORE_OUT" $CORE_FILES
+"$JAVAC" $RELEASE_FLAG -cp "$CFR;$POI_LIBS" -encoding UTF-8 -Xlint:-unchecked -d "$CORE_OUT" $CORE_FILES
 CORE_RC=$?
 echo "core exit: $CORE_RC"
 if [ "$CORE_RC" -ne 0 ]; then echo "core 编译失败"; exit 1; fi
 
 echo "==> 编译 test"
 TEST_FILES=$(find "$TEST_SRC" -name '*.java')
-"$JAVAC" -cp "$CORE_OUT;$CFR;$POI_LIBS" -encoding UTF-8 -Xlint:-unchecked -d "$TEST_OUT" $TEST_FILES
+"$JAVAC" $RELEASE_FLAG -cp "$CORE_OUT;$CFR;$POI_LIBS" -encoding UTF-8 -Xlint:-unchecked -d "$TEST_OUT" $TEST_FILES
 TEST_RC=$?
 echo "test exit: $TEST_RC"
 if [ "$TEST_RC" -ne 0 ]; then echo "test 编译失败"; exit 1; fi

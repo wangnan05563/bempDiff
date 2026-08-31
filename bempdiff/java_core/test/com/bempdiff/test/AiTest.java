@@ -52,6 +52,58 @@ public final class AiTest {
         Asserts.assertNotContains("不应出现第 3 行", prompt, "L3");
     }
 
+    /**
+     * 阶段A 必须同时有「行数」与「字符」两道护栏（事故根因回归）。
+     *
+     * <p>历史缺陷：阶段A 原先只有行数截断（stageAFileSampleLines），挡不住「单行超长」——
+     * 压缩 JS / 整文件重写 / 反编译长行单行即可达数十万字符，叠加 stageATopK 个文件后
+     * prompt 膨胀到 195504 tokens，触发供应商 HTTP 400 max_prompt_tokens(131072) 超限。
+     * 阶段B 早有 STAGE_B_DIFF_CHAR_CAP，阶段A 缺失 → 护栏不对称。
+     */
+    public void testBuildStageA_singleFileCharCapGuardsLongLines() {
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        r.put(DiffStatus.MODIFIED, "static/bundle.js");
+        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
+        // 单行 40 万字符（模拟压缩 JS 整行）：行数截断（默认 80 行）对此完全无效
+        StringBuilder oneLine = new StringBuilder();
+        while (oneLine.length() < 400_000) oneLine.append('x');
+        decompiled.put("static/bundle.js",
+                new DecompiledUnit("k", null, null, oneLine.toString(), "js-beautify", "", true));
+        AiConfig cfg = new AiConfig();
+        String prompt = PromptBuilders.buildStageA(r, decompiled, cfg);
+        Asserts.assertContains("单文件超长应出现字符截断标记", prompt, "单文件摘要超长已截断");
+        // 单文件 cap + 固定头部开销，远低于原始 40 万字符
+        Asserts.assertTrue("阶段A prompt 应受单文件字符上限约束（原文 40 万字符）",
+                prompt.length() <= PromptBuilders.STAGE_A_FILE_CHAR_CAP + 2048);
+    }
+
+    /**
+     * 阶段A 总量护栏：多个大文件叠加时总字符数受 STAGE_A_TOTAL_CHAR_CAP 约束，
+     * 并标注被省略的文件数，引导用户改用单文件「AI功能总结」深读。
+     * 同时校验最坏情况的 token 估算远低于主流模型 128K 上下文窗口。
+     */
+    public void testBuildStageA_totalCharCapOmitsRemainingFiles() {
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
+        // 30 个文件 × 8000 字符 = 24 万字符原始输入，必然触发总量护栏
+        StringBuilder big = new StringBuilder();
+        while (big.length() < 8_000) big.append('y');
+        for (int i = 0; i < 30; i++) {
+            String key = "WEB-INF/classes/com/internal/C" + i + ".class";
+            r.put(DiffStatus.MODIFIED, key);
+            decompiled.put(key, new DecompiledUnit("k" + i, null, null, big.toString(), "cfr", "", true));
+        }
+        AiConfig cfg = new AiConfig();
+        cfg.setStageATopK(30);
+        String prompt = PromptBuilders.buildStageA(r, decompiled, cfg);
+        Asserts.assertContains("总量超限时应有省略提示", prompt, "个变更文件未纳入");
+        Asserts.assertTrue("阶段A 总字符应受总量上限约束（原 24 万字符）",
+                prompt.length() <= PromptBuilders.STAGE_A_TOTAL_CHAR_CAP + 4096);
+        // 最坏情况仍需远低于模型上下文窗口（estimateTokens = 字符数 / 2）
+        Asserts.assertTrue("最坏情况 token 估算应远低于 131072 窗口",
+                prompt.length() / 2.0 < 131_072);
+    }
+
     /** 阶段B 单文件 diff 内容超长时必须截断（防整文件重写/超大文件撑爆请求与成本预估）。 */
     public void testBuildStageB_diffCapTruncatesHugeDiff() {
         AiConfig cfg = new AiConfig();

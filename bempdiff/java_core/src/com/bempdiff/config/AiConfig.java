@@ -14,6 +14,12 @@ public final class AiConfig {
     private int stageATopK = 30;              // 阶段A 概览纳入文件上限
     private int stageBTopK = 15;              // 阶段B 深读完整 diff 上限（FR7.2 默认 15）
     private double costGateWarnTokens = 8000; // 成本闸门：预估超阈值弹确认
+    /**
+     * 单次请求最大输入 token（护栏，默认 120000，为 128K 上下文窗口留余量）。
+     * 与「成本闸门」是两个维度：成本闸门只做费用确认、确认后照发；
+     * 本护栏在发送前拦截「注定被模型拒收」的超大 prompt，避免必然的 HTTP 400 与无谓的超大请求体传输。
+     */
+    private int maxPromptTokens = 120_000;
     private String httpProxy = "";            // 企业网访问 LLM 的 HTTP 代理（FR9.11）
     private String httpsProxy = "";           // HTTPS 代理（FR9.11）
     private boolean blockPrivateEndpoints = false; // 严格 SSRF：额外拒绝回环/私网（本地 Ollama 需关）
@@ -36,6 +42,8 @@ public final class AiConfig {
     public void setStageBTopK(int v) { this.stageBTopK = v; }
     public double getCostGateWarnTokens() { return costGateWarnTokens; }
     public void setCostGateWarnTokens(double v) { this.costGateWarnTokens = v; }
+    public int getMaxPromptTokens() { return maxPromptTokens; }
+    public void setMaxPromptTokens(int v) { this.maxPromptTokens = v; }
     public String getHttpProxy() { return httpProxy; }
     public void setHttpProxy(String v) { this.httpProxy = v == null ? "" : v; }
     public String getHttpsProxy() { return httpsProxy; }

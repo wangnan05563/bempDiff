@@ -96,7 +96,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         }
 
         // [Layer 2] 构建通用兼容工厂并设为全局默认
-        UNIVERSAL_COMPAT_FACTORY = buildUniversalCompatibleFactory();
+        UNIVERSAL_COMPAT_FACTORY = buildSslFactory(new String[]{TLS12, "TLSv1.3"}, true, "通用兼容");
         if (UNIVERSAL_COMPAT_FACTORY != null) {
             try {
                 HttpsURLConnection.setDefaultSSLSocketFactory(UNIVERSAL_COMPAT_FACTORY);
@@ -109,17 +109,18 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         }
 
         // [Layer 3] 仅 TLSv1.2 兜底工厂（callChat/testConnection 握手失败降级，对齐原测试 S1）
-        TLS12_ONLY_FACTORY = buildTls12OnlyFactory();
+        TLS12_ONLY_FACTORY = buildSslFactory(new String[]{TLS12}, false, "仅 TLSv1.2");
         if (TLS12_ONLY_FACTORY != null) {
             LOG.info("[TLS] 仅 TLSv1.2 兜底工厂已构建");
         }
     }
 
     /**
-     * 构建"通用兼容"SSLSocketFactory：包装默认工厂，在每条新连接上强制协议和密码套件。
+     * 构建 SSLSocketFactory：包装默认工厂，在每条新连接上强制协议（及可选的弱套件过滤）。
+     * 统一实现"通用兼容"与"仅 TLSv1.2"两种策略，避免两套匿名类样板重复。
      * 不替换 TrustManager（保留标准 CA 验证），仅调整协议版本和密码套件列表以提升兼容性。
      */
-    private static SSLSocketFactory buildUniversalCompatibleFactory() {
+    private static SSLSocketFactory buildSslFactory(String[] protocols, boolean filterWeak, String warnTag) {
         try {
             SSLContext ctx = SSLContext.getInstance("TLS");
             ctx.init(null, null, null);
@@ -146,68 +147,31 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
 
                 /** 对每个新创建的 SSLSocket 强制设置兼容参数。 */
                 private SSLSocket configure(SSLSocket s) {
-                    s.setEnabledProtocols(new String[]{TLS12, "TLSv1.3"});
-                    String[] supported = s.getSupportedCipherSuites();
-                    List<String> filtered = new ArrayList<>(supported.length);
-                    for (String cs : supported) {
-                        String csl = cs.toLowerCase();
-                        if (csl.contains("_null_") || csl.contains("_anon_") ||
-                            csl.contains("_export_") || csl.contains("_rc4_") ||
-                            csl.contains("_des_") || csl.contains("_3des_") ||
-                            csl.contains("_md5_")) {
-                            continue;
+                    s.setEnabledProtocols(protocols);
+                    if (filterWeak) {
+                        String[] supported = s.getSupportedCipherSuites();
+                        List<String> filtered = new ArrayList<>(supported.length);
+                        for (String cs : supported) {
+                            String csl = cs.toLowerCase();
+                            if (csl.contains("_null_") || csl.contains("_anon_") ||
+                                csl.contains("_export_") || csl.contains("_rc4_") ||
+                                csl.contains("_des_") || csl.contains("_3des_") ||
+                                csl.contains("_md5_")) {
+                                continue;
+                            }
+                            if (csl.contains("_aes_") || csl.contains("_chacha20_")) {
+                                filtered.add(cs);
+                            }
                         }
-                        if (csl.contains("_aes_") || csl.contains("_chacha20_")) {
-                            filtered.add(cs);
+                        if (!filtered.isEmpty()) {
+                            s.setEnabledCipherSuites(filtered.toArray(new String[0]));
                         }
-                    }
-                    if (!filtered.isEmpty()) {
-                        s.setEnabledCipherSuites(filtered.toArray(new String[0]));
                     }
                     return s;
                 }
             };
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
-            LOG.warning("[WARN] 无法创建通用兼容 SSLContext: " + e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * 构建"仅 TLSv1.2"工厂：与 testConnection 原 S1 策略对齐，保留全量默认密码套件（不做弱套件过滤，
-     * 以最大化与老旧中间设备/网关的兼容性）。用于 callChat/testConnection 握手失败时的降级——
-     * 部分中间设备/网关会拒绝 TLSv1.3 广告（reset），仅发 1.2 可绕过。
-     */
-    private static SSLSocketFactory buildTls12OnlyFactory() {
-        try {
-            SSLContext ctx = SSLContext.getInstance("TLS");
-            ctx.init(null, null, null);
-            final SSLSocketFactory base = ctx.getSocketFactory();
-            return new SSLSocketFactory() {
-                public Socket createSocket(String host, int port) throws IOException {
-                    return configure((SSLSocket) base.createSocket(host, port));
-                }
-                public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
-                    return configure((SSLSocket) base.createSocket(host, port, localHost, localPort));
-                }
-                public Socket createSocket(InetAddress host, int port) throws IOException {
-                    return configure((SSLSocket) base.createSocket(host, port));
-                }
-                public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
-                    return configure((SSLSocket) base.createSocket(address, port, localAddress, localPort));
-                }
-                public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
-                    return configure((SSLSocket) base.createSocket(s, host, port, autoClose));
-                }
-                public String[] getDefaultCipherSuites() { return base.getDefaultCipherSuites(); }
-                public String[] getSupportedCipherSuites() { return base.getSupportedCipherSuites(); }
-                private SSLSocket configure(SSLSocket s) {
-                    s.setEnabledProtocols(new String[]{TLS12});
-                    return s;
-                }
-            };
-        } catch (NoSuchAlgorithmException | KeyManagementException e) {
-            LOG.warning("[WARN] 无法创建仅 TLSv1.2 工厂: " + e.getMessage());
+            LOG.warning("[WARN] 无法创建" + warnTag + "工厂: " + e.getMessage());
             return null;
         }
     }
@@ -580,9 +544,73 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         }
     }
 
-    /** 调用 chat/completions，返回模型文本。Ollama 兼容 /v1/chat/completions。
-     *  偶发超时/网络抖动自动重试（含 TLS 握手失败回退到兼容工厂）。 */
+    /**
+     * HTTP 非 2xx 响应异常：携带状态码，供重试策略区分「可重试」与「永久性失败」。
+     *
+     * <p>背景：原实现所有 IOException 一律重试 2 次，而 HTTP 400（如 prompt 超出模型上下文窗口）
+     * 属永久性客户端错误，重试必然同样失败，却要把数十万字符的请求体重发 3 次，既慢又浪费配额。
+     */
+    private static final class HttpStatusException extends IOException {
+        private static final long serialVersionUID = 1L;
+        final int statusCode;
+        HttpStatusException(int statusCode, String message) {
+            super(message);
+            this.statusCode = statusCode;
+        }
+    }
+
+    /**
+     * 判定失败是否值得重试：
+     * 网络 / IO / TLS 握手错误、5xx 服务端错误、408 请求超时、429 限流 → 可重试；
+     * 其余 4xx（400 参数或上下文超限、401 鉴权、403 权限、404 端点、422 语义错误）→ 永久性失败，不重试。
+     */
+    private static boolean isRetryable(IOException e) {
+        if (e instanceof HttpStatusException) {
+            int code = ((HttpStatusException) e).statusCode;
+            if (code == 408 || code == 429) return true;
+            return code >= 500;
+        }
+        return true; // 网络层 / TLS 错误：可重试
+    }
+
+    /**
+     * 把供应商原始错误翻译为可操作提示。
+     * token / 上下文窗口超限是最常见的永久性失败，需明确告知缩小范围的方法，
+     * 否则用户面对裸 HTTP 400 无从下手。
+     */
+    private static String friendlyMessage(IOException e) {
+        String raw = e.getMessage();
+        if (raw == null) return String.valueOf(e);
+        boolean tokenLimit = raw.contains("max_prompt_tokens") || raw.contains("context_length_exceeded")
+                || raw.contains("context length") || raw.contains("maximum context")
+                || raw.contains("too many tokens") || raw.contains("exceeded max");
+        if (tokenLimit) {
+            return raw + "；处置建议：本次分析范围超出模型上下文窗口，请缩小范围后重试——"
+                    + "减少参与分析的变更文件数（配置中心降低「阶段B 深读文件数」/ 关闭无关目录），"
+                    + "或改用差异树右键「AI功能总结」对单个文件分批深读。";
+        }
+        return raw;
+    }
+
+    /**
+     * 调用 chat/completions，返回模型文本。Ollama 兼容 /v1/chat/completions。
+     * 偶发超时/网络抖动自动重试（含 TLS 握手失败回退到兼容工厂）。
+     *
+     * <p><b>发送前上下文窗口护栏</b>：预估 token 超 {@code cfg.maxPromptTokens} 时直接取消，
+     * 不再发起注定被模型拒收的请求。成本闸门只做费用确认（用户确认后照发），
+     * 拦不住「超出模型上下文窗口」这一维度，故需此兜底。
+     */
     private String callChat(String prompt, double temperature) {
+        int maxTokens = cfg.getMaxPromptTokens();
+        if (maxTokens > 0) {
+            double est = estimateTokens(prompt);
+            if (est > maxTokens) {
+                throw new AiCallException("AI 调用已取消：本次请求预估约 " + (long) est
+                        + " tokens，超过单次请求上限 " + maxTokens + "（模型上下文窗口护栏）。"
+                        + "请缩小分析范围后重试：减少参与分析的变更文件数，"
+                        + "或改用差异树右键「AI功能总结」对单个文件分批深读。", null);
+            }
+        }
         return callChat(prompt, temperature, null, 0);
     }
 
@@ -603,8 +631,12 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
 
     /** callChat 的失败处理：握手失败时降级 TLS 策略并重试，重试耗尽则抛出 AiCallException（用于降低 callChat 认知复杂度）。 */
     private String handleCallFailure(String prompt, double temperature, SSLSocketFactory sf, int attempt, IOException e) {
-        if (attempt >= MAX_RETRIES) {
-            throw new AiCallException("AI 调用失败（已重试 " + attempt + " 次）: " + e.getMessage(), e);
+        // 永久性客户端错误（400/401/403/404/422…）重试必然同样失败，且超大 prompt 重传代价高昂
+        // （实测：token 超限 400 会把数十万字符请求体重发 3 次），故直接抛出不再重试。
+        if (!isRetryable(e) || attempt >= MAX_RETRIES) {
+            throw new AiCallException("AI 调用失败"
+                    + (attempt > 0 ? "（已重试 " + attempt + " 次）" : "")
+                    + ": " + friendlyMessage(e), e);
         }
         SSLSocketFactory nextSf = sf;
         if (isHandshakeFailure(e)) {
@@ -675,7 +707,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         InputStream bodyStream = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
         String resp = readAll(bodyStream);
         if (code < 200 || code >= 300) {
-            throw new IOException("HTTP " + code + ": " + resp);
+            throw new HttpStatusException(code, "HTTP " + code + ": " + resp);
         }
         return extractContent(resp);
     }
