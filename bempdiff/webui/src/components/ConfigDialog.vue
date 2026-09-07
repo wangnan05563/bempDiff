@@ -4,6 +4,7 @@ import { state, saveConfig, testConnection, fetchModels, loadContextStatus, toas
 import { api } from '../api/client'
 import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
 import HelpDoc from './HelpDoc.vue'
+import About from './About.vue'
 
 const props = defineProps({ visible: { type: Boolean, default: false } })
 const emit = defineEmits(['close'])
@@ -172,6 +173,7 @@ async function onSave() {
   if (out.stageATopK !== undefined && out.stageATopK !== null && out.stageATopK !== '') out.stageATopK = Number(out.stageATopK)
   if (out.stageAFileSampleLines !== undefined && out.stageAFileSampleLines !== null && out.stageAFileSampleLines !== '') out.stageAFileSampleLines = Number(out.stageAFileSampleLines)
   if (out.maxPromptTokens !== undefined && out.maxPromptTokens !== null && out.maxPromptTokens !== '') out.maxPromptTokens = Number(out.maxPromptTokens)
+  if (out.maxOutputTokens !== undefined && out.maxOutputTokens !== null && out.maxOutputTokens !== '') out.maxOutputTokens = Number(out.maxOutputTokens)
   if (out.costGateWarnTokens !== undefined && out.costGateWarnTokens !== null && out.costGateWarnTokens !== '') out.costGateWarnTokens = Number(out.costGateWarnTokens)
   await saveConfig(out)
   // 保存后立即重扫上下文目录（新目录/刚开启都立即生效并展示加载态）
@@ -222,6 +224,7 @@ async function onCleanupTemp() {
             <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='filter'}" @click="cfgTab='filter'">差异树过滤</button></li>
             <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ui'}" @click="cfgTab='ui'">界面与高级</button></li>
             <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='help'}" @click="cfgTab='help'">帮助文档</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='about'}" @click="cfgTab='about'">关于</button></li>
           </ul>
 
           <!-- AI 服务 -->
@@ -335,6 +338,10 @@ async function onCleanupTemp() {
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）">单次请求最大输入 Token</label>
               <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1000" v-model.number="form.maxPromptTokens" title="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）"></div>
+            </div>
+            <div class="row g-2 align-items-center mb-2">
+              <label class="col-sm-3 col-form-label col-form-label-sm" title="单次 AI 请求最大输出 token（请求体 max_tokens）：过小会导致长报告/测试要点被服务端硬切、尾部丢失；0 表示不限制（交服务端默认）。默认 8192，测试要点不完整时可调大">单次请求最大输出 Token</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="0" v-model.number="form.maxOutputTokens" title="单次 AI 请求最大输出 token（请求体 max_tokens）：过小会导致长报告/测试要点被服务端硬切、尾部丢失；0 表示不限制（交服务端默认）。默认 8192，测试要点不完整时可调大"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" title="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单">成本闸门告警 token</label>
@@ -501,6 +508,11 @@ async function onCleanupTemp() {
           <!-- 帮助文档 -->
           <div v-show="cfgTab==='help'" class="help-tab">
             <HelpDoc />
+          </div>
+
+          <!-- 关于：版本更新检查 + 手动更新指引 -->
+          <div v-show="cfgTab==='about'" class="about-tab">
+            <About />
           </div>
         </div>
 

@@ -35,6 +35,10 @@ public final class ProjectContextCache {
     /** 进程内缓存：避免同目录重复读盘（BempServer 单线程 handler，无需复杂并发控制）。 */
     private static final Map<String, ProjectIndex> MEM = new ConcurrentHashMap<>();
 
+    /** 进程内「上次指纹校验时间」（毫秒）：配合 {@link ProjectContextService} 的时效窗口，
+     * 记录某目录最后一次做了逐文件指纹失效检查的时刻，窗口内直接复用缓存免遍历。 */
+    private static final Map<String, Long> MEM_VALIDATED = new ConcurrentHashMap<>();
+
     private ProjectContextCache() {
         throw new UnsupportedOperationException("工具类不允许实例化");
     }
@@ -70,6 +74,7 @@ public final class ProjectContextCache {
     public static void save(String projDir, ProjectIndex idx) {
         if (idx == null || idx.isEmpty()) return;
         MEM.put(norm(projDir), idx);
+        MEM_VALIDATED.put(norm(projDir), System.currentTimeMillis());
         try {
             Files.createDirectories(cacheDir());
             Path tmp = cacheFile(projDir).resolveSibling(cacheFile(projDir).getFileName() + ".tmp");
@@ -81,9 +86,22 @@ public final class ProjectContextCache {
         }
     }
 
+    /** 标记某目录已完成一次逐文件指纹失效校验（用于时效窗口刷新起点）。 */
+    public static void markValidated(String projDir) {
+        MEM_VALIDATED.put(norm(projDir), System.currentTimeMillis());
+    }
+
+    /** 上次指纹校验时间（毫秒）；进程内无记录时回退到缓存索引的构建时间。 */
+    public static long lastValidatedMillis(String projDir, ProjectIndex cached) {
+        Long v = MEM_VALIDATED.get(norm(projDir));
+        if (v != null) return v;
+        return (cached != null) ? cached.getScannedAt() : 0L;
+    }
+
     /** 清除指定目录缓存（手动刷新时调用；含内存与磁盘）。 */
     public static void clear(String projDir) {
         MEM.remove(norm(projDir));
+        MEM_VALIDATED.remove(norm(projDir));
         try {
             Files.deleteIfExists(cacheFile(projDir));
         } catch (IOException ignored) {
@@ -94,6 +112,7 @@ public final class ProjectContextCache {
     /** 清空全部内存缓存（配合磁盘清理做全量重置）。 */
     public static void clearMemory() {
         MEM.clear();
+        MEM_VALIDATED.clear();
     }
 
     private static String norm(String s) {

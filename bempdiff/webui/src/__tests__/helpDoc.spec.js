@@ -47,6 +47,8 @@ describe('帮助检索 searchHelp', () => {
     expect(ids('解包')).toContain('unpack')
     expect(ids('ai').length).toBeGreaterThan(0)
     expect(ids('导出')).toContain('export')
+    expect(ids('拖拽')).toContain('drop')
+    expect(ids('自动填入')).toContain('drop')
   })
 
   it('空白查询返回空（不误全量返回）', () => {

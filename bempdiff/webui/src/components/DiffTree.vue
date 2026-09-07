@@ -43,15 +43,25 @@ const counts = computed(() => {
 })
 // 单节点过滤谓词：状态 + 搜索 + 风险过滤三项。主树与归档展开子节点共用，
 // 修复「未勾选『未变』时仍显示 jar 解包后的灰色条目」（解包子节点原先绕过该过滤）。
+// 状态判定用 `=== true`（而非 `!== false`）：当某节点 status 缺失或不在四个已知状态
+// （MODIFIED/ADDED/DELETED/UNCHANGED）时，showStatus[n.status] 为 undefined，会被全部过滤掉。
+// 之所以必须如此：这类「无状态/未知状态」节点多为目录/包级占位（list/tree 中间层），
+// 既不属于任何勾选状态，又往往是「4 个过滤全未勾选时树仍残留、且点击无反应」的元凶；
+// 用 `!== false` 会让它们漏网（undefined !== false === true）而一直在树里显示。
+// FOLDER 节点特例：目录节点本身不在后端 tree（包模式无 FOLDER），由 buildDirTree 从文件路径推导；
+// 但 folder 对比模式会下发显式 FOLDER 节点（带 status）。FOLDER 节点的 status 描述的是「该目录整体
+// 是否变化」，其下文件是否被勾选状态过滤不影响目录骨架显示——否则会出现「勾掉某个状态后整棵子树
+// 消失，目录栏也看不到」的坍缩观感。这里对 FOLDER 节点放行状态过滤，让目录骨架保留。
 function passStatusFilter(n) {
+  if (n && n.fileClass === 'FOLDER') return true
   const cfg = state.config || {}
   const showStatus = {
-    MODIFIED: cfg.filterShowModified !== false,
-    ADDED: cfg.filterShowAdded !== false,
-    DELETED: cfg.filterShowDeleted !== false,
-    UNCHANGED: cfg.filterShowUnchanged !== false
+    MODIFIED: cfg.filterShowModified === true,
+    ADDED: cfg.filterShowAdded === true,
+    DELETED: cfg.filterShowDeleted === true,
+    UNCHANGED: cfg.filterShowUnchanged === true
   }
-  return showStatus[n.status] !== false
+  return showStatus[n.status] === true
 }
 function passSearchFilter(n) {
   const cfg = state.config || {}
@@ -78,6 +88,22 @@ function passViewFilter(n) {
   return true
 }
 function passesFilters(n) { return passStatusFilter(n) && passSearchFilter(n) && passRiskFilter(n) && passViewFilter(n) }
+
+/** 一键清空所有过滤（搜索/4 个状态/风险）：用户被「勾选过滤后整树消失」卡住时一键恢复。
+ * 仅清运行时态（state.config），不修改持久化配置——避免覆盖用户此前在配置中心保存的偏好。 */
+function clearAllFilters() {
+  const cfg = state.config
+  if (!cfg) return
+  cfg.filterSearch = ''
+  cfg.filterRegex = false
+  cfg.filterShowModified = true
+  cfg.filterShowAdded = true
+  cfg.filterShowDeleted = true
+  cfg.filterShowUnchanged = true
+  if (Array.isArray(cfg.filterRisk)) cfg.filterRisk = ['HIGH', 'MEDIUM', 'LOW']
+  else cfg.filterRisk = ['HIGH', 'MEDIUM', 'LOW']
+  toast('info', '已清除过滤条件（搜索/状态/风险），差异树已恢复')
+}
 
 const filtered = computed(() => {
   return tree.value.filter(passesFilters)
@@ -183,10 +209,15 @@ function setSortMode(m) {
 }
 
 // ===================== 目录树展开/折叠（树视图，VS Code 风格） =====================
-// expandedDirs[dirKey] === false 表示折叠；缺省/true 表示展开（默认全展开，便于一览结构）。
+// 展开状态键 = `${layer}:${dirKey}`：同一目录路径会跨 L0/L1/L2 分区各自成树，
+// 若只用 dirKey 作状态键，点开 L0 的 WEB-INF/ 会连带 L1 的同名目录一起展开（联动）。
+// 带上 layer 后各分区各自记忆展开状态，点一个区不影响另一个区，交互更符合直觉。
+const zoneDirKey = (layer, dirKey) => layer + ':' + dirKey
+// expandedDirs[zoneKey] === false 表示折叠；缺省/true 表示展开（默认全展开，便于一览结构）。
 const expandedDirs = ref({})
-function toggleDir(dirKey) {
-  expandedDirs.value = { ...expandedDirs.value, [dirKey]: expandedDirs.value[dirKey] === false ? true : false }
+function toggleDir(layer, dirKey) {
+  const k = zoneDirKey(layer, dirKey)
+  expandedDirs.value = { ...expandedDirs.value, [k]: expandedDirs.value[k] === false ? true : false }
 }
 
 // ---- 「全部展开/全部折叠」逐层交错动画 ----
@@ -203,7 +234,7 @@ function collectDirLayers() {
     const gl = dirLayersOf(g.nodes)
     for (let d = 0; d < gl.length; d++) {
       if (!layers[d]) layers[d] = []
-      layers[d].push(...gl[d])
+      for (const k of gl[d]) layers[d].push(zoneDirKey(g.layer, k)) // 与展开状态键保持一致（按区隔离）
     }
   }
   return layers
@@ -311,7 +342,6 @@ const rows = computed(() => {
   if (viewMode.value === 'tree') {
     // 树视图：Layer 分组头 + 目录树。目录/文件按层级递归展开（VS Code 风格），
     // 节点仅显示当前层级的目录名/文件名；目录行可展开/折叠，文件行点击打开内容比对。
-    const isExpanded = (k) => expandedDirs.value[k] !== false
     const fileCompare = (a, b) => {
       // AI 风险置顶（目录内文件按风险排序，风险相同按名称）
       if (sortByRisk.value) {
@@ -322,11 +352,18 @@ const rows = computed(() => {
       return (a.name || '').localeCompare(b.name || '')
     }
     for (const g of groups.value) {
+      // isExpanded 必须在 for 循环体内定义：引用当次迭代的 g.layer 才能匹配当前分组。
+      // 若定义在循环体外，闭包词法作用域里没有 `g`（`for...of` 的 const 变量是块级作用域），
+      // flattenDirTree 递归调用它时会抛 ReferenceError: g is not defined → 整棵 rows 崩溃 → 树视图空白。
+      // 这正是「列表视图正常、树视图空白」的根因：列表分支不定义/不调用 isExpanded。
+      const isExpanded = (k) => expandedDirs.value[zoneDirKey(g.layer, k)] !== false
       out.push({ kind: 'header', layer: g.layer, label: g.label, count: g.nodes.length })
       const { root } = buildDirTree(g.nodes, { fileCompare })
       for (const r of flattenDirTree(root, isExpanded)) {
         if (r.isDir) {
-          out.push({ kind: 'dir', key: r.key, dirKey: r.key, name: r.name, depth: r.depth, node: r.node })
+          // layer 随行写入：同一目录路径可能跨 L0/L1/L2 分组各自成为一棵子树的根，
+          // :key 需带 layer 区分，否则虚拟滚动切片里同名目录撞 key，Vue 错误复用 DOM → 顶部多出文件夹/点击错乱
+          out.push({ kind: 'dir', key: r.key, dirKey: r.key, name: r.name, depth: r.depth, node: r.node, layer: g.layer })
         } else {
           out.push({ kind: 'node', key: r.node.key, node: r.node, depth: r.depth, name: r.name })
           if ((r.node.fileClass === 'ARCHIVE' || r.node.fileClass === 'JAR') && state.expandedArchives[r.node.key]) {
@@ -353,7 +390,7 @@ const scrollEl = ref(null)
 const scrollTop = ref(0)
 const viewportH = ref(600) // 初始估值，挂载后由容器实测覆盖
 const OVERSCAN = 6
-const start = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW_H) - OVERSCAN))
+const start = computed(() => Math.max(0, Math.min(Math.floor(scrollTop.value / ROW_H) - OVERSCAN, rows.value.length)))
 const visibleCount = computed(() => Math.ceil(viewportH.value / ROW_H) + OVERSCAN * 2)
 const slice = computed(() => rows.value.slice(start.value, start.value + visibleCount.value))
 
@@ -384,6 +421,13 @@ watch(tree, () => {
   scrollTop.value = 0
   expandedDirs.value = {}
   if (scrollEl.value) scrollEl.value.scrollTop = 0
+})
+// 切换视图模式（树/列表）时把滚动重置到顶部：两种视图的 rows 行数差异巨大
+// （列表全平摊→行数多；树视图目录折叠合并→行数骤减）。若沿用旧 scrollTop，
+// 虚拟滚动的 start 会远超新 rows 长度导致 slice 为空 → 整屏空白（用户切换后"树看不见"）。
+watch(viewMode, () => {
+  scrollTop.value = 0
+  if (scrollEl.value) { scrollEl.value.scrollTop = 0 }
 })
 
 // ===================== 路径定位（PathBar 面包屑 / 编辑框触发） =====================
@@ -774,7 +818,8 @@ function ruleTypeLabel(t) {
       <div class="vt-root" :style="{ height: totalH + 'px' }">
         <div class="vt-window" :style="{ transform: 'translateY(' + (start * ROW_H) + 'px)' }">
           <template v-for="row in slice"
-                    :key="row.kind === 'header' ? ('h-' + row.layer) : (row.kind === 'dir' ? ('d-' + row.key) : (row.key || ('l-' + row.parentKey)))">
+                    :key="row.kind === 'header' ? ('h-' + row.layer)
+                         : (row.kind === 'dir' ? ('d-' + row.layer + ':' + row.key) : (row.key || ('l-' + row.parentKey)))">
             <div v-if="row.kind === 'header'" class="list-group-item grp-head py-0 px-2 d-flex align-items-center"
                  :style="rowStyle" :title="LAYER_TITLE[row.layer] || row.label">
               {{ row.label }}（{{ row.count }}）
@@ -792,15 +837,15 @@ function ruleTypeLabel(t) {
                     :style="rowStyleFor(row)"
                     :class="{'base-folder': row.node && state.baseFolder === row.node.key, flash: locateFlash === row.key}"
                     :title="row.key"
-                    @click="toggleDir(row.dirKey)"
+                    @click="toggleDir(row.layer, row.dirKey)"
                     @contextmenu.prevent="row.node && openCtxMenu(row.node, $event)">
               <span class="caret-slot">
                 <i class="bi tree-caret"
-                   :class="expandedDirs[row.dirKey] === false ? 'bi-chevron-right' : 'bi-chevron-down'"
-                   :title="expandedDirs[row.dirKey] === false ? '展开目录' : '折叠目录'"></i>
+                   :class="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? 'bi-chevron-right' : 'bi-chevron-down'"
+                   :title="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? '展开目录' : '折叠目录'"></i>
               </span>
               <i v-if="row.node" class="bi bi-circle-fill" style="font-size:.5rem" :style="{color: statusMeta(row.node.status).dot}"></i>
-              <i class="bi" :class="expandedDirs[row.dirKey] === false ? 'bi-folder' : 'bi-folder2-open'"
+              <i class="bi" :class="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? 'bi-folder' : 'bi-folder2-open'"
                  style="color:var(--bs-warning)"></i>
               <span class="node-key text-truncate flex-1">{{ row.name }}</span>
               <span v-if="row.node" class="badge text-bg-light badge-fc border"
@@ -859,6 +904,16 @@ function ruleTypeLabel(t) {
       </div>
       <div v-if="!tree.length" class="text-center text-secondary py-4" style="font-size:.8rem">
         暂无差异，请先「开始比对」
+      </div>
+      <!-- 修复「勾选过滤条件后机构树消失」：tree 非空但 filtered 全被过滤掉时，给出明确提示
+           （避免渲染区空白用户无所适从）。常见诱因：4 个过滤全未勾选 / 搜索/风险过滤过严。 -->
+      <div v-else-if="!filtered.length" class="text-center text-secondary py-4" style="font-size:.8rem">
+        <i class="bi bi-funnel d-block mb-1" style="font-size:1.2rem"></i>
+        当前过滤条件下没有匹配的条目
+        <div class="mt-2">
+          <button type="button" class="btn btn-sm btn-outline-secondary py-0" style="font-size:.72rem"
+                  @click="clearAllFilters()" title="一键清除搜索/状态/风险过滤">清除过滤条件</button>
+        </div>
       </div>
       <!-- 排除恢复条：右键「排除」的条目集中在这里一键恢复 -->
       <div v-if="excludedCount > 0" class="dt-excluded-bar d-flex align-items-center gap-2 px-2 py-1">

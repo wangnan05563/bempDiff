@@ -25,7 +25,7 @@ public final class CompareOptions {
     private int unpackThreads = 4;
     private long unpackPerItemTimeoutMs = 60_000;
     private int unpackMaxDepth = 6;
-    private long unpackTotalBytesCap = 512L * 1024 * 1024;
+    private long unpackTotalBytesCap = 4L * 1024 * 1024 * 1024;
 
     public boolean isExpandAll() { return expandAll; }
     public void setExpandAll(boolean expandAll) { this.expandAll = expandAll; }
@@ -92,7 +92,7 @@ public final class CompareOptions {
             o.unpackThreads = Json.intv(opts, "unpackThreads", 4);
             o.unpackPerItemTimeoutMs = Json.longv(opts, "unpackPerItemTimeoutMs", 60_000L);
             o.unpackMaxDepth = Json.intv(opts, "unpackMaxDepth", 6);
-            o.unpackTotalBytesCap = Json.longv(opts, "unpackTotalBytesCap", 512L * 1024 * 1024);
+            o.unpackTotalBytesCap = Json.longv(opts, "unpackTotalBytesCap", 4L * 1024 * 1024 * 1024);
         }
         return o;
     }

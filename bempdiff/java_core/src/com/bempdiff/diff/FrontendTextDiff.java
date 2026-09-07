@@ -19,6 +19,9 @@ public final class FrontendTextDiff {
     /** 美化输入长度上限（字符）：超过则跳过美化，直接回退原始文本，避免极端大文件拖慢比对。 */
     private static final int BEAUTIFY_MAX_CHARS = 2_000_000;
 
+    /** 缺失侧占位短哈希（与归档/Office diff 的占位口径一致，标识该侧无此文件）。 */
+    private static final String FILL_CHAR_PLACEHOLDER = "0000000";
+
     private final PackageParser parser = new PackageParser();
 
     /** 对单个文本资源（前端 JS/HTML/CSS、JSP、配置文件）做"美化 + 双栏 diff"（默认规则）。
@@ -83,9 +86,9 @@ public final class FrontendTextDiff {
             }
             // 归档内部文本条目无 entry 元数据，bytes 自身 + key 拼串作为指纹；缺失侧 0000000
             String oldHash = (oldBytes != null)
-                    ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
+                    ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : FILL_CHAR_PLACEHOLDER;
             String newHash = (newBytes != null)
-                    ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+                    ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : FILL_CHAR_PLACEHOLDER;
             return new DecompiledUnit(key, oldText, newText, diff, engine, "", true, oldHash, newHash);
         } catch (Exception e) {
             return DecompiledUnit.fail(key, e.getMessage());
@@ -97,7 +100,7 @@ public final class FrontendTextDiff {
      * mtime 通常为 0）。用 key+size 拼串保证两侧身份可区分、缺失侧统一回退 0000000。
      */
     private static String textHash(String key, byte[] bytes, LogicalEntry entry) {
-        if (bytes == null) return "0000000";
+        if (bytes == null) return FILL_CHAR_PLACEHOLDER;
         String path = entry != null ? entry.getKey() : key;
         long size = entry != null ? entry.getSize() : bytes.length;
         return com.bempdiff.util.ShortHash.ofPathAndSize(path, size);

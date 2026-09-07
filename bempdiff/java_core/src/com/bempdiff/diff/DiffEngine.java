@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -54,12 +55,22 @@ public final class DiffEngine {
         // 同名不同版本/整包版本化（根目录改名→全量键不相等）：归档做版本配对，其余按内容级跨版本对齐。
         // 使统计/AI/导出/报告与树上口径一致，消除「版本化改名导致大量无差异内容被当作新增/删除」的假阳。
         alignVersionRenamedArchives(r, old, now);
+        // 内容一致的版本等价路径 → 折叠为未变（构建噪声归一等）
         alignIdenticalContentAcrossRename(r, oldSnap, newSnap);
+        // 内容不同的版本等价路径（webpack 哈希改名等同一逻辑文件）→ 配对为修改，而非拆成删除+新增
+        pairVersionRenamedAsModified(r, oldSnap, newSnap);
         return r;
     }
 
     /** 文本规范化比较的大小上限：超过则不做内容读入（回退 sha），避免大文本在 diff 阶段高 IO。 */
     private static final long NORM_MAX_BYTES = 2L * 1024 * 1024;
+
+    /** 版本 token 占位串：构建号/时间戳正则统一替换为它，抹平版本差异的公共哨兵。 */
+    private static final String VERSION_TOKEN_PLACEHOLDER = "\u0000V\u0000";
+
+    /** 匹配 key=value / key: value 形式的赋值行（供版本值整段折叠，避免残留值片段）。 */
+    private static final java.util.regex.Pattern VERSION_ASSIGN =
+            java.util.regex.Pattern.compile("(\\s*[^=\\n]+[=:])(.*)$");
 
     /**
      * 判断两个同键文本条目的「规范化内容」是否一致（忽略 BOM / 行尾 CRLF·CR / 每行行尾空白）。
@@ -71,17 +82,17 @@ public final class DiffEngine {
         FileClass fc = o.getFileClass();
         if (fc == null || !fc.isTextDiffable()) return false;
         if (o.getSize() > NORM_MAX_BYTES || n.getSize() > NORM_MAX_BYTES) return false;
-        byte[] a = readEntryBytesSafe(os, o);
-        byte[] b = readEntryBytesSafe(ns, n);
-        if (a == null || b == null) return false;
-        return normalizeText(a).equals(normalizeText(b));
+        Optional<byte[]> a = readEntryBytesSafe(os, o);
+        Optional<byte[]> b = readEntryBytesSafe(ns, n);
+        if (a.isEmpty() || b.isEmpty()) return false;
+        return normalizeText(a.get()).equals(normalizeText(b.get()));
     }
 
-    private static byte[] readEntryBytesSafe(PackageSnapshot snap, LogicalEntry e) {
+    private static Optional<byte[]> readEntryBytesSafe(PackageSnapshot snap, LogicalEntry e) {
         try {
-            return new PackageParser().readEntryBytes(snap, e);
+            return Optional.ofNullable(new PackageParser().readEntryBytes(snap, e));
         } catch (Exception ignored) {
-            return null;
+            return Optional.empty();
         }
     }
 
@@ -123,41 +134,70 @@ public final class DiffEngine {
             if (ae != null && isArchive(ae)) archiveAdded.add(a);
         }
         for (String dKey : new ArrayList<>(deleted)) {
-            if (!deleted.contains(dKey)) continue;
-            LogicalEntry de = old.get(dKey);
-            if (de == null || !isArchive(de)) continue;
-            String aKey = versionCounterpart(dKey, archiveAdded, old, now, added);
-            if (aKey == null) continue;
-            added.remove(aKey);
-            deleted.remove(dKey);
-            LogicalEntry ae = now.get(aKey);
-            boolean sameContainer = ae != null && de.getSha256().equals(ae.getSha256());
-            r.put(sameContainer ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, dKey);
-            // 扁平化内部子文件对齐（同版本键对齐后逐一比对 sha）。子文件跨层多，先按归档前缀一次收集，
-            // 避免为每个 DELETED 归档重复全量遍历整个 deleted 集合。
-            String preO = dKey + "!/";
-            String preN = aKey + "!/";
-            List<String> subUnderO = new ArrayList<>();
-            for (String dSub : deleted) if (dSub.startsWith(preO)) subUnderO.add(dSub);
-            for (String dSub : subUnderO) {
-                if (!deleted.contains(dSub)) continue;
-                String nKey = preN + dSub.substring(preO.length());
-                if (!added.contains(nKey)) continue;
-                LogicalEntry oe2 = old.get(dSub);
-                LogicalEntry ne2 = now.get(nKey);
-                boolean same = oe2 != null && ne2 != null && oe2.getSha256().equals(ne2.getSha256());
-                deleted.remove(dSub);
-                added.remove(nKey);
-                r.put(same ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, dSub);
-            }
+            tryAlignArchive(r, old, now, archiveAdded, added, deleted, dKey);
         }
         r.replaceList(DiffStatus.DELETED, deleted);
         r.replaceList(DiffStatus.ADDED, added);
     }
 
+    /** 对齐单个被删归档到其改名后的等价新归档，并把配对从两侧集合移出（子文件对齐见 {@link #alignSubFiles}）。 */
+    private static void tryAlignArchive(DiffResult r, Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
+                                        List<String> archiveAdded, Set<String> added, Set<String> deleted, String dKey) {
+        LogicalEntry de = old.get(dKey);
+        if (de == null || !isArchive(de)) return;
+        String aKey = versionCounterpart(dKey, archiveAdded, now, added);
+        if (aKey == null) return;
+        added.remove(aKey);
+        deleted.remove(dKey);
+        // 记录容器改名配对（旧侧 key → 新侧 key），供内容层按旧 key 反查新侧条目做内容 diff
+        r.recordRename(dKey, aKey);
+        LogicalEntry ae = now.get(aKey);
+        boolean sameContainer = ae != null && de.getSha256().equals(ae.getSha256());
+        r.put(sameContainer ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, dKey);
+        // 扁平化内部子文件对齐（同版本键对齐后逐一比对 sha）。子文件跨层多，先按归档前缀一次收集，
+        // 避免为每个 DELETED 归档重复全量遍历整个 deleted 集合。
+        alignSubFiles(r, deleted, added, old, now, dKey + "!/", aKey + "!/");
+    }
+
     private static boolean isArchive(LogicalEntry e) {
         FileClass fc = e.getFileClass();
         return fc == FileClass.ARCHIVE || fc == FileClass.JAR;
+    }
+
+    /** 按归档前缀逐一对齐扁平化内部子文件（preO → preN 映射），内容一致为一未变、否则修改，并记录改名配对。 */
+    private static void alignSubFiles(DiffResult r, Set<String> deleted, Set<String> added,
+                                      Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
+                                      String preO, String preN) {
+        List<String> subUnderO = new ArrayList<>();
+        for (String dSub : deleted) if (dSub.startsWith(preO)) subUnderO.add(dSub);
+        for (String dSub : subUnderO) {
+            if (!deleted.contains(dSub)) continue;
+            String nKey = preN + dSub.substring(preO.length());
+            if (added.contains(nKey)) {
+                LogicalEntry oe2 = old.get(dSub);
+                LogicalEntry ne2 = now.get(nKey);
+                boolean same = oe2 != null && ne2 != null && oe2.getSha256().equals(ne2.getSha256());
+                deleted.remove(dSub);
+                added.remove(nKey);
+                // 记录内部子文件改名配对，供内容层按旧 key 反查新侧条目做内容 diff
+                r.recordRename(dSub, nKey);
+                r.put(same ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, dSub);
+            }
+        }
+    }
+
+    /** 在候选桶内找 d 的「唯一」版本等价配对（匹配必须恰为 1 个才返回，避免误配）。 */
+    private static String findUniqueCompat(String d, List<String> candidates, Set<String> added,
+                                           Map<String, LogicalEntry> now) {
+        String pick = null;
+        int matches = 0;
+        for (String a : candidates) {
+            if (added.contains(a)) {
+                LogicalEntry ae = now.get(a);
+                if (ae != null && versionEquivalentPath(d, a)) { pick = a; matches++; }
+            }
+        }
+        return (matches == 1) ? pick : null;
     }
 
     /**
@@ -166,17 +206,18 @@ public final class DiffEngine {
      * 命中候选必须恰好一个，否则放弃（保守，宁可不配也不误配）。
      * {@code remainingAdded}：仍在集合中的 ADDED 归档（用于跳过已被配对/移除的候选）。
      */
-    private static String versionCounterpart(String dKey, List<String> added, Map<String, LogicalEntry> old,
+    private static String versionCounterpart(String dKey, List<String> added,
                                              Map<String, LogicalEntry> now, Set<String> remainingAdded) {
         String cand = null;
         int matches = 0;
         for (String aKey : added) {
-            if (!remainingAdded.contains(aKey)) continue;
-            LogicalEntry ae = now.get(aKey);
-            if (ae == null || !isArchive(ae)) continue;
-            if (com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(fileName(dKey), fileName(aKey))) {
-                cand = aKey;
-                matches++;
+            if (remainingAdded.contains(aKey)) {
+                LogicalEntry ae = now.get(aKey);
+                if (ae != null && isArchive(ae)
+                        && com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(fileName(dKey), fileName(aKey))) {
+                    cand = aKey;
+                    matches++;
+                }
             }
         }
         return (matches == 1) ? cand : null;
@@ -214,26 +255,98 @@ public final class DiffEngine {
             if (ae != null) addedByKey.computeIfAbsent(contentAlignKey(newSnap, ae), x -> new ArrayList<>()).add(a);
         }
         for (String d : new ArrayList<>(deleted)) {
-            if (!deleted.contains(d)) continue;
-            LogicalEntry de = old.get(d);
-            if (de == null) continue;
-            List<String> candidates = addedByKey.get(contentAlignKey(oldSnap, de));
-            if (candidates == null) continue;
-            String pick = null;
-            int matches = 0;
-            for (String a : candidates) {
-                if (!added.contains(a)) continue;
-                LogicalEntry ae = now.get(a);
-                if (ae == null) continue;
-                if (versionEquivalentPath(d, a)) { pick = a; matches++; }
-            }
-            if (matches != 1 || pick == null) continue;
-            deleted.remove(d);
-            added.remove(pick);
-            r.put(DiffStatus.UNCHANGED, d);
+            tryAlignByIdentity(r, old, now, added, deleted, addedByKey, oldSnap, d);
         }
         r.replaceList(DiffStatus.DELETED, deleted);
         r.replaceList(DiffStatus.ADDED, added);
+    }
+
+    /** 在"内容一致"候选桶内为单个被删条目找唯一等价配对并折叠为 UNCHANGED（避免主循环嵌套 if 抬高复杂度）。 */
+    private static void tryAlignByIdentity(DiffResult r, Map<String, LogicalEntry> old, Map<String, LogicalEntry> now, // NOSONAR S107 - 配对方法需同时持有两侧快照/集合上下文，参数对象化反而掩蔽意图
+                                           Set<String> added, Set<String> deleted, Map<String, List<String>> addedByKey,
+                                           PackageSnapshot oldSnap, String d) {
+        if (!deleted.contains(d)) return;
+        LogicalEntry de = old.get(d);
+        if (de == null) return;
+        List<String> candidates = addedByKey.get(contentAlignKey(oldSnap, de));
+        if (candidates == null) return;
+        String pick = findUniqueCompat(d, candidates, added, now);
+        if (pick == null) return;
+        deleted.remove(d);
+        added.remove(pick);
+        // 记录版本等价改名配对（内容一致 → UNCHANGED），供内容层按旧 key 反查新侧条目做内容 diff，
+        // 避免两侧顶层容器名不同时 decompile 误判为"整文件删除"。
+        r.recordRename(d, pick);
+        r.put(DiffStatus.UNCHANGED, d);
+    }
+
+    /**
+     * 版本等价路径 + 内容不同的文件配对为「修改」（而非删除+新增）。
+     *
+     * <p>整包版本化（如 …M059/…M061）重新打包时，同一逻辑文件（前端 chunk、index.html、manifest.js 等）
+     * 随构建产生新的 webpack 内容哈希尾（如 quoteRebuyInput.14da1892.js → .b03d20a7.js），各路径段
+     * 版本等价但内容确有变化（用户实测 BEMP5.0…M059 vs …M061）。此类文件既不能折叠为未变（内容不同），
+     * 也不应拆成删除+新增（同一逻辑文件改名）——应配对为「修改」，使统计/差异树/AI 与树口径一致。</p>
+     *
+     * <p>上一步 {@link #alignIdenticalContentAcrossRename} 已把「内容一致」的版本等价路径折叠为未变，
+     * 本步处理其剩余（内容不同）的部分。按「版本归一化路径」对 ADDED 建索引（近 O(N) 剪枝），
+     * 桶内再做 {@link #versionEquivalentPath} + 1:1 双重校验，避免误配。</p>
+     */
+    private static void pairVersionRenamedAsModified(DiffResult r, PackageSnapshot oldSnap, PackageSnapshot newSnap) {
+        Map<String, LogicalEntry> old = oldSnap.getEntries();
+        Map<String, LogicalEntry> now = newSnap.getEntries();
+        LinkedHashSet<String> deleted = new LinkedHashSet<>(r.get(DiffStatus.DELETED));
+        LinkedHashSet<String> added = new LinkedHashSet<>(r.get(DiffStatus.ADDED));
+        if (deleted.isEmpty() || added.isEmpty()) return;
+        Map<String, List<String>> addedByPath = new HashMap<>();
+        for (String a : added) {
+            LogicalEntry ae = now.get(a);
+            if (ae != null) {
+                addedByPath.computeIfAbsent(versionNormalizedPath(a), x -> new ArrayList<>()).add(a);
+            }
+        }
+        for (String d : new ArrayList<>(deleted)) {
+            tryAlignByVersionedPath(r, old, now, added, deleted, addedByPath, d);
+        }
+        r.replaceList(DiffStatus.DELETED, deleted);
+        r.replaceList(DiffStatus.ADDED, added);
+    }
+
+    /** 在"版本归一化路径"候选桶内为单个被删条目找唯一等价配对并标记为 MODIFIED（避免主循环嵌套 if 抬高复杂度）。 */
+    private static void tryAlignByVersionedPath(DiffResult r, Map<String, LogicalEntry> old,
+                                               Map<String, LogicalEntry> now, Set<String> added, Set<String> deleted,
+                                               Map<String, List<String>> addedByPath, String d) {
+        if (!deleted.contains(d)) return;
+        LogicalEntry de = old.get(d);
+        if (de == null) return;
+        List<String> candidates = addedByPath.get(versionNormalizedPath(d));
+        if (candidates == null) return;
+        String pick = findUniqueCompat(d, candidates, added, now);
+        if (pick == null) return;
+        deleted.remove(d);
+        added.remove(pick);
+        // 记录版本等价改名配对（webpack 哈希尾等），供内容层按旧 key 反查新侧条目做精确内容 diff
+        r.recordRename(d, pick);
+        r.put(DiffStatus.MODIFIED, d);
+    }
+
+    /** 版本归一化路径：逐段抹平「版本 token + webpack 内容哈希尾」，使版本等价路径映射到同一索引键（近 O(N) 剪枝前提）。
+     *  仅用于 {@link #pairVersionRenamedAsModified} 的候选索引；实际是否配对仍以 {@link #versionEquivalentPath} 严格判定。 */
+    private static String versionNormalizedPath(String key) {
+        String k = key.replace("!/", "/").replace('\\', '/');
+        String[] segs = k.split("/");
+        StringBuilder sb = new StringBuilder(k.length() + 8);
+        for (int i = 0; i < segs.length; i++) {
+            if (i > 0) sb.append('/');
+            sb.append(stripContentHash(stripVersionTokens(segs[i])));
+        }
+        return sb.toString();
+    }
+
+    /** 抹平 webpack 内容哈希尾（如 quoteRebuyInput.14da1892.js → quoteRebuyInput.js）：
+     *  仅当「哈希」为 ≥6 位十六进制且位于最后扩展名之前才抹平，避免误伤普通文件名/非哈希数字段。 */
+    static String stripContentHash(String seg) {
+        return seg.replaceAll("\\.[0-9a-f]{6,}(?=\\.[A-Za-z0-9]+$)", "");
     }
 
     /**
@@ -247,8 +360,9 @@ public final class DiffEngine {
         FileClass fc = e.getFileClass();
         if (fc == null || !fc.isTextDiffable()) return e.getSha256();
         if (e.getSize() > NORM_MAX_BYTES) return e.getSha256();
-        byte[] bytes = readEntryBytesSafe(snap, e);
-        if (bytes == null) return e.getSha256();
+        Optional<byte[]> read = readEntryBytesSafe(snap, e);
+        if (read.isEmpty()) return e.getSha256();
+        byte[] bytes = read.get();
         String norm = isDeployManifestKey(e.getKey())
                 ? noiseNormalizeDeploy(bytes)
                 : noiseNormalizeText(bytes);
@@ -260,22 +374,59 @@ public final class DiffEngine {
         return key != null && key.endsWith("/META-INF/MANIFEST.xml");
     }
 
+    /**
+     * 是否为随构建变化的 Maven 构建元数据文件（与树状态「噪声归一等折叠」的口径对应）：
+     *  - pom.properties（日期注释行随构建变化）
+     *  - MANIFEST.MF（Timestamp 行随构建变化）
+     *  - MANIFEST.xml 部署清单（md5/size/版本路径随构建变化）
+     * 仅用于展示侧对「树已折叠为未变」的条目做归一化 diff，避免展开视图显示被树忽略的噪声差异。
+     */
+    public static boolean isBuildMetadataKey(String key) {
+        if (key == null) return false;
+        String k = key.replace('\\', '/');
+        if (k.endsWith("/META-INF/MANIFEST.MF") || isDeployManifestKey(k)) return true;
+        return k.endsWith("/pom.properties") && k.contains("/META-INF/maven/");
+    }
+
+    /**
+     * 构建元数据噪声归一化（供展示侧与树状态口径统一）。
+     * 树状态对随构建变化的 Maven 元数据折叠为未变；展开视图若按原始字节 diff 会显示这些
+     * 被忽略的日期/版本噪声行，造成「树置灰但对比栏有差异」的口径矛盾（用户反馈 pom.properties）。
+     * 展示侧对同一类文件先归一化再 diff，使展开视图与树状态一致。
+     */
+    public static byte[] normalizeBuildNoise(byte[] data) {
+        return noiseNormalizeText(data).getBytes(StandardCharsets.UTF_8);
+    }
+
     /** 通用构建噪声归一化：去 BOM/统一换行/去行尾空白 + 跳过构建时间戳行 + 抹平版本号 token。 */
     static String noiseNormalizeText(byte[] data) {
         String s = normalizeText(data);
         StringBuilder sb = new StringBuilder(s.length() + 8);
         for (String line : s.split("\n", -1)) {
             if (isBuildNoiseLine(line)) continue;
-            sb.append(stripVersionTokens(line)).append('\n');
+            String stripped = stripVersionTokens(line);
+            // key=value 行且值内被抹出版本占位符时，把整个值折叠为占位符：
+            // 避免残留 "5." 之类让人误读的碎片（如 version=5.20230104002M.1 → 旧实现 version=5.V）。
+            // 两侧折叠结果一致仍可把随构建变化的版本差异判为未变（保持口径），且展示无伪值。
+            sb.append(collapseVersionAssignment(stripped)).append('\n');
         }
         return sb.toString();
+    }
+
+    /** 若为赋值行（key= 或 key:）且值内含版本占位符，将整个值替换为占位符；否则原样返回。 */
+    static String collapseVersionAssignment(String line) {
+        java.util.regex.Matcher m = VERSION_ASSIGN.matcher(line);
+        if (m.matches() && m.group(2).indexOf(VERSION_TOKEN_PLACEHOLDER) >= 0) {
+            return m.group(1) + VERSION_TOKEN_PLACEHOLDER;
+        }
+        return line;
     }
 
     /** 部署清单归一化：在通用噪声归一化基础上，抹平 md5/size 属性（随构建全变）。 */
     static String noiseNormalizeDeploy(byte[] data) {
         String s = noiseNormalizeText(data);
-        s = s.replaceAll("(?i)md5\\s*=\\s*\"[0-9a-fA-F]+\"", "md5=\"*\"");
-        s = s.replaceAll("(?i)size\\s*=\\s*\"[0-9]+\"", "size=\"*\"");
+        s = s.replaceAll("(?i)md5\\s*=\\s*\"[0-9a-f]+\"", "md5=\"*\"");
+        s = s.replaceAll("(?i)size\\s*=\\s*\"\\d+\"", "size=\"*\"");
         return s;
     }
 
@@ -286,7 +437,7 @@ public final class DiffEngine {
         if (t.startsWith("#")) {
             // Maven properties 自动生成的日期注释：#Fri Jul 03 11:06:08 CST 2026
             String rest = t.substring(1).trim();
-            return rest.matches("(?i)(mon|tue|wed|thu|fri|sat|sun)[a-z]*\\s+[A-Za-z]+\\s+\\d+.*\\d{4}");
+            return rest.matches("(?i)(mon|tue|wed|thu|fri|sat|sun)[a-z]*\\s+[a-z]+\\s+\\d+.*\\d{4}");
         }
         return false;
     }
@@ -298,11 +449,11 @@ public final class DiffEngine {
      */
     static String stripVersionTokens(String line) {
         // 1) 构建号[.补丁]+括号时间戳：036M059(20260703.1104) / 036M059(20260703-1104)
-        line = line.replaceAll("[0-9]+M[0-9]*(?:\\.\\d+)?\\([0-9][0-9.\\-]*\\)", "\u0000V\u0000");
+        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?\\(\\d[0-9.\\-]*\\)", VERSION_TOKEN_PLACEHOLDER);
         // 2) 构建号[.补丁]+点分时间戳：036M059.20260703.1104 / 20230102036M.15.20260703.1104
-        line = line.replaceAll("[0-9]+M[0-9]*(?:\\.\\d+)?\\.[0-9]{8}\\.[0-9]+", "\u0000V\u0000");
+        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?\\.\\d{8}\\.\\d+", VERSION_TOKEN_PLACEHOLDER);
         // 3) 独立构建号[.补丁]：036M059 / 20230102036M.15
-        line = line.replaceAll("[0-9]+M[0-9]*(?:\\.\\d+)?", "\u0000V\u0000");
+        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?", VERSION_TOKEN_PLACEHOLDER);
         return line;
     }
 
@@ -362,13 +513,17 @@ public final class DiffEngine {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
         String k = key.replace('\\', '/');
-        for (int i = 0; i < k.length(); i++) {
+        int i = 0;
+        int n = k.length();
+        while (i < n) {
             char c = k.charAt(i);
-            if (c == '/' || (c == '!' && i + 1 < k.length() && k.charAt(i + 1) == '/')) {
+            if (c == '/' || (c == '!' && i + 1 < n && k.charAt(i + 1) == '/')) {
                 if (cur.length() > 0) { out.add(cur.toString()); cur.setLength(0); }
-                if (c == '!') i++; // 跳过 '!'
+                // '!/' 成对作为一个分隔边界，一次前进 2 个字符
+                i += (c == '!') ? 2 : 1;
             } else {
                 cur.append(c);
+                i++;
             }
         }
         if (cur.length() > 0) out.add(cur.toString());
@@ -388,10 +543,14 @@ public final class DiffEngine {
         boolean hasDigit = false;
         for (int i = 0; i < t.length(); i++) {
             char c = t.charAt(i);
-            if (Character.isDigit(c)) { hasDigit = true; continue; }
-            if (Character.isLetter(c)) continue;
-            if (c == '(' || c == ')' || c == '.' || c == '_' || c == '-') continue;
-            return false;
+            if (Character.isLetter(c)) {
+                continue;
+            }
+            if (Character.isDigit(c)) {
+                hasDigit = true;
+            } else if (!(c == '(' || c == ')' || c == '.' || c == '_' || c == '-')) {
+                return false;
+            }
         }
         return hasDigit;
     }

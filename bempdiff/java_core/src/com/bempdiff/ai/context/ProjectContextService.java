@@ -28,6 +28,15 @@ public final class ProjectContextService {
     /** 仓库级上下文注入上限（字符），控制多项目场景的 token 成本。 */
     public static final int PROMPT_MAX_CHARS = 6000;
 
+    /** 上下文索引的时效窗口（毫秒）：窗口内缓存视为新鲜，跳过逐文件指纹遍历直接复用上一次结果。
+     *  可按需通过 {@link #setCacheTtlMillis(long)} 调整（例如压测/大规模工程下调大窗口降低指纹开销）。 */
+    private static volatile long cacheTtlMillis = 30_000L;
+
+    /** 调整上下文索引时效窗口。窗口为 0/负值时退化为「每请求必查指纹」（更实时、更慢）。 */
+    public static void setCacheTtlMillis(long ttlMs) {
+        cacheTtlMillis = ttlMs;
+    }
+
     private ProjectContextService() {
         throw new UnsupportedOperationException("工具类不允许实例化");
     }
@@ -39,10 +48,19 @@ public final class ProjectContextService {
         if (!Files.isDirectory(root)) return null;
         ProjectIndex cached = ProjectContextCache.load(projDir);
         if (cached != null) {
+            // 时效窗口内：直接把缓存当新鲜结果返回，避免每次请求对全量工程做指纹遍历（P0 性能缺陷：大工程每请求秒级）。
+            // 窗口逻辑：上次校验(缓存记录/内存缓存)距今 < TTL 即复用，超出窗口再走逐文件指纹增量失效。
+            long staleAt = ProjectContextCache.lastValidatedMillis(projDir, cached);
+            if (cacheTtlMillis > 0L && System.currentTimeMillis() - staleAt < cacheTtlMillis) {
+                LOG.log(Level.FINE, "[AI] 项目上下文时效窗口内复用：{0}（{1} 个项目）",
+                        new Object[]{projDir, cached.size()});
+                return cached;
+            }
             ProjectIndex fresh = refreshChanged(cached, root);
             if (fresh == null) {
                 LOG.log(Level.INFO, "[AI] 项目上下文缓存命中：{0}（{1} 个项目）",
                         new Object[]{projDir, cached.size()});
+                ProjectContextCache.markValidated(projDir);
                 return cached;
             }
             ProjectContextCache.save(projDir, fresh);
@@ -71,7 +89,7 @@ public final class ProjectContextService {
         try (java.util.stream.Stream<Path> st = Files.list(dir)) {
             st.filter(p -> p.getFileName().toString().endsWith(".json"))
               .forEach(p -> {
-                  try { Files.deleteIfExists(p); } catch (Exception ignored) { }
+                  try { Files.deleteIfExists(p); } catch (Exception ignored) { /* 单文件删除失败静默：由外层 catch 兜底 */ }
               });
         } catch (Exception ignored) {
             // 目录不存在或不可读，忽略
@@ -98,7 +116,7 @@ public final class ProjectContextService {
         for (ProjectIndex.ProjectEntry e : cached.getProjects()) {
             Path projectRoot = root.resolve(e.getRelPath().replace('/', java.io.File.separatorChar));
             if (!Files.isDirectory(projectRoot)) {
-                changed = true; // 项目被删除 → 整体重扫
+                // 项目被删除 → 整体重扫
                 return ProjectIndexer.scan(root);
             }
             ProjectIndexer.Fingerprint fp = ProjectIndexer.fingerprintOf(projectRoot);

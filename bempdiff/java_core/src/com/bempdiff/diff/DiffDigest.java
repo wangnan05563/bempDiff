@@ -40,9 +40,12 @@ public final class DiffDigest {
     /** 单行变更内容截断长度（字符）。 */
     public static final int LINE_CHAR_CAP = 120;
 
+    /** 新增类型标注字面量（多处复用的状态码，统一定为常量避免散落字符串）。 */
+    private static final String TYPE_ADDED = "ADDED";
+
     /** hunk 头正则：@@ -oldStart[,oldCount] +newStart[,newCount] @@ */
     private static final Pattern HUNK = Pattern.compile(
-            "@@\\s+-([0-9]+)(?:,([0-9]+))?\\s+\\+([0-9]+)(?:,([0-9]+))?\\s+@@");
+            "@@\\s+-(\\d+)(?:,(\\d+))?\\s+\\+(\\d+)(?:,(\\d+))?\\s+@@");
 
     private DiffDigest() {
         throw new UnsupportedOperationException("工具类不允许实例化");
@@ -52,8 +55,10 @@ public final class DiffDigest {
     public static final class Change {
         /** MODIFIED / ADDED / DELETED。 */
         public final String type;
-        public final int oldStart, oldEnd;   // 老侧行号区间；无老行时为 0
-        public final int newStart, newEnd;   // 新侧行号区间；无新行时为 0
+        public final int oldStart;
+        public final int oldEnd;   // 老侧行号区间；无老行时为 0
+        public final int newStart;
+        public final int newEnd;   // 新侧行号区间；无新行时为 0
         public final List<String> oldLines = new ArrayList<>();
         public final List<String> newLines = new ArrayList<>();
 
@@ -78,7 +83,8 @@ public final class DiffDigest {
         List<Change> out = new ArrayList<>();
         if (diff == null || diff.isEmpty()) return out;
         String[] lines = diff.split("\n", -1);
-        int oldLine = 1, newLine = 1;
+        int oldLine = 1;
+        int newLine = 1;
         List<Integer> oldNums = new ArrayList<>();
         List<String> oldText = new ArrayList<>();
         List<Integer> newNums = new ArrayList<>();
@@ -91,20 +97,19 @@ public final class DiffDigest {
                 newLine = h[2];
                 continue;
             }
-            if (raw.startsWith("--- ") || raw.startsWith("+++ ") || raw.startsWith("\\ No newline")) {
-                continue;
-            }
-            if (raw.startsWith("-")) {
-                oldNums.add(oldLine++);
-                oldText.add(raw.substring(1));
-            } else if (raw.startsWith("+")) {
-                newNums.add(newLine++);
-                newText.add(raw.substring(1));
-            } else {
-                // 上下文行：触发块结算，行号两侧各 +1
-                flush(out, oldNums, oldText, newNums, newText);
-                oldLine++;
-                newLine++;
+            if (!raw.startsWith("--- ") && !raw.startsWith("+++ ") && !raw.startsWith("\\ No newline")) {
+                if (raw.startsWith("-")) {
+                    oldNums.add(oldLine++);
+                    oldText.add(raw.substring(1));
+                } else if (raw.startsWith("+")) {
+                    newNums.add(newLine++);
+                    newText.add(raw.substring(1));
+                } else {
+                    // 上下文行：触发块结算，行号两侧各 +1
+                    flush(out, oldNums, oldText, newNums, newText);
+                    oldLine++;
+                    newLine++;
+                }
             }
         }
         flush(out, oldNums, oldText, newNums, newText);
@@ -155,8 +160,14 @@ public final class DiffDigest {
     private static void flush(List<Change> out, List<Integer> oldNums, List<String> oldText,
                               List<Integer> newNums, List<String> newText) {
         if (oldNums.isEmpty() && newNums.isEmpty()) return;
-        String type = (!oldNums.isEmpty() && !newNums.isEmpty()) ? "MODIFIED"
-                : oldNums.isEmpty() ? "ADDED" : "DELETED";
+        String type;
+        if (!oldNums.isEmpty() && !newNums.isEmpty()) {
+            type = "MODIFIED";
+        } else if (oldNums.isEmpty()) {
+            type = TYPE_ADDED;
+        } else {
+            type = "DELETED";
+        }
         Change c = new Change(type,
                 first(oldNums), last(oldNums), first(newNums), last(newNums));
         c.oldLines.addAll(oldText);
@@ -184,7 +195,7 @@ public final class DiffDigest {
 
     private static String typeLabel(String t) {
         switch (t) {
-            case "ADDED": return "新增";
+            case TYPE_ADDED: return "新增";
             case "DELETED": return "删除";
             default: return "修改";
         }
@@ -192,18 +203,20 @@ public final class DiffDigest {
 
     /** 行号区间标注：MODIFIED→「老 Lx-y → 新 La-b」；ADDED→「新 Lx」；DELETED→「老 Lx-y」。 */
     private static String location(Change c) {
-        String oldLoc = c.oldStart > 0
-                ? (c.oldStart == c.oldEnd ? "L" + c.oldStart : "L" + c.oldStart + "-" + c.oldEnd)
-                : null;
-        String newLoc = c.newStart > 0
-                ? (c.newStart == c.newEnd ? "L" + c.newStart : "L" + c.newStart + "-" + c.newEnd)
-                : null;
+        String oldLoc = lineRange(c.oldStart, c.oldEnd);
+        String newLoc = lineRange(c.newStart, c.newEnd);
         if ("MODIFIED".equals(c.type)) {
             return (oldLoc == null ? "" : "老 " + oldLoc) + (oldLoc != null && newLoc != null ? " → " : "")
                     + (newLoc == null ? "" : "新 " + newLoc);
         }
-        if ("ADDED".equals(c.type)) return "新 " + newLoc;
+        if (TYPE_ADDED.equals(c.type)) return "新 " + newLoc;
         return "老 " + oldLoc;
+    }
+
+    /** 行号区间字面量：单行 → "Lx"，区间 → "Lx-y"，起始 ≤0（无行）返回 null。 */
+    private static String lineRange(int start, int end) {
+        if (start <= 0) return null;
+        return (start == end) ? "L" + start : "L" + start + "-" + end;
     }
 
     private static int first(List<Integer> nums) { return nums.isEmpty() ? 0 : nums.get(0); }
@@ -214,7 +227,8 @@ public final class DiffDigest {
         if (s == null) return "";
         if (s.length() <= LINE_CHAR_CAP) return s;
         // L5 修复：按 Unicode 码点截断，避免切断 UTF-16 代理对产生乱码字符。
-        int count = 0, i = 0;
+        int count = 0;
+        int i = 0;
         while (i < s.length() && count < LINE_CHAR_CAP) {
             int cp = s.codePointAt(i);
             i += Character.charCount(cp);

@@ -20,6 +20,8 @@ import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -49,6 +51,8 @@ public final class NestedUnpacker {
     /** 单条目硬上限，防御单条 zip bomb。与 PackageParser/ParseConfig 共用同一来源（默认 256MB），
      *  保持解析层与解包层上限一致，避免顶层/嵌套口径分裂。 */
     private static final long HARD_CAP = ParseConfig.DEFAULT_ENTRY_CAP_BYTES;
+    /** 展开阶段标识（UnpackError.stage），抽取为常量避免字面量四处重复（S1192）。 */
+    private static final String EXPAND_STAGE = "expand";
 
     /**
      * 解包进度回调：收到「已完成 root 容器数 / 待解包 root 总数」，供上层同步到 job 进度。
@@ -98,6 +102,21 @@ public final class NestedUnpacker {
      *  依赖稳定顺序的下游必须自行排序；DiffEngine 已用 {@code TreeSet} 归序，故不依赖此序。</p> */
     public PackageSnapshot flatten(PackageSnapshot snap, UnpackReport report, UnpackProgress progress) {
         Map<String, LogicalEntry> src = snap.getEntries();
+        List<String> roots = collectRoots(src);
+        if (roots.isEmpty()) {
+            report.finish();
+            return snap;
+        }
+        ConcurrentHashMap<String, LogicalEntry> out = new ConcurrentHashMap<>(src);
+        runExpansion(snap, out, report, progress, roots);
+        report.finish();
+        // 收尾：去除"已被物理平铺展开"的容器键 + 展开完整性自检（详见 filterExpandedContainers）。
+        Map<String, LogicalEntry> ordered = filterExpandedContainers(out, report);
+        return new PackageSnapshot(snap.getFile(), snap.getType(), snap.getVersion(), ordered);
+    }
+
+    /** 收集尚未展开的顶层容器键：ARCHIVE/JAR 且无 k+"/" 前缀条目（说明未被展开过）。 */
+    private static List<String> collectRoots(Map<String, LogicalEntry> src) {
         List<String> roots = new ArrayList<>();
         for (Map.Entry<String, LogicalEntry> e : src.entrySet()) {
             FileClass fc = e.getValue().getFileClass();
@@ -105,73 +124,91 @@ public final class NestedUnpacker {
                 roots.add(e.getKey());
             }
         }
-        if (roots.isEmpty()) {
-            report.finish();
-            return snap;
-        }
+        return roots;
+    }
 
-        ConcurrentHashMap<String, LogicalEntry> out = new ConcurrentHashMap<>(src);
+    /**
+     * 并发展开全部 root 容器并等待屏障；线程池统一在本方法 finally 关闭（保证任何路径都关闭）。
+     * <p>复杂度从 flatten 抽出，旨在把 flatten 的认知复杂度控制在阈值内。</p>
+     */
+    private void runExpansion(PackageSnapshot snap, ConcurrentHashMap<String, LogicalEntry> out,
+                              UnpackReport report, UnpackProgress progress, List<String> roots) {
         AtomicLong bytes = new AtomicLong();
-        // 已解包完成的 root 容器数：并发 flatten 结束后按 total 回调，供上层做节流进度上报。
+        // 已解包完成的 root 容器数：并发结束后按 total 回调，供上层做节流进度上报。
         AtomicInteger doneRoots = new AtomicInteger();
         int totalRoots = roots.size();
-        ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, opts.threadPoolSize));
+        // 报告线程数先于线程池创建，避免任何可能抛异常的语句夹在「池创建」与 try 之间造成资源泄漏
         report.setThreadCount(opts.threadPoolSize);
-        List<Future<?>> futures = new ArrayList<>();
-        for (String root : roots) {
-            LogicalEntry rootEntry = src.get(root);
-            futures.add(pool.submit(() -> {
-                try {
-                    byte[] rootBytes = new PackageParser().readEntryBytes(snap, rootEntry); // 读源包内该容器字节
-                    expand(snap, root, rootBytes, null, 0, out, report, bytes);
-                } catch (Exception ex) {
-                    report.addError(new UnpackError(root, "root.read", msg(ex)));
-                } finally {
-                    if (progress != null) progress.onProgress(doneRoots.incrementAndGet(), totalRoots);
-                }
-            }));
-        }
-        // —— 等待屏障 ——：阻塞直至全部解包任务在整体 deadline 内完成；超时不提前放行后续 AI，仅标记部分完成。
-        // 关键：每个 future 等待「剩余整体预算」，而非被 perItemTimeout 单独截断。perItemTimeout 视为单个根容器的
-        // 平摊预算；若对每个 future 都 cap 在 perItemTimeout，则一个展开上百子文件的深层 webapp WAR 会过早超时，
-        // 该 root 及其余 root 均被截断，造成展开不完整并诱发海量假 DEL/ADD（非确定性）。整体 deadline 仍是防挂死的护栏。
-        long budget = opts.perItemTimeoutMs * Math.max(1L, roots.size());
-        long deadline = System.currentTimeMillis() + budget;
-        waitBarrier: {
-            try {
-                for (Future<?> f : futures) {
-                    long remain = deadline - System.currentTimeMillis();
-                    if (remain <= 0) {
-                        report.markIncomplete();
-                        break;
-                    }
+        // ExecutorService 自 JDK19 起实现 AutoCloseable，用 try-with-resources 保证任何路径（含提交阶段异常）都关闭线程池。
+        // 资源在 waitBarrier 等待全部任务结束后才关闭，此时任务已执行完毕，shutdown 语义与原先 shutdownNow 等价。
+        try (ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, opts.threadPoolSize))) {
+            List<Future<?>> futures = new ArrayList<>();
+            for (String root : roots) {
+                LogicalEntry rootEntry = snap.getEntries().get(root);
+                futures.add(pool.submit(() -> {
                     try {
-                        f.get(Math.max(1, remain), TimeUnit.MILLISECONDS);
-                    } catch (TimeoutException te) {
-                        report.markIncomplete();
-                        break;
+                        byte[] rootBytes = new PackageParser().readEntryBytes(snap, rootEntry); // 读源包内该容器字节
+                        expand(snap, root, rootBytes, null, 0, out, report, bytes);
+                    } catch (Exception ex) {
+                        report.addError(new UnpackError(root, "root.read", msg(ex)));
+                    } finally {
+                        if (progress != null) progress.onProgress(doneRoots.incrementAndGet(), totalRoots);
                     }
-                }
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                report.markIncomplete();
-                break waitBarrier; // 中断应立即放弃，不再逐个等待剩余任务
-            } catch (ExecutionException ee) {
-                report.markIncomplete();
-                break waitBarrier; // 某根容器任务已异常退出：后续任务再等也无完整结果，及时止损，避免空等
-            } finally {
-                pool.shutdownNow();
+                }));
             }
+            // —— 等待屏障 ——：阻塞直至全部解包任务在整体 deadline 内完成；超时不提前放行后续 AI，仅标记部分完成。
+            // 关键：每个 future 等待「剩余整体预算」，而非被 perItemTimeout 单独截断。perItemTimeout 视为单个根容器的
+            // 平摊预算；若对每个 future 都 cap 在 perItemTimeout，则一个展开上百子文件的深层 webapp WAR 会过早超时，
+            // 该 root 及其余 root 均被截断，造成展开不完整并诱发海量假 DEL/ADD（非确定性）。整体 deadline 仍是防挂死的护栏。
+            long budget = opts.perItemTimeoutMs * Math.max(1L, roots.size());
+            long deadline = System.currentTimeMillis() + budget;
+            waitBarrier(futures, deadline, report);
         }
-        report.finish();
-        // 收尾：去除"已被物理平铺展开"的容器键。容器展开后其内部叶子已平面化进入 out，若仍保留容器键，
-        // 会造成容器级与叶子级重复计入差异（容器 MOD + 叶子 ADD/DEL），且让差异树把叶子当成容器后代
-        // 一切折叠掉——统计(86/84) 与差异树(2/0) 口径分裂（用户反馈）。故仅当容器确未展开（无扁平后代）时保留。
+    }
+
+    /** 整体 deadline 内逐个等待任务；任一剩余预算耗尽即停止等待并标记 incomplete。 */
+    private static void waitBarrier(List<Future<?>> futures, long deadline, UnpackReport report) {
+        try {
+            for (Future<?> f : futures) {
+                if (!awaitWithinDeadline(f, deadline, report)) break;
+            }
+        } catch (InterruptedException ie) {
+            // 中断应立即放弃，不再逐个等待剩余任务。
+            Thread.currentThread().interrupt();
+            report.markIncomplete();
+        } catch (ExecutionException ee) {
+            // 某根容器任务已异常退出：后续任务再等也无完整结果，及时止损，避免空等。
+            report.markIncomplete();
+        }
+    }
+
+    /** 等待单个任务：预算耗尽或超时则标记 incomplete 并返回 false（调用方应停止等待）。 */
+    private static boolean awaitWithinDeadline(Future<?> f, long deadline, UnpackReport report)
+            throws InterruptedException, ExecutionException {
+        long remain = deadline - System.currentTimeMillis();
+        if (remain <= 0) {
+            report.markIncomplete();
+            return false;
+        }
+        try {
+            f.get(Math.max(1, remain), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            report.markIncomplete();
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 收尾两趟过滤：丢弃已展开的容器键（内部叶子接管），仅保留未展开容器；
+     * 并对仍残留容器键（展开不完整）统一 markIncomplete，防静默截断差异/导出。
+     */
+    private static Map<String, LogicalEntry> filterExpandedContainers(
+            ConcurrentHashMap<String, LogicalEntry> out, UnpackReport report) {
         // 两趟收集消除 O(C×N)：先取出全部归档容器键集合，再一次性过滤，避免对每个容器全表扫描 hasChildPrefix。
         java.util.Set<String> containers = new java.util.HashSet<>();
         for (Map.Entry<String, LogicalEntry> e : out.entrySet()) {
-            LogicalEntry v = e.getValue();
-            FileClass fc = v.getFileClass();
+            FileClass fc = e.getValue().getFileClass();
             if (fc == FileClass.ARCHIVE || fc == FileClass.JAR) containers.add(e.getKey());
         }
         Map<String, LogicalEntry> ordered = new LinkedHashMap<>();
@@ -181,7 +218,15 @@ public final class NestedUnpacker {
             }
             ordered.put(e.getKey(), e.getValue());
         }
-        return new PackageSnapshot(snap.getFile(), snap.getType(), snap.getVersion(), ordered);
+        // 收尾一致性自检：若最终快照仍保留归档容器键，说明展开不完整（cap/depth 守卫降级或任务超时），统一标记。
+        for (Map.Entry<String, LogicalEntry> e : ordered.entrySet()) {
+            FileClass fc = e.getValue().getFileClass();
+            if (fc == FileClass.ARCHIVE || fc == FileClass.JAR) {
+                report.markIncomplete();
+                break;
+            }
+        }
+        return ordered;
     }
 
     /** 快照内是否已有 k+"/" 前缀的条目（说明 k 内部已被展开过，非叶子容器）。 */
@@ -196,7 +241,7 @@ public final class NestedUnpacker {
     /** 递归展开一个容器：原子文件写磁盘并入 out，内层容器继续下钻（受 maxDepth 约束）。
      *  {@code cBytes}（小容器内存字节）与 {@code cDisk}（大容器流式落盘临时文件）二选一作为容器数据来源，
      *  大容器走磁盘以规避整读大 WAR 的高峰内存；本层 finally 统一回收该容器源临时文件。 */
-    private void expand(PackageSnapshot snap, String containerKey, byte[] cBytes, Path cDisk, int depth,
+    private void expand(PackageSnapshot snap, String containerKey, byte[] cBytes, Path cDisk, int depth, // NOSONAR S107: 解包上下文八参数直传，对象化反而降低递归/调用点可读性
                         ConcurrentHashMap<String, LogicalEntry> out, UnpackReport report, AtomicLong bytes) throws IOException {
         Path cFile;
         long cLen;
@@ -208,8 +253,8 @@ public final class NestedUnpacker {
             cLen = cBytes.length;
         }
         if (cLen > HARD_CAP) {
-            report.addError(new UnpackError(containerKey, "expand", "容器超过单条上限"));
-            if (cDisk == null) try { Files.deleteIfExists(cFile); } catch (IOException ignored) {}
+            report.addError(new UnpackError(containerKey, EXPAND_STAGE, "容器超过单条上限"));
+            if (cDisk == null) deleteQuietly(cFile); // cDisk 为调用方持有，仅回收本层 writeTemp 创建的临时文件
             return;
         }
         if (bytes.addAndGet(cLen) > opts.totalBytesCap) {
@@ -225,67 +270,83 @@ public final class NestedUnpacker {
             return;
         }
         try (ZipFile zf = new ZipFile(cFile.toFile())) {
+            // 目录前缀集合：识别「无尾斜杠 + 0 字节」的伪目录条目（ant 等打包器产物）。
+            // 此前目录/伪目录会被 readAll 读成 0 字节数组、作为 OTHER 原子文件写入快照，
+            // 污染 DiffEngine 统计（用户反馈：嵌套 jar 解包后文件夹被识别成文件且错误纳入统计）。
+            Set<String> dirs = PackageParser.deriveDirPrefixes(zf);
             Enumeration<? extends ZipEntry> en = zf.entries();
             while (en.hasMoreElements()) {
-                ZipEntry e = en.nextElement();
-                if (e.isDirectory()) continue;
-                String inner = sanitize(e.getName(), containerKey);
-                String childKey = containerKey + "/" + inner;
-                // 比对级忽略扩展名：扁平化为原子文件前过滤（如 MANIFEST.MF），与解析阶段口径一致
-                if (ParseConfig.ignoredExt(childKey, opts.ignoreExtensions)) continue;
-                FileClass fc = classify(inner);
-                byte[] data = null;
-                Path disk = null;
-                if (e.getSize() > MEMO_MAX_BYTES || e.getSize() < 0) {
-                    // 大条目（或声明 size 未知）：流式解压到临时文件，避免整读进内存抬高峰值。
-                    disk = streamEntryToDisk(zf, e);
-                    if (disk == null) {
-                        report.addError(new UnpackError(childKey, "expand", "条目读取超限或失败"));
-                        continue;
-                    }
-                } else {
-                    data = readAll(zf, e);
-                    if (data == null) {
-                        report.addError(new UnpackError(childKey, "expand", "条目读取超限或失败"));
-                        continue;
-                    }
-                }
-                long itemLen = (disk != null) ? Files.size(disk) : data.length;
-                long add = bytes.addAndGet(itemLen);
-                if (add > opts.totalBytesCap) {
-                    report.markIncomplete();
-                    if (disk != null) try { Files.deleteIfExists(disk); } catch (IOException ignored) {}
-                    continue;
-                }
-                if (fc == FileClass.ARCHIVE || fc == FileClass.JAR) {
-                    // 内层仍是容器：递归下钻到原子层（disk 或内存 byte[] 均转交 expand，由其层负责寿命）。
-                    expand(snap, childKey, data, disk, depth + 1, out, report, bytes);
-                } else {
-                    Layer layer = (fc == FileClass.CLASS) ? Layer.L1 : Layer.L0;
-                    LogicalEntry le;
-                    if (data != null && tryMemoize(data)) {
-                        // 小文件走内存（不落盘）：避免大量小原子文件在磁盘累积；超全局上限自动回退磁盘。
-                        le = new LogicalEntry(childKey, layer, fc, data.length, sha256(data),
-                                EntrySource.memoryBacked(data));
-                    } else if (data != null) {
-                        Path atom = writeAtom(data);
-                        le = new LogicalEntry(childKey, layer, fc, data.length, sha256(data),
-                                new EntrySource(atom.toString(), null));
-                    } else {
-                        disk.toFile().deleteOnExit();
-                        le = new LogicalEntry(childKey, layer, fc, itemLen, sha256Of(disk),
-                                new EntrySource(disk.toString(), null));
-                    }
-                    out.putIfAbsent(childKey, le);
-                    report.addSuccess(childKey);
-                }
+                handleEntry(zf, en.nextElement(), containerKey, snap, out, report, bytes, depth, dirs);
             }
         } catch (IOException e) {
-            report.addError(new UnpackError(containerKey, "expand", msg(e)));
+            report.addError(new UnpackError(containerKey, EXPAND_STAGE, msg(e)));
         } finally {
             // 容器源数据（writeTemp 生成或流式落盘）本层用完后即删，避免临时文件堆积极限磁盘。
-            try { Files.deleteIfExists(cFile); } catch (IOException ignored) { }
+            deleteQuietly(cFile);
         }
+    }
+
+    /** 展开容器内的单个条目：先读数据（内存或磁盘），再总量护栏；容器则递归下钻、原子则平面化写入 out。 */
+    private void handleEntry(ZipFile zf, ZipEntry e, String containerKey, PackageSnapshot snap, // NOSONAR S107: 与 expand 一致的解包上下文直传，避免上下文对象包装
+                             ConcurrentHashMap<String, LogicalEntry> out, UnpackReport report,
+                             AtomicLong bytes, int depth, Set<String> dirs) throws IOException {
+        String inner = sanitize(e.getName(), containerKey);
+        String childKey = containerKey + "/" + inner;
+        // 判定在 sanitize 后：目录名可能被写成无尾斜杠的伪目录（size=0 + 有子路径），
+        // 必须用全容器目录前缀集合识别，否则 0 字节目录会被当作原子文件写入快照污染统计。
+        if (PackageParser.isDirectoryEntry(e, dirs)) return;
+        // 比对级忽略扩展名：扁平化为原子文件前过滤（如 MANIFEST.MF），与解析阶段口径一致
+        if (ParseConfig.ignoredExt(childKey, opts.ignoreExtensions)) return;
+        FileClass fc = classify(inner);
+        byte[] data = null;
+        Path disk = null;
+        if (e.getSize() > MEMO_MAX_BYTES || e.getSize() < 0) {
+            // 大条目（或声明 size 未知）：流式解压到临时文件，避免整读进内存抬高峰值。
+            disk = streamEntryToDisk(zf, e);
+            if (disk == null) {
+                report.addError(new UnpackError(childKey, EXPAND_STAGE, "条目读取超限或失败"));
+                return;
+            }
+        } else {
+            Optional<byte[]> read = readAll(zf, e);
+            if (read.isEmpty()) {
+                report.addError(new UnpackError(childKey, EXPAND_STAGE, "条目读取超限或失败"));
+                return;
+            }
+            data = read.get();
+        }
+        long itemLen = (disk != null) ? Files.size(disk) : data.length;
+        if (bytes.addAndGet(itemLen) > opts.totalBytesCap) {
+            report.markIncomplete();
+            deleteQuietly(disk); // 清理刚落盘的条目临时文件，避免残留堆积
+            return;
+        }
+        if (fc == FileClass.ARCHIVE || fc == FileClass.JAR) {
+            // 内层仍是容器：递归下钻到原子层（disk 或内存 byte[] 均转交 expand，由其层负责寿命）。
+            expand(snap, childKey, data, disk, depth + 1, out, report, bytes);
+        } else {
+            out.putIfAbsent(childKey, atomic(childKey, fc, data, disk));
+            report.addSuccess(childKey);
+        }
+    }
+
+    /** 构造原子条目：小文件走内存，超全局上限（或磁盘落盘）自动回退磁盘读源。 */
+    private LogicalEntry atomic(String childKey, FileClass fc, byte[] data, Path disk) throws IOException {
+        LogicalEntry le;
+        if (data != null && tryMemoize(data)) {
+            // 小文件走内存（不落盘）：避免大量小原子文件在磁盘累积；超全局上限自动回退磁盘。
+            le = new LogicalEntry(childKey, (fc == FileClass.CLASS) ? Layer.L1 : Layer.L0,
+                    fc, data.length, sha256(data), EntrySource.memoryBacked(data));
+        } else if (data != null) {
+            Path atom = writeAtom(data);
+            le = new LogicalEntry(childKey, (fc == FileClass.CLASS) ? Layer.L1 : Layer.L0,
+                    fc, data.length, sha256(data), new EntrySource(atom.toString(), null));
+        } else {
+            disk.toFile().deleteOnExit();
+            le = new LogicalEntry(childKey, (fc == FileClass.CLASS) ? Layer.L1 : Layer.L0,
+                    fc, Files.size(disk), sha256Of(disk), new EntrySource(disk.toString(), null));
+        }
+        return le;
     }
 
     /** 深度/总量护栏时把容器降级为可读的磁盘原子条目（保留内容源，便于后续导出/分析读取）。 */
@@ -322,14 +383,24 @@ public final class NestedUnpacker {
                 int r;
                 while ((r = in.read(buf)) != -1) {
                     total += r;
-                    if (total > HARD_CAP) { try { Files.deleteIfExists(p); } catch (IOException ignored) {} return null; }
+                    if (total > HARD_CAP) { deleteQuietly(p); return null; }
                     out.write(buf, 0, r);
                 }
             }
             return p;
         } catch (IOException ex) {
-            if (p != null) try { Files.deleteIfExists(p); } catch (IOException ignored) {}
+            deleteQuietly(p);
             return null;
+        }
+    }
+
+    /** 尽力删除临时文件：为空或删除失败时静默忽略（销毁尽力而为，绝不影响主流程/不抛异常）。 */
+    private static void deleteQuietly(Path p) {
+        if (p == null) return;
+        try {
+            Files.deleteIfExists(p);
+        } catch (IOException ignored) {
+            // 删除失败无害：临时文件销毁是尽力而为，失败交给系统回收，勿阻断解包主流程。
         }
     }
 
@@ -337,9 +408,9 @@ public final class NestedUnpacker {
         return PackageParser.classify(name);
     }
 
-    private static byte[] readAll(ZipFile zf, ZipEntry e) {
+    private static Optional<byte[]> readAll(ZipFile zf, ZipEntry e) {
         long declared = e.getSize();
-        if (declared > HARD_CAP) return null;
+        if (declared > HARD_CAP) return Optional.empty();
         try (InputStream in = zf.getInputStream(e)) {
             int hint = (declared > 0 && declared < HARD_CAP) ? (int) declared : 8192;
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream(hint);
@@ -348,12 +419,12 @@ public final class NestedUnpacker {
             int r;
             while ((r = in.read(buf)) != -1) {
                 total += r;
-                if (total > HARD_CAP) return null;
+                if (total > HARD_CAP) return Optional.empty();
                 bos.write(buf, 0, r);
             }
-            return bos.toByteArray();
+            return Optional.of(bos.toByteArray());
         } catch (IOException ex) {
-            return null;
+            return Optional.empty();
         }
     }
 

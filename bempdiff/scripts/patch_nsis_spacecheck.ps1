@@ -14,8 +14,11 @@
 #      built-in SectionSetSize precheck always passes. Install-time decompression still
 #      writes real data unaffected.
 #   2) Verify the in-repo source build/installer.nsh carries the fix marker (ensureDiskSpace
-#      kept its guard). This preInit path runs EARLIER than SectionSetSize, so it is the one
-#      that normally trips in the bad environments; it is the source of truth to guard.
+#      disabled entirely via an immediate Return). This preInit path runs EARLIER than
+#      SectionSetSize, so it is the one that normally trips in bad environments; it is the
+#      source of truth to guard. Full disable is required because NSIS IntCmp is a 32-bit
+#      signed compare while free bytes are 64-bit: with >2GB free the low 32 bits wrap
+#      negative and ANY threshold mis-fires as "insufficient space" on healthy disks.
 # 
 # Why a marker check instead of writing the source file: build/installer.nsh is a git-tracked
 # project file (never reset by npm install), so we only validate it and refuse to package if
@@ -52,8 +55,9 @@ $Proto         = Split-Path -Parent $ScriptDir                      # bempdiff/
 $Template      = Join-Path $ScriptDir 'nsis-tpl\common.nsh'         # repo-locked template
 $Target        = Join-Path $Proto 'node_modules\app-builder-lib\templates\nsis\common.nsh'
 $InstallerNsh  = Join-Path $Proto 'build\installer.nsh'             # project source, preInit gate
-# Chinese marker, built from code points so this file can be pure ASCII (no BOM dependency).
-$Marker        = -join (0x78C1,0x76D8,0x7A7A,0x95F4,0x9884,0x68C0,0x4FEE,0x590D | ForEach-Object { [char]$_ })
+# Chinese marker "[磁盘空间预检禁用]", built from code points so this file can be pure ASCII
+# (no BOM dependency). Kept in sync with the marker comment in build/installer.nsh.
+$Marker        = -join (0x5B,0x78C1,0x76D8,0x7A7A,0x95F4,0x9884,0x68C0,0x7981,0x7528,0x5D | ForEach-Object { [char]$_ })
 
 # A helper to fail (strict) or warn-pass (lenient) on an integrity check.
 function Test-Marker([string]$Name, [string]$Content) {

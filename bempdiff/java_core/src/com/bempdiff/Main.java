@@ -252,26 +252,58 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         return "java";
     }
 
-    /** T12/FR7：全链路 + Markdown 报告导出（真实包验证）。--ai 时加载持久化 AI 配置，运行两阶段分析并原生写回「七、AI 智能分析」章节。 */
-    private static void report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
+    /** CLI 子命令（report/diffJars/export/ai）共享的前置产物：双包解析 + 差异计算 + 统计。 */
+    private record PrepResult(PackageSnapshot oldSnap, PackageSnapshot newSnap, DiffResult r, DiffStats s) {}
+
+    /** 双包解析 + 差异计算（各 CLI 子命令共享，避免重复样板）。 */
+    private static PrepResult prepCompare(Path oldP, Path newP, boolean expandAll) throws IOException {
         PackageParser parser = new PackageParser();
         ParseConfig cfg = new ParseConfig();
         PackageSnapshot oldSnap = parser.parse(oldP, cfg, expandAll);
         PackageSnapshot newSnap = parser.parse(newP, cfg, expandAll);
         DiffEngine engine = new DiffEngine();
         DiffResult r = engine.compute(oldSnap, newSnap);
-        DiffStats s = engine.stats(r);
+        return new PrepResult(oldSnap, newSnap, r, engine.stats(r));
+    }
 
-        Decompiler dec = new Decompiler(cfrJar, findJava());
+    /** 对差异 Top-K class 候选反编译（各 CLI 子命令共享），返回保持候选顺序的 map。 */
+    private static Map<String, DecompiledUnit> decompileTop(PrepResult prep, Decompiler dec, int topK) {
         Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
-        List<String> cands = DiffEngine.collectL1ClassCandidates(r, oldSnap, newSnap);
+        List<String> cands = DiffEngine.collectL1ClassCandidates(prep.r(), prep.oldSnap(), prep.newSnap());
         if (cands.size() > topK) cands = cands.subList(0, topK);
         for (String k : cands) {
-            decompiled.put(k, dec.decompile(oldSnap, newSnap,
-                    oldSnap.getEntries().get(k), newSnap.getEntries().get(k), k));
+            decompiled.put(k, dec.decompile(prep.oldSnap(), prep.newSnap(),
+                    prep.oldSnap().getEntries().get(k), prep.newSnap().getEntries().get(k), k));
         }
-        Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
+        return decompiled;
+    }
 
+    /** 解析可选 --project <dir> 参数加载项目级上下文；失败降级为 null（不阻塞分析主流程）。 */
+    private static ProjectContext loadProjectContext(List<String> a) {
+        if (!a.contains(ARG_PROJECT)) return null;
+        try {
+            Path projDir = Paths.get(a.get(a.indexOf(ARG_PROJECT) + 1));
+            ProjectContext ctx = ProjectContextAnalyzer.analyze(projDir);
+            LOG.log(java.util.logging.Level.INFO, "[AI] 项目级上下文已加载：{0}（构建系统={1}, 模块数={2}）",
+                    new Object[]{projDir, ctx.getBuildSystem(), ctx.getModules().size()});
+            return ctx;
+        } catch (RuntimeException ex) {
+            LOG.log(java.util.logging.Level.WARNING, "[AI] 项目级上下文扫描失败，已忽略：{0}", ex.getMessage());
+            return null;
+        }
+    }
+
+    /** T12/FR7：全链路 + Markdown 报告导出（真实包验证）。--ai 时加载持久化 AI 配置，运行两阶段分析并原生写回「七、AI 智能分析」章节。 */
+    private static void report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
+        PrepResult prep = prepCompare(oldP, newP, expandAll);
+        PackageSnapshot oldSnap = prep.oldSnap();
+        PackageSnapshot newSnap = prep.newSnap();
+        DiffResult r = prep.r();
+        DiffStats s = prep.s();
+
+        Decompiler dec = new Decompiler(cfrJar, findJava());
+        Map<String, DecompiledUnit> decompiled = decompileTop(prep, dec, topK);
+        Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
         // Req 6：差异依赖 JAR 内部源码对比章节（自动识别差异 lib jar → 反编译内部 class → 源码级 diff）
         com.bempdiff.diff.LibJarDiff.Result libJar = com.bempdiff.diff.LibJarDiff.analyze(
                 oldSnap, newSnap, r, dec, topK);
@@ -293,18 +325,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                 LOG.warning("[AI] 未配置 API Key，使用 MockAiAnalyzer 离线回放生成 AI 章节（如需真实分析请在 ⚙设置 填 Key 或用 --apikey；--replay 可指定回放目录）。");
             }
             // 项目级上下文增强（可选 --project <dir>）：离线扫描工程目录，作为 AI 分析依据
-            ProjectContext ctx = null;
-            if (a.contains(ARG_PROJECT)) {
-                try {
-                    Path projDir = Paths.get(a.get(a.indexOf(ARG_PROJECT) + 1));
-                    ctx = ProjectContextAnalyzer.analyze(projDir);
-                    LOG.log(java.util.logging.Level.INFO, "[AI] 项目级上下文已加载：{0}（构建系统={1}, 模块数={2}）",
-                            new Object[]{projDir, ctx.getBuildSystem(), ctx.getModules().size()});
-                } catch (RuntimeException ex) {
-                    LOG.log(java.util.logging.Level.WARNING, "[AI] 项目级上下文扫描失败，已忽略：{0}", ex.getMessage());
-                    ctx = null;
-                }
-            }
+            ProjectContext ctx = loadProjectContext(a);
             boolean conn = analyzer.testConnection(aiCfg);
             LOG.log(java.util.logging.Level.INFO, "[AI] 连接测试={0}", conn);
             Map<String, DecompiledUnit> aiMap = new LinkedHashMap<>(decompiled);
@@ -352,13 +373,11 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     /** Req 6：差异依赖 JAR 内部源码对比。自动识别差异 lib jar → 提取内部 class → 反编译 → 逐对源码 diff，
      *  输出聚焦报告（含「五、差异依赖 JAR 内部源码对比」章节）+ 控制台汇总。 */
     private static void diffJars(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
-        PackageParser parser = new PackageParser();
-        ParseConfig cfg = new ParseConfig();
-        PackageSnapshot oldSnap = parser.parse(oldP, cfg, expandAll);
-        PackageSnapshot newSnap = parser.parse(newP, cfg, expandAll);
-        DiffEngine engine = new DiffEngine();
-        DiffResult r = engine.compute(oldSnap, newSnap);
-        DiffStats s = engine.stats(r);
+        PrepResult prep = prepCompare(oldP, newP, expandAll);
+        PackageSnapshot oldSnap = prep.oldSnap();
+        PackageSnapshot newSnap = prep.newSnap();
+        DiffResult r = prep.r();
+        DiffStats s = prep.s();
 
         Decompiler dec = new Decompiler(cfrJar, findJava());
         com.bempdiff.diff.LibJarDiff.Result libJar = com.bempdiff.diff.LibJarDiff.analyze(
@@ -391,13 +410,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         }
 
         // 生成聚焦报告（含通用章节 + 差异 JAR 内部源码对比章节）
-        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
-        List<String> cands = DiffEngine.collectL1ClassCandidates(r, oldSnap, newSnap);
-        if (cands.size() > topK) cands = cands.subList(0, topK);
-        for (String k : cands) {
-            decompiled.put(k, dec.decompile(oldSnap, newSnap,
-                    oldSnap.getEntries().get(k), newSnap.getEntries().get(k), k));
-        }
+        Map<String, DecompiledUnit> decompiled = decompileTop(prep, dec, topK);
         Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
         new MarkdownReport(topK).writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
         System.out.println("report: " + outMd); // NOSONAR
@@ -441,22 +454,14 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
 
     /** T13/FR6：全链路 + 差异资产导出（真实包验证） */
     private static void export(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outDir) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
-        PackageParser parser = new PackageParser();
-        ParseConfig cfg = new ParseConfig();
-        PackageSnapshot oldSnap = parser.parse(oldP, cfg, expandAll);
-        PackageSnapshot newSnap = parser.parse(newP, cfg, expandAll);
-        DiffEngine engine = new DiffEngine();
-        DiffResult r = engine.compute(oldSnap, newSnap);
-        DiffStats s = engine.stats(r);
+        PrepResult prep = prepCompare(oldP, newP, expandAll);
+        PackageSnapshot oldSnap = prep.oldSnap();
+        PackageSnapshot newSnap = prep.newSnap();
+        DiffResult r = prep.r();
+        DiffStats s = prep.s();
 
         Decompiler dec = new Decompiler(cfrJar, findJava());
-        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
-        List<String> cands = DiffEngine.collectL1ClassCandidates(r, oldSnap, newSnap);
-        if (cands.size() > topK) cands = cands.subList(0, topK);
-        for (String k : cands) {
-            decompiled.put(k, dec.decompile(oldSnap, newSnap,
-                    oldSnap.getEntries().get(k), newSnap.getEntries().get(k), k));
-        }
+        Map<String, DecompiledUnit> decompiled = decompileTop(prep, dec, topK);
         // 文本类文件（配置文件/JSP/前端 JS/HTML/CSS）一并纳入源码导出 zip（按扩展名落盘）
         Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
         decompiled.putAll(text);
@@ -483,21 +488,15 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
 
     /** T09/T10/T11：全链路 + 两阶段 AI 分析（离线回放，不触网、无需 Key） */
     private static void ai(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path replayDir, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
-        PackageParser parser = new PackageParser();
-        ParseConfig cfgP = new ParseConfig();
-        PackageSnapshot oldSnap = parser.parse(oldP, cfgP, expandAll);
-        PackageSnapshot newSnap = parser.parse(newP, cfgP, expandAll);
-        DiffEngine engine = new DiffEngine();
-        DiffResult r = engine.compute(oldSnap, newSnap);
+        PrepResult prep = prepCompare(oldP, newP, expandAll);
+        PackageSnapshot oldSnap = prep.oldSnap();
+        PackageSnapshot newSnap = prep.newSnap();
+        DiffResult r = prep.r();
 
         Decompiler dec = new Decompiler(cfrJar, findJava());
-        Map<String, DecompiledUnit> decompiled = new LinkedHashMap<>();
-        List<String> cands = DiffEngine.collectL1ClassCandidates(r, oldSnap, newSnap);
-        if (cands.size() > topK) cands = cands.subList(0, topK);
-        for (String k : cands) {
-            decompiled.put(k, dec.decompile(oldSnap, newSnap,
-                    oldSnap.getEntries().get(k), newSnap.getEntries().get(k), k));
-        }
+        Map<String, DecompiledUnit> decompiled = decompileTop(prep, dec, topK);
+        // class 候选数（截断后）== 反编译 map 大小；先记录，因下方 putAll(text) 会改变 decompiled
+        int classCandCount = decompiled.size();
         // 文本类文件（配置文件/JSP/前端 JS/HTML/CSS）并入 stageA 摘要；stageB 深读携带 fileClass 以切换领域措辞
         Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
         decompiled.putAll(text);
@@ -520,18 +519,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         }
 
         // 项目级上下文增强（可选 --project <dir>）：扫描工程目录，作为 AI 分析依据
-        ProjectContext ctx = null;
-        if (a.contains(ARG_PROJECT)) {
-            try {
-                Path projDir = Paths.get(a.get(a.indexOf(ARG_PROJECT) + 1));
-                ctx = ProjectContextAnalyzer.analyze(projDir);
-                LOG.log(java.util.logging.Level.INFO, "[AI] 项目级上下文已加载：{0}（构建系统={1}, 模块数={2}）",
-                        new Object[]{projDir, ctx.getBuildSystem(), ctx.getModules().size()});
-            } catch (RuntimeException ex) {
-                LOG.log(java.util.logging.Level.WARNING, "[AI] 项目级上下文扫描失败，已忽略：{0}", ex.getMessage());
-                ctx = null;
-            }
-        }
+        ProjectContext ctx = loadProjectContext(a);
 
         // 连接测试（FR9.4 设置弹窗「测试」按钮对应）
         boolean conn = analyzer.testConnection(aiCfg);
@@ -573,7 +561,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         }
         System.out.println("阶段A: 测试主题=" + summary.getTestThemes()); // NOSONAR
         System.out.println("阶段A prompt tokens≈" + (long) stageATokens + " 成本闸门触发=" + gateWarn + " (阈值" + aiCfg.getCostGateWarnTokens() + ")"); // NOSONAR
-        System.out.println("阶段B: 深读文件数=" + b.size() + " / 候选=" + cands.size()); // NOSONAR
+        System.out.println("阶段B: 深读文件数=" + b.size() + " / 候选=" + classCandCount); // NOSONAR
         for (FileAnalysis fa : b) {
             StringBuilder line = new StringBuilder();
             line.append("  - ").append(fa.getKey()).append(" | risk=").append(fa.getRisk()).append(" | intent=").append(fa.getIntent());

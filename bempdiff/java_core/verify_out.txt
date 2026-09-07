@@ -1,0 +1,8 @@
+﻿java.exe : Picked up JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
+所在位置 行:1 字符: 440
++ ... y_out.txt"; & $java -cp "$out;$cfr;$poi" -Dfile.encoding=UTF-8 Verify ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Picked up JAVA_....encoding=UTF-8 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

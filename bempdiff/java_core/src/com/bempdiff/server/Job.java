@@ -28,7 +28,7 @@ public final class Job {
     private volatile DiffResult result;       // NOSONAR(S3077)
     private volatile DiffStats stats;         // NOSONAR(S3077)
     /** 两侧物理平铺解包报告（unpackNested 开启时非空；[0]=旧 侧，[1]=新 侧）。引用 volatile 保证可见性。 */
-    private volatile com.bempdiff.unpack.UnpackReport[] unpackReports;
+    private volatile com.bempdiff.unpack.UnpackReport[] unpackReports; // NOSONAR S3077 - 整体引用一次性回填/读取（后台完成后整体 set 替换），无元素级并发改写，volatile 保证引用可见性即可
 
     /** 任务状态：QUEUED(已入队) | RUNNING(进行中) | DONE(完成) | ERROR(失败) | CANCELLED(已取消)。 */
     private volatile String status = "QUEUED";
@@ -45,10 +45,10 @@ public final class Job {
     private volatile boolean cancelRequested = false;
 
     /** 该作业的物理解包运行时目录（{user.home}/.bempdiff/runtime/<jobId>），作业被取代/淘汰时整体回收。 */
-    private volatile Path runtimeDir;
+    private volatile Path runtimeDir; // NOSONAR S3077 - 单次原子赋值（整体 Path 引用替换）与读取，volatile 已足够
 
     /** P1-E 终态时间戳（ms）：进入 DONE/ERROR/CANCELLED 时记录，供 JobStore 按「最旧已结束」淘汰。 */
-    public volatile long finishedAtMillis;
+    public volatile long finishedAtMillis; // NOSONAR S1104 - 对外暴露的 plain 数据字段，外部 JobStore 直接读取（其不在本次改动范围），另有 volatile 保证可见性
 
     public Job(String id, String mode, CompareOptions opts) {
         this.id = id;
@@ -174,7 +174,7 @@ public final class Job {
             if (Files.isDirectory(d)) {
                 try (java.util.stream.Stream<Path> s = Files.walk(d)) {
                     s.sorted(java.util.Comparator.reverseOrder())
-                     .forEach(x -> { try { Files.deleteIfExists(x); } catch (Exception ignored) { } });
+                     .forEach(x -> { try { Files.deleteIfExists(x); } catch (Exception ignored) { /* 单文件删除失败静默忽略：由外层目录清理兜底 */ } });
                 }
             } else {
                 Files.deleteIfExists(d);

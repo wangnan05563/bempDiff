@@ -58,6 +58,8 @@ public final class Decompiler {
     private final boolean inProcessCfrAvailable;
 
     private static final String JAVAP = "javap";
+    /** 缺失侧哈希占位串（7 个零），与 DecompiledUnit 的占位语义一致。 */
+    private static final String MISSING_HASH = "0000000";
 
     /** P1-1 反编译缓存：sha256(class bytes) → 源码，access-order LRU max 256，避免重复 CFR。
      *  P0-A（性能测试报告 §8#1/§9-A）升级为 static「进程级 LRU」：
@@ -379,8 +381,8 @@ public final class Decompiler {
                 engine = "cfr";
             }
             // 短哈希：原字节侧 SHA-1 前 7 hex；缺失侧 0000000
-            String oldHash = (oldBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
-            String newHash = (newBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+            String oldHash = (oldBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : MISSING_HASH;
+            String newHash = (newBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : MISSING_HASH;
             return new DecompiledUnit(key, oldSrc, newSrc, diff, engine, "", true, oldHash, newHash);
         } catch (IOException e) {
             // 失败时也计算哈希：保留「字节指纹」便于定位，即使反编译失败仍能在 filebar 区分两侧
@@ -392,8 +394,8 @@ public final class Decompiler {
 
     /** 失败也计算短哈希的统一封装，避免两处 catch 分支重复计算逻辑。 */
     private static DecompiledUnit failWithHash(String key, byte[] oldBytes, byte[] newBytes, String err) {
-        String oldHash = (oldBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : "0000000";
-        String newHash = (newBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : "0000000";
+        String oldHash = (oldBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(oldBytes) : MISSING_HASH;
+        String newHash = (newBytes != null) ? com.bempdiff.util.ShortHash.ofBytes(newBytes) : MISSING_HASH;
         return new DecompiledUnit(key, null, null, "", "cfr", err, false, oldHash, newHash);
     }
 

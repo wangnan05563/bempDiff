@@ -203,6 +203,48 @@ public final class ArchiveChildrenTest {
         Asserts.assertNotNull("忽略 .mf 不应误伤 jar 内 class", filteredIdx.get("app.zip!/lib/bundle.jar!/com/internal/B.class"));
     }
 
+    /** 守护「部分归档工具把目录条目写成 'name 不以 / 结尾 + size=0' 的形式」导致的误识别 bug：
+     *  Java 的 ZipEntry.isDirectory() 仅按 name 末尾 '/' 判定，会把这种 0 字节目录当成 0 字节
+     *  文件，进而被前端误判为 OTHER / 0B / 未变并错误纳入差异统计（用户截图：嵌套 jar 内
+     *  log4j2 显示 OTHER / 0B / 未变）。修复后应正确识别为目录（isDir=true），不参与文件级
+     * 「未变」计数。 */
+    public void testFakeDirEntryWithoutTrailingSlash() throws IOException {
+        // 内层 jar 含一个「伪目录」dir1（0 字节、无尾随 /）+ 一个真实子文件 dir1/child.txt。
+        // 旧/新两侧内容相同 → 子文件应 UNCHANGED，dir1/ 应作为目录节点 UNCHANGED，
+        // 严禁出现 "app.zip!/dir1" 形式的 0 字节文件节点（旧 bug 表现）。
+        Map<String, byte[]> innerOld = new LinkedHashMap<>();
+        innerOld.put("dir1", new byte[0]);              // 0 字节，无尾随 / —— 模拟有缺陷的归档工具
+        innerOld.put("dir1/child.txt", "hello".getBytes());
+        Map<String, byte[]> innerNew = new LinkedHashMap<>();
+        innerNew.put("dir1", new byte[0]);
+        innerNew.put("dir1/child.txt", "hello".getBytes());
+
+        Map<String, byte[]> outerOld = new LinkedHashMap<>();
+        outerOld.put("lib/bundle.jar", TestFixtures.makeZip(innerOld));
+        Map<String, byte[]> outerNew = new LinkedHashMap<>();
+        outerNew.put("lib/bundle.jar", TestFixtures.makeZip(innerNew));
+        PackageSnapshot oldSnap = snap("app.zip", outerOld);
+        PackageSnapshot newSnap = snap("app.zip", outerNew);
+
+        List<Map<String, Object>> kids = ArchiveTree.computeChildren(oldSnap, newSnap, "app.zip!/lib/bundle.jar");
+        Map<String, Map<String, Object>> idx = index(kids);
+
+        // 旧 bug 表现：出现 "app.zip!/lib/bundle.jar!/dir1" 作为 0 字节文件。修复后应消失。
+        Asserts.assertNull("'dir1'（无尾随 /）的 0 字节条目不应作为文件出现，应升级为目录 'dir1/'",
+                idx.get("app.zip!/lib/bundle.jar!/dir1"));
+        // 修复后表现：'dir1/' 应作为目录节点出现，isDir=true，status=UNCHANGED。
+        Map<String, Object> dirNode = idx.get("app.zip!/lib/bundle.jar!/dir1/");
+        Asserts.assertNotNull("'dir1/' 应作为目录节点出现", dirNode);
+        Asserts.assertEquals("伪目录升级后 status 应为 UNCHANGED", "UNCHANGED", dirNode.get("status"));
+        Asserts.assertEquals("伪目录升级后 isDir 应为 true", Boolean.TRUE, dirNode.get("isDir"));
+        Asserts.assertEquals("目录 size 应为 0", 0L, dirNode.get("size"));
+        // 子文件保留为文件 UNCHANGED。
+        Asserts.assertNotNull("子文件 dir1/child.txt 应存在",
+                idx.get("app.zip!/lib/bundle.jar!/dir1/child.txt"));
+        Asserts.assertEquals("子文件 status 应为 UNCHANGED", "UNCHANGED",
+                idx.get("app.zip!/lib/bundle.jar!/dir1/child.txt").get("status"));
+    }
+
     // ===================== 夹具 =====================
 
     /** 用 条目名->字节 构造一个归档：把 zip 落盘，并在快照里登记一个顶层归档条目

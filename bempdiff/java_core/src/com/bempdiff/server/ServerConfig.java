@@ -20,6 +20,8 @@ import java.util.logging.Logger;
  */
 public final class ServerConfig {
     private static final Logger LOG = Logger.getLogger(ServerConfig.class.getName());
+    /** 扩展名/前缀列表的分隔正则（逗号、分号、空白），多处拆分共用。 */
+    private static final String LIST_SPLIT_REGEX = "[,;\\s]+";
 
     // properties 键常量：同一键在 load/save/updateFrom/toJson 中多处复用，集中定义避免字面量重复。
     private static final String K_AI_PROVIDER = "aiProvider";
@@ -31,6 +33,7 @@ public final class ServerConfig {
     private static final String K_STAGE_A_TOP_K = "stageATopK";
     private static final String K_STAGE_A_FILE_SAMPLE_LINES = "stageAFileSampleLines";
     private static final String K_MAX_PROMPT_TOKENS = "maxPromptTokens";
+    private static final String K_MAX_OUTPUT_TOKENS = "maxOutputTokens";
     private static final String K_COST_GATE_WARN_TOKENS = "costGateWarnTokens";
     private static final String K_INTERNAL_PREFIXES = "internalPrefixes";
     private static final String K_EXPAND_ALL = "expandAll";
@@ -41,6 +44,8 @@ public final class ServerConfig {
     private static final String K_HTTPS_PROXY = "httpsProxy";
     private static final String K_BLOCK_PRIVATE_ENDPOINTS = "blockPrivateEndpoints";
     private static final String K_PERSIST_API_KEY = "persistApiKey";
+    private static final String K_GITHUB_TOKEN = "githubToken";
+    private static final String K_PERSIST_GITHUB_TOKEN = "persistGithubToken";
     private static final String K_PROJECT_CONTEXT_DIR = "projectContextDir";
     private static final String K_PROJECT_CONTEXT_ENABLED = "projectContextEnabled";
     private static final String K_FILTER_SEARCH = "filterSearch";
@@ -64,6 +69,7 @@ public final class ServerConfig {
     private int stageATopK = 30;               // 阶段A 概览纳入文件上限（默认对齐 AiConfig）
     private int stageAFileSampleLines = 80;    // 阶段A 单文件 diff 摘要行数上限
     private int maxPromptTokens = 120_000;     // 单次请求最大输入 token（模型上下文窗口护栏）
+    private int maxOutputTokens = 8192;        // 单次请求最大输出 token；0=不设（请求体不带 max_tokens）
     private double costGateWarnTokens = 8000;
 
     private String internalPrefixes = "com.hundsun";
@@ -76,6 +82,10 @@ public final class ServerConfig {
     private String httpsProxy = "";
     private boolean blockPrivateEndpoints = false;
     private boolean persistApiKey = false;
+    // GitHub 更新检查访问令牌（可选）：仅私有仓库或规避匿名限流时使用。
+    // 语义对齐 aiApiKey：仅在 persistGithubToken=true 时落盘明文；默认不落盘，仅存活于进程内存。
+    private String githubToken = "";
+    private boolean persistGithubToken = false;
 
     private String projectContextDir = "";
     private boolean projectContextEnabled = false;
@@ -105,17 +115,6 @@ public final class ServerConfig {
             });
     private final java.util.concurrent.atomic.AtomicReference<Properties> pendingSave =
             new java.util.concurrent.atomic.AtomicReference<>();
-    {
-        // JVM 退出前把未落盘的最新快照写完（shutdown 后已提交任务仍会执行，循环会排空 pending）。
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            saveExecutor.shutdown();
-            try {
-                saveExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-        }));
-    }
     /** P1-F：就地更新后异步落盘。每次构建最新快照入队，后台线程循环排空，突发并发写自然合并为最新状态。 */
     private void scheduleAsyncSave() {
         pendingSave.set(toProperties());
@@ -131,6 +130,15 @@ public final class ServerConfig {
 
     public ServerConfig(Path file) {
         this.file = file;
+        // JVM 退出前把未落盘的最新快照写完（shutdown 后已提交任务仍会执行，循环会排空 pending）。
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            saveExecutor.shutdown();
+            try {
+                saveExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }));
         load();
     }
 
@@ -153,6 +161,7 @@ public final class ServerConfig {
             stageATopK = Math.max(1, Integer.parseInt(p.getProperty(K_STAGE_A_TOP_K, "30")));
             stageAFileSampleLines = Math.max(1, Integer.parseInt(p.getProperty(K_STAGE_A_FILE_SAMPLE_LINES, "80")));
             maxPromptTokens = Math.max(1000, Integer.parseInt(p.getProperty(K_MAX_PROMPT_TOKENS, "120000")));
+            maxOutputTokens = Math.max(0, Integer.parseInt(p.getProperty(K_MAX_OUTPUT_TOKENS, "8192")));
             costGateWarnTokens = Double.parseDouble(p.getProperty(K_COST_GATE_WARN_TOKENS, "8000"));
             internalPrefixes = p.getProperty(K_INTERNAL_PREFIXES, internalPrefixes);
             expandAll = Boolean.parseBoolean(p.getProperty(K_EXPAND_ALL, K_FALSE));
@@ -195,12 +204,18 @@ public final class ServerConfig {
         // 必须持久化 persistApiKey 开关本身：否则重启后 load() 读到默认值 false，
         // 勾选「记住 API Key」的状态丢失（复选框不显示已保存状态）。
         p.setProperty(K_PERSIST_API_KEY, String.valueOf(persistApiKey));
+        // 必须持久化 persistGithubToken 开关本身（否则重启后丢失勾选状态）；令牌仅在开启时落盘。
+        p.setProperty(K_PERSIST_GITHUB_TOKEN, String.valueOf(persistGithubToken));
+        if (persistGithubToken && githubToken != null && !githubToken.isEmpty()) {
+            p.setProperty(K_GITHUB_TOKEN, githubToken);
+        }
         p.setProperty(K_AI_MODEL, aiModel);
         p.setProperty(K_AI_ENABLED, String.valueOf(aiEnabled));
         p.setProperty(K_STAGE_B_TOP_K, String.valueOf(stageBTopK));
         p.setProperty(K_STAGE_A_TOP_K, String.valueOf(stageATopK));
         p.setProperty(K_STAGE_A_FILE_SAMPLE_LINES, String.valueOf(stageAFileSampleLines));
         p.setProperty(K_MAX_PROMPT_TOKENS, String.valueOf(maxPromptTokens));
+        p.setProperty(K_MAX_OUTPUT_TOKENS, String.valueOf(maxOutputTokens));
         p.setProperty(K_COST_GATE_WARN_TOKENS, String.valueOf(costGateWarnTokens));
         p.setProperty(K_INTERNAL_PREFIXES, internalPrefixes);
         p.setProperty(K_EXPAND_ALL, String.valueOf(expandAll));
@@ -241,7 +256,7 @@ public final class ServerConfig {
     /** 转成核心 ParseConfig。 */
     public ParseConfig toParseConfig() {
         ParseConfig c = new ParseConfig();
-        c.setInternalPrefixes(java.util.Arrays.asList(internalPrefixes.split("[,;\\s]+")));
+        c.setInternalPrefixes(java.util.Arrays.asList(internalPrefixes.split(LIST_SPLIT_REGEX)));
         c.setExpandInternalLib(expandAll);
         c.setExpandAllForPlainJar(expandAll);
         c.setMaxEntryBytes(8L * 1024 * 1024);
@@ -260,6 +275,7 @@ public final class ServerConfig {
         c.setStageATopK(stageATopK);
         c.setStageAFileSampleLines(stageAFileSampleLines);
         c.setMaxPromptTokens(maxPromptTokens);
+        c.setMaxOutputTokens(maxOutputTokens);
         c.setCostGateWarnTokens(costGateWarnTokens);
         c.setHttpProxy(httpProxy);
         c.setHttpsProxy(httpsProxy);
@@ -272,6 +288,9 @@ public final class ServerConfig {
     /** 是否启用项目上下文画像。 */
     public boolean isProjectContextEnabled() { return projectContextEnabled; }
 
+    /** GitHub 更新检查访问令牌（配置中心可填；为空则由 UpdateCheckService 回落环境变量 GITHUB_TOKEN）。 */
+    public String getGithubToken() { return githubToken; }
+
     /** 序列化为 JSON（GET 不回显 apiKey 除非持久化开启）。 */
     public java.util.Map<String, Object> toJson() {
         java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
@@ -283,6 +302,7 @@ public final class ServerConfig {
         m.put(K_STAGE_A_TOP_K, stageATopK);
         m.put(K_STAGE_A_FILE_SAMPLE_LINES, stageAFileSampleLines);
         m.put(K_MAX_PROMPT_TOKENS, maxPromptTokens);
+        m.put(K_MAX_OUTPUT_TOKENS, maxOutputTokens);
         m.put(K_COST_GATE_WARN_TOKENS, costGateWarnTokens);
         m.put(K_INTERNAL_PREFIXES, internalPrefixes);
         m.put(K_EXPAND_ALL, expandAll);
@@ -292,6 +312,7 @@ public final class ServerConfig {
         m.put(K_HTTPS_PROXY, httpsProxy);
         m.put(K_BLOCK_PRIVATE_ENDPOINTS, blockPrivateEndpoints);
         m.put(K_PERSIST_API_KEY, persistApiKey);
+        m.put(K_PERSIST_GITHUB_TOKEN, persistGithubToken);
         m.put(K_PROJECT_CONTEXT_DIR, projectContextDir);
         m.put(K_PROJECT_CONTEXT_ENABLED, projectContextEnabled);
         m.put(K_FILTER_SEARCH, filterSearch);
@@ -343,6 +364,7 @@ public final class ServerConfig {
         if (m.containsKey(K_STAGE_A_TOP_K)) stageATopK = Math.max(1, Json.intv(m, K_STAGE_A_TOP_K, stageATopK));
         if (m.containsKey(K_STAGE_A_FILE_SAMPLE_LINES)) stageAFileSampleLines = Math.max(1, Json.intv(m, K_STAGE_A_FILE_SAMPLE_LINES, stageAFileSampleLines));
         if (m.containsKey(K_MAX_PROMPT_TOKENS)) maxPromptTokens = Math.max(1000, Json.intv(m, K_MAX_PROMPT_TOKENS, maxPromptTokens));
+        if (m.containsKey(K_MAX_OUTPUT_TOKENS)) maxOutputTokens = Math.max(0, Json.intv(m, K_MAX_OUTPUT_TOKENS, maxOutputTokens));
         if (m.containsKey(K_COST_GATE_WARN_TOKENS)) costGateWarnTokens = Json.intv(m, K_COST_GATE_WARN_TOKENS, (int) costGateWarnTokens);
         if (m.containsKey(K_AI_API_KEY)) {
             String k = Json.str(m, K_AI_API_KEY, "");
@@ -375,26 +397,30 @@ public final class ServerConfig {
         if (m.containsKey(K_FILTER_SHOW_UNCHANGED)) filterShowUnchanged = Json.bool(m, K_FILTER_SHOW_UNCHANGED, filterShowUnchanged);
         if (m.containsKey(K_AUTO_AI_ON_COMPARE)) autoAiOnCompare = Json.bool(m, K_AUTO_AI_ON_COMPARE, autoAiOnCompare);
         if (m.containsKey(K_IGNORE_EXTENSIONS)) {
-            Object ig = m.get(K_IGNORE_EXTENSIONS);
-            java.util.List<String> exts = new java.util.ArrayList<>();
-            if (ig instanceof java.util.List) {
-                for (Object x : (java.util.List<?>) ig) {
-                    if (x != null && !String.valueOf(x).trim().isEmpty()) exts.add(String.valueOf(x).trim());
-                }
-            } else if (ig != null) { // 兼容逗号分隔的字符串形态
-                for (String s : String.valueOf(ig).split("[,;\\s]+")) {
-                    if (!s.trim().isEmpty()) exts.add(s.trim());
-                }
-            }
-            ignoreExtensions = exts;
+            ignoreExtensions = extractExtensionList(m.get(K_IGNORE_EXTENSIONS));
         }
+    }
+
+    /** 扩展名配置转列表（兼容 List 与逗号分隔字符串两种形态；与 parseExtList 同规）。 */
+    private static java.util.List<String> extractExtensionList(Object ig) {
+        java.util.List<String> exts = new java.util.ArrayList<>();
+        if (ig instanceof java.util.List) {
+            for (Object x : (java.util.List<?>) ig) {
+                if (x != null && !String.valueOf(x).trim().isEmpty()) exts.add(String.valueOf(x).trim());
+            }
+        } else if (ig != null) { // 兼容逗号分隔的字符串形态
+            for (String s : String.valueOf(ig).split(LIST_SPLIT_REGEX)) {
+                if (!s.trim().isEmpty()) exts.add(s.trim());
+            }
+        }
+        return exts;
     }
 
     // 扩展名列表 <-> 逗号分隔字符串 互转（持久化用；与 updateFrom 的字符串兼容分支呼应）
     private static java.util.List<String> parseExtList(String joined) {
         java.util.List<String> out = new java.util.ArrayList<>();
         if (joined == null || joined.isEmpty()) return out;
-        for (String s : joined.split("[,;\\s]+")) {
+        for (String s : joined.split(LIST_SPLIT_REGEX)) {
             if (!s.trim().isEmpty()) out.add(s.trim());
         }
         return out;

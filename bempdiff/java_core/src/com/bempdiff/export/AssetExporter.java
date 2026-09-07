@@ -202,8 +202,10 @@ public final class AssetExporter {
     public Path zipTree(Path root, Path zipOut) throws IOException {
         try (OutputStream fos = Files.newOutputStream(zipOut);
              BufferedOutputStream bos = new BufferedOutputStream(fos);
-             ZipOutputStream zos = new ZipOutputStream(bos)) {
-            Files.walk(root).filter(Files::isRegularFile).filter(p -> !p.equals(zipOut)).forEach(p -> {
+             ZipOutputStream zos = new ZipOutputStream(bos);
+             // Files.walk 返回的资源 Stream 必须随 try-with-resources 关闭，否则文件句柄在 ZIP 写出期间持续打开
+             java.util.stream.Stream<Path> walk = Files.walk(root)) {
+            walk.filter(Files::isRegularFile).filter(p -> !p.equals(zipOut)).forEach(p -> {
                 try {
                     String rel = root.relativize(p).toString().replace('\\', '/');
                     zos.putNextEntry(new ZipEntry(rel));

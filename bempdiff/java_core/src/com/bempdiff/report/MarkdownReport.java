@@ -35,6 +35,16 @@ public final class MarkdownReport {
     private static final String DIFF_OPEN = "```diff\n";
     private static final String DIFF_CLOSE = "\n```\n\n";
     private static final String BESIDES = "> 另有 ";
+    /** 项目上下文影响标签（AI 章节多处重复，提取为常量规避 S1192）。 */
+    private static final String LABEL_CTX_INFLUENCE = "- **项目上下文影响**：";
+    /** 架构简述标签（预算裁剪与渲染多次出现）。 */
+    private static final String LABEL_ARCH_SUMMARY = "- 架构简述：";
+    /** 老包/新包行中的「（版本 」前缀（聚焦与全量报告多处复用，规避 S1192）。 */
+    private static final String VER_BEGIN = "`（版本 ";
+    /** 「** · 删除 **」间隔（新增/删除/修改统计行复用，规避 S1192）。 */
+    private static final String ATTR_DELETED_BETWEEN = "** · 删除 **";
+    /** 「** · 修改 **」间隔（新增/删除/修改统计行复用，规避 S1192）。 */
+    private static final String ATTR_MODIFIED_BETWEEN = "** · 修改 **";
 
     private final int topK;
 
@@ -135,20 +145,18 @@ public final class MarkdownReport {
      */
     public String renderFocusReport(PackageSnapshot oldSnap, PackageSnapshot newSnap,
                           DiffResult r, DiffStats stats,
-                          Map<String, DecompiledUnit> decompiled,
-                          Map<String, DecompiledUnit> text,
                           StageASummary summary, List<FileAnalysis> fileAnalyses, ProjectContext ctx) {
         StringBuilder sb = new StringBuilder();
         // 标题：以分析主题命名，aiFocus 例如「测试要点分析」→「测试要点分析报告」
         sb.append("# ").append(reportTitleFromFocus(aiFocus)).append("\n\n");
         // 背景：老包/新包标识（分析对象）
-        sb.append("- 老包：`").append(oldSnap.getFile().getFileName()).append("`（版本 ")
+        sb.append("- 老包：`").append(oldSnap.getFile().getFileName()).append(VER_BEGIN)
                 .append(nullToNA(oldSnap.getVersion())).append("）\n");
-        sb.append("- 新包：`").append(newSnap.getFile().getFileName()).append("`（版本 ")
+        sb.append("- 新包：`").append(newSnap.getFile().getFileName()).append(VER_BEGIN)
                 .append(nullToNA(newSnap.getVersion())).append("）\n");
         // 背景：精简差异统计（新增/删除/修改，供分析锚定范围）
-        sb.append("- 差异规模：新增 **").append(stats.getAdded()).append("** · 删除 **")
-                .append(stats.getDeleted()).append("** · 修改 **").append(stats.getModified())
+        sb.append("- 差异规模：新增 **").append(stats.getAdded()).append(ATTR_DELETED_BETWEEN)
+                .append(stats.getDeleted()).append(ATTR_MODIFIED_BETWEEN).append(stats.getModified())
                 .append("**\n\n");
         renderFocusFileList(sb, r);
         // 核心：AI 智能分析章节（内容与全量报告中的 AI 章节完全一致，仅标题去编号）
@@ -204,8 +212,11 @@ public final class MarkdownReport {
             sb.append("- **改动意图**：").append(nullToNA(fa.getIntent())).append("\n");
             sb.append("- **风险等级**：**").append(nullToNA(fa.getRisk())).append("**\n");
             sb.append("- **影响范围**：").append(nullToNA(fa.getImpact())).append("\n");
+            if (fa.isOutputTruncated()) {
+                appendTruncatedWarning(sb);
+            }
             if (!isEmpty(fa.getContextInfluence())) {
-                sb.append("- **项目上下文影响**：").append(fa.getContextInfluence()).append("\n");
+                sb.append(LABEL_CTX_INFLUENCE).append(fa.getContextInfluence()).append("\n");
             }
             if (!isEmptyList(fa.getTestPoints())) {
                 sb.append("- **测试要点**：\n");
@@ -259,10 +270,10 @@ public final class MarkdownReport {
         StringBuilder body = new StringBuilder();
         // 架构简述为自由叙述文本，先按对称子上限预裁剪，避免独占后置的结构化关键字段预算
         String summary = ctx.getSummary();
-        if (!isEmpty(summary) && summary.length() > CTX_SUMMARY_MAX_CHARS - "- 架构简述：".length() - 1) {
-            summary = summary.substring(0, CTX_SUMMARY_MAX_CHARS - "- 架构简述：".length() - 2) + "…";
+        if (!isEmpty(summary) && summary.length() > CTX_SUMMARY_MAX_CHARS - LABEL_ARCH_SUMMARY.length() - 1) {
+            summary = summary.substring(0, CTX_SUMMARY_MAX_CHARS - LABEL_ARCH_SUMMARY.length() - 2) + "…";
         }
-        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 架构简述：", summary);
+        appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, LABEL_ARCH_SUMMARY, summary);
         appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 构建系统：", nullToNA(ctx.getBuildSystem()));
         appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 模块：", joinCapped(ctx.getModules()));
         appendBudgeted(body, CTX_ANALYSIS_MAX_CHARS, "- 核心依赖：", joinCapped(ctx.getDependencies()));
@@ -297,9 +308,12 @@ public final class MarkdownReport {
         }
         sb.append("### 阶段A 概览\n");
         sb.append("- 整体风险：**").append(nullToNA(summary.getOverallRisk())).append("**\n");
+        if (summary.isOutputTruncated()) {
+            appendTruncatedWarning(sb);
+        }
         sb.append("- 影响范围：").append(nullToNA(summary.getImpactScope())).append("\n");
         if (!isEmpty(summary.getContextInfluence())) {
-            sb.append("- **项目上下文影响**：").append(summary.getContextInfluence()).append("\n");
+            sb.append(LABEL_CTX_INFLUENCE).append(summary.getContextInfluence()).append("\n");
         }
         if (!isEmptyList(summary.getTestThemes())) {
             sb.append("- 测试主题：").append(String.join("；", summary.getTestThemes())).append("\n");
@@ -475,8 +489,11 @@ public final class MarkdownReport {
         sb.append("- 风险：**").append(nullToNA(fa.getRisk())).append("**\n");
         sb.append("- 意图：").append(nullToNA(fa.getIntent())).append("\n");
         sb.append("- 影响：").append(nullToNA(fa.getImpact())).append("\n");
+        if (fa.isOutputTruncated()) {
+            appendTruncatedWarning(sb);
+        }
         if (!isEmpty(fa.getContextInfluence())) {
-            sb.append("- **项目上下文影响**：").append(fa.getContextInfluence()).append("\n");
+            sb.append(LABEL_CTX_INFLUENCE).append(fa.getContextInfluence()).append("\n");
         }
         if (!isEmptyList(fa.getTestPoints())) {
             sb.append("- 测试要点：\n");
@@ -487,19 +504,18 @@ public final class MarkdownReport {
         sb.append("\n");
     }
 
+    /** AI 输出被 max_tokens 截断时的提示行（多处渲染复用；指引调高配置或收缩范围，避免用户误信残缺结论）。 */
+    private static void appendTruncatedWarning(StringBuilder sb) {
+        sb.append("> ⚠ 本结论由被截断的 AI 输出解析而来，可能不完整。"
+                + "可调高配置中心「单次请求最大输出 Token」或收缩参与分析的范围后重试。\n");
+    }
+
     private static boolean isEmpty(String s) {
         return s == null || s.isEmpty();
     }
 
     private static boolean isEmptyList(List<?> l) {
         return l == null || l.isEmpty();
-    }
-
-    private static String join(List<String> l) {
-        if (isEmptyList(l)) {
-            return "（无）";
-        }
-        return String.join("、", l);
     }
 
     /** 压缩清单：最多保留前 4 项，超出的部分以「等 N 项」概括，避免长清单挤占上下文预算。 */
@@ -515,16 +531,16 @@ public final class MarkdownReport {
 
     private void renderHeader(StringBuilder sb, PackageSnapshot oldSnap, PackageSnapshot newSnap) {
         sb.append("# 差异分析报告（Java 端口 / 真实包比对）\n\n");
-        sb.append("- 老包：`").append(oldSnap.getFile().getFileName()).append("`（版本 ")
+        sb.append("- 老包：`").append(oldSnap.getFile().getFileName()).append(VER_BEGIN)
                 .append(nullToNA(oldSnap.getVersion())).append("）\n");
-        sb.append("- 新包：`").append(newSnap.getFile().getFileName()).append("`（版本 ")
+        sb.append("- 新包：`").append(newSnap.getFile().getFileName()).append(VER_BEGIN)
                 .append(nullToNA(newSnap.getVersion())).append("）\n\n");
     }
 
     private void renderStats(StringBuilder sb, DiffStats stats) {
         sb.append("## 一、差异统计\n");
-        sb.append("- 新增 **").append(stats.getAdded()).append("** · 删除 **").append(stats.getDeleted())
-                .append("** · 修改 **").append(stats.getModified()).append("** · 未变 ").append(stats.getUnchanged()).append("\n");
+        sb.append("- 新增 **").append(stats.getAdded()).append(ATTR_DELETED_BETWEEN).append(stats.getDeleted())
+                .append(ATTR_MODIFIED_BETWEEN).append(stats.getModified()).append("** · 未变 ").append(stats.getUnchanged()).append("\n");
         sb.append("- 业务/类级变更(非jar)：").append(stats.getBizChanged())
                 .append(" · jar 级变更：").append(stats.getJarChanged()).append("\n\n");
     }
@@ -600,8 +616,8 @@ public final class MarkdownReport {
         }
         sb.append("### ").append(jar.jarKey).append("  [")
           .append(statusLabel(jar.jarStatus)).append("]\n");
-        sb.append("- 内部 class：新增 **").append(jar.added).append("** · 删除 **").append(jar.removed)
-          .append("** · 修改 **").append(jar.modified).append("** · 未变 ").append(jar.unchanged).append("\n\n");
+        sb.append("- 内部 class：新增 **").append(jar.added).append(ATTR_DELETED_BETWEEN).append(jar.removed)
+          .append(ATTR_MODIFIED_BETWEEN).append(jar.modified).append("** · 未变 ").append(jar.unchanged).append("\n\n");
         int shown = 0;
         for (LibJarDiff.LibClassUnit u : jar.classes) {
             shown = renderOneLibClass(sb, u, shown);

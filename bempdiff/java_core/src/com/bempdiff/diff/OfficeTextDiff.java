@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -58,7 +59,9 @@ public final class OfficeTextDiff {
     /** WordprocessingML 命名空间 URI（docx 段落/文本限定，避免误抓 drawingML 文本框 <a:p><a:t>）。 */
     private static final String W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-    private final PackageParser parser = new PackageParser();
+    /** 工作表/幻灯片分节标题的前缀与后缀（多处复用，统一定为常量避免重复字面量）。 */
+    private static final String SHEET_DIVIDER_PREFIX = "===== ";
+    private static final String SHEET_DIVIDER_SUFFIX = " =====\n";
 
     /** 对单个 Office 文档做「内容提取 + 双栏 diff」（默认规则，供顶层条目）。 */
     public DecompiledUnit diff(PackageSnapshot oldSnap, PackageSnapshot newSnap,
@@ -86,7 +89,8 @@ public final class OfficeTextDiff {
      * - package 模式：条目在包内（outerEntry 为包内相对路径），回退 PackageParser.readEntryBytes 抽取。
      */
     private static byte[] readEntryBytesSafe(PackageSnapshot snap, LogicalEntry e) throws IOException {
-        if (e == null) return null;
+        // e==null 为防御性守卫（调用方已前置判空）；按返回类型回退空数组而非 null
+        if (e == null) return new byte[0];
         com.bempdiff.model.EntrySource src = e.getSrc();
         if (src != null && !src.isNested() && src.getOuterEntry() != null) {
             java.nio.file.Path p = java.nio.file.Paths.get(src.getOuterEntry());
@@ -106,7 +110,7 @@ public final class OfficeTextDiff {
             String oldText = (oldBytes != null) ? extract(oldBytes, fc) : null;
             String newText = (newBytes != null) ? extract(newBytes, fc) : null;
 
-            String engine = engineLabel(fc);
+            String engine = "office-text";
             String diff;
             if (oldText == null) {
                 // 新增文档：每行加 "+ " 前缀（含说明行），保证前端 DiffView 行号计数连续、右栏归属正确
@@ -140,12 +144,6 @@ public final class OfficeTextDiff {
         return sb.toString();
     }
 
-    /** 引擎标签：Office 文档统一为 "office-text"（区分文档类型，用于报告与导出清单标注）。 */
-    private static String engineLabel(FileClass fc) {
-        // L1 修复：原先 switch(OFFICE/default) 两分支同值，纯冗余。
-        return "office-text";
-    }
-
     /** L8 修复：异常消息可能为 null（如裸 NPE），返回稳定兜底文案避免向用户展示 "null"。 */
     private static String safeMsg(Throwable e) {
         String m = e.getMessage();
@@ -158,7 +156,7 @@ public final class OfficeTextDiff {
      * - 旧版二进制 OLE（以 D0CF11E0A1B11AE1 魔数开头）：用 POI HSSF 解析 .xls，
      *   .doc/.ppt 仍不支持，给出明确转格式提示。
      */
-    public static String extract(byte[] data, FileClass fc) {
+    public static String extract(byte[] data, FileClass fc) { // NOSONAR(S1172) fc 为公共测试 API 形参（extract(zip, fc) 被测试直接调用），不能移除
         if (data == null) return null;
         if (!isZip(data)) {
             if (isOle(data)) {
@@ -217,20 +215,20 @@ public final class OfficeTextDiff {
 
     /** 提取 docx 文本：word/document.xml 中所有段落（&lt;w:p&gt;），段落内拼接 &lt;w:t&gt; 文本。 */
     public static String extractDocx(byte[] zip) {
-        byte[] xml = readZipEntry(zip, "word/document.xml");
-        if (xml == null) throw new IllegalArgumentException("docx 缺少 word/document.xml");
+        byte[] xml = readZipEntry(zip, "word/document.xml")
+                .orElseThrow(() -> new IllegalArgumentException("docx 缺少 word/document.xml"));
         Document doc = parseXml(xml);
         StringBuilder sb = new StringBuilder();
         NodeList paras = doc.getElementsByTagNameNS("*", "p");
         for (int i = 0; i < paras.getLength(); i++) {
             Node p = paras.item(i);
-            if (!(p instanceof Element)) continue;
             // L7 修复：限定 WordprocessingML 命名空间的段落，跳过 drawingML 文本框（<a:p><a:t>）噪声，
             // 避免与正文段落重复提取同一段文本。
-            if (!W_NS.equals(p.getNamespaceURI())) continue;
-            // L3 统一：与 pptx 一致，先 trim 再跳过空行（去除冗余空白行噪声）。
-            String line = collectText((Element) p, "t").trim();
-            if (!line.isEmpty()) sb.append(line).append('\n');
+            if (p instanceof Element && W_NS.equals(p.getNamespaceURI())) {
+                // L3 统一：与 pptx 一致，先 trim 再跳过空行（去除冗余空白行噪声）。
+                String line = collectText((Element) p, "t").trim();
+                if (!line.isEmpty()) sb.append(line).append('\n');
+            }
         }
         return trimTrailingBlank(sb.toString());
     }
@@ -248,28 +246,7 @@ public final class OfficeTextDiff {
             DataFormatter fmt = new DataFormatter(); // POI 内置：数值/日期/文本按显示格式格式化
             StringBuilder sb = new StringBuilder();
             for (int s = 0; s < wb.getNumberOfSheets(); s++) {
-                Sheet sheet = wb.getSheetAt(s);
-                String sheetName = sheet.getSheetName();
-                if (sheetName == null || sheetName.isEmpty()) sheetName = "Sheet" + (s + 1);
-                sb.append("===== ").append(sheetName).append(" =====\n");
-                for (int r = sheet.getFirstRowNum(); r <= sheet.getLastRowNum(); r++) {
-                    Row row = sheet.getRow(r);
-                    if (row == null) continue; // 稀疏行：无单元格跳过
-                    StringBuilder line = new StringBuilder("Row ").append(r + 1).append(": ");
-                    List<String> cells = new ArrayList<>();
-                    for (int c = row.getFirstCellNum(); c < row.getLastCellNum(); c++) {
-                        Cell cell = row.getCell(c);
-                        if (cell == null) continue;
-                        String ref = cell.getAddress().formatAsString(); // 如 A1
-                        String value = fmt.formatCellValue(cell);
-                        if (value == null) value = "";
-                        // 与 xlsx 一致：值也可能为空字符串（空单元格会 formatCellValue 返回 ""，跳过降低噪声）
-                        if (value.isEmpty()) continue;
-                        cells.add(ref + "=" + value);
-                    }
-                    if (cells.isEmpty()) continue;
-                    sb.append(line).append(String.join(" | ", cells)).append('\n');
-                }
+                sb.append(xlsSheetText(wb.getSheetAt(s), s, fmt));
             }
             String out = sb.toString();
             if (out.trim().isEmpty()) {
@@ -286,6 +263,44 @@ public final class OfficeTextDiff {
         }
     }
 
+    /** 单个 .xls 工作表的文本：分节标题 + 逐行「Row N: A1=值 | ...」。 */
+    private static String xlsSheetText(Sheet sheet, int sheetIndex, DataFormatter fmt) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(sheetHeader(sheet, sheetIndex));
+        for (int r = sheet.getFirstRowNum(); r <= sheet.getLastRowNum(); r++) {
+            String rowText = xlsRowText(sheet.getRow(r), fmt);
+            if (rowText == null) continue;
+            sb.append(rowText).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** 格式化单个 .xls 行为「Row N: A1=值 | ...」；空行/全部空单元格返回 null（跳过）。 */
+    private static String xlsRowText(Row row, DataFormatter fmt) {
+        if (row == null) return null; // 稀疏行：无单元格跳过
+        StringBuilder line = new StringBuilder("Row ").append(row.getRowNum() + 1).append(": ");
+        List<String> cells = new ArrayList<>();
+        for (int c = row.getFirstCellNum(); c < row.getLastCellNum(); c++) {
+            Cell cell = row.getCell(c);
+            if (cell != null) {
+                String ref = cell.getAddress().formatAsString(); // 如 A1
+                String value = fmt.formatCellValue(cell);
+                if (value == null) value = "";
+                // 值也可能为空字符串（空单元格会 formatCellValue 返回 ""，跳过降低噪声）
+                if (!value.isEmpty()) cells.add(ref + "=" + value);
+            }
+        }
+        if (cells.isEmpty()) return null;
+        return line.append(String.join(" | ", cells)).toString();
+    }
+
+    /** 工作表分节标题（默认名用 Sheet+序号补位）。 */
+    private static String sheetHeader(Sheet sheet, int index) {
+        String sheetName = sheet.getSheetName();
+        if (sheetName == null || sheetName.isEmpty()) sheetName = "Sheet" + (index + 1);
+        return SHEET_DIVIDER_PREFIX + sheetName + SHEET_DIVIDER_SUFFIX;
+    }
+
     // ----------------------------- xlsx -----------------------------
 
     /** 提取 xlsx 文本：sharedStrings + 每个工作表 sheetN.xml 的行（&lt;row&gt;）与单元格（&lt;c&gt;）。 */
@@ -293,63 +308,84 @@ public final class OfficeTextDiff {
         // M1 修复：单次遍历 zip 把所有 worksheet + sharedStrings 的字节收集到 Map，
         // 避免旧实现「每个 sheet 调一次 readZipEntry 全扫整个 zip」（O(sheets × zip大小)）。
         Map<String, byte[]> entries = readZipEntriesByPrefix(zip, "xl/worksheets/");
-        byte[] sharedXml = readZipEntry(zip, "xl/sharedStrings.xml");
+        byte[] sharedXml = readZipEntry(zip, "xl/sharedStrings.xml").orElse(null);
         List<String> shared = (sharedXml != null) ? readSharedStringsFromXml(sharedXml) : new ArrayList<>();
-        StringBuilder sb = new StringBuilder();
         if (entries.isEmpty()) {
             throw new IllegalArgumentException("xlsx 缺少 xl/worksheets/ 工作表");
         }
+        StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, byte[]> en : entries.entrySet()) {
-            String sheetPath = en.getKey();
-            String sheetName = sheetPath;
-            int slash = sheetName.lastIndexOf('/');
-            if (slash >= 0) sheetName = sheetName.substring(slash + 1);
-            sb.append("===== ").append(sheetName).append(" =====\n");
+            String sheetName = sheetDisplayName(en.getKey());
             byte[] xml = en.getValue();
+            sb.append(SHEET_DIVIDER_PREFIX).append(sheetName).append(SHEET_DIVIDER_SUFFIX);
             if (xml == null) continue;
-            Document doc = parseXml(xml);
-            NodeList rows = doc.getElementsByTagNameNS("*", "row");
-            for (int r = 0; r < rows.getLength(); r++) {
-                Node rowNode = rows.item(r);
-                if (!(rowNode instanceof Element)) continue;
-                Element row = (Element) rowNode;
-                String rowNum = row.getAttribute("r");
-                StringBuilder line = new StringBuilder("Row ");
-                line.append(rowNum.isEmpty() ? (r + 1) : rowNum).append(": ");
-                List<String> cells = new ArrayList<>();
-                NodeList cs = row.getElementsByTagNameNS("*", "c");
-                for (int c = 0; c < cs.getLength(); c++) {
-                    if (!(cs.item(c) instanceof Element)) continue;
-                    Element cell = (Element) cs.item(c);
-                    String ref = cell.getAttribute("r");
-                    String type = cell.getAttribute("t");
-                    String value;
-                    if ("s".equals(type)) {
-                        // 共享字符串：<v>idx</v>
-                        String v = firstText(cell, "v");
-                        value = "";
-                        if (!v.isEmpty()) {
-                            int idx = parseIdx(v);
-                            value = (idx >= 0 && idx < shared.size()) ? shared.get(idx) : "";
-                        }
-                    } else if ("inlineStr".equals(type) || "str".equals(type)) {
-                        // 内联字符串：<is><t>..</t></is>
-                        value = collectText(cell, "t");
-                    } else {
-                        // 数值 / 公式结果 / 布尔：<v>..
-                        value = firstText(cell, "v");
-                    }
-                    if (value == null) value = "";
-                    cells.add((ref.isEmpty() ? "c" + c : ref) + "=" + value);
-                }
-                line.append(String.join(" | ", cells));
-                // S2 修复：原判断用「行尾字符 != ':'」判空——若末格值本身以冒号结尾（如 "A1=abc:"），
-                // 会误判为整行空而丢弃该行内容。改为直接判 cells 是否为空。
-                if (!cells.isEmpty()) sb.append(line);
-                sb.append('\n');
-            }
+            sb.append(xlsxSheetBody(parseXml(xml), shared));
         }
         return trimTrailingBlank(sb.toString());
+    }
+
+    /** 从工作表 zip 路径取展示名（去目录前缀，如 xl/worksheets/sheet1.xml → sheet1.xml）。 */
+    private static String sheetDisplayName(String sheetPath) {
+        String sheetName = sheetPath;
+        int slash = sheetName.lastIndexOf('/');
+        if (slash >= 0) sheetName = sheetName.substring(slash + 1);
+        return sheetName;
+    }
+
+    /** 单个 worksheet 的逐行文本（不含分节标题，标题由调用方拼）。 */
+    private static String xlsxSheetBody(Document doc, List<String> shared) {
+        StringBuilder sb = new StringBuilder();
+        NodeList rows = doc.getElementsByTagNameNS("*", "row");
+        for (int r = 0; r < rows.getLength(); r++) {
+            Node rowNode = rows.item(r);
+            if (rowNode instanceof Element) {
+                String rowText = xlsxRowText((Element) rowNode, r, shared);
+                if (rowText == null) {
+                    sb.append('\n');
+                } else {
+                    sb.append(rowText).append('\n');
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 格式化单个 <row> 为「Row N: A1=值 | ...」；无单元格返回 null。 */
+    private static String xlsxRowText(Element row, int rowIndex, List<String> shared) {
+        String rowNum = row.getAttribute("r");
+        StringBuilder line = new StringBuilder("Row ");
+        line.append(rowNum.isEmpty() ? (rowIndex + 1) : rowNum).append(": ");
+        List<String> cells = new ArrayList<>();
+        NodeList cs = row.getElementsByTagNameNS("*", "c");
+        for (int c = 0; c < cs.getLength(); c++) {
+            if (!(cs.item(c) instanceof Element)) continue;
+            Element cell = (Element) cs.item(c);
+            String ref = cell.getAttribute("r");
+            String value = xlsxCellValue(cell, shared);
+            // 值也可能为空：内联/共享字符串缺内容时兜底为空串（不丢列对齐）
+            if (value == null) value = "";
+            cells.add((ref.isEmpty() ? "c" + c : ref) + "=" + value);
+        }
+        if (cells.isEmpty()) return null;
+        return line.append(String.join(" | ", cells)).toString();
+    }
+
+    /** 单元格取值：共享字符串 idx → 文本；inlineStr/str → 文本；其余为 <v> 原值。 */
+    private static String xlsxCellValue(Element cell, List<String> shared) {
+        String type = cell.getAttribute("t");
+        if ("s".equals(type)) {
+            // 共享字符串：<v>idx</v>
+            String v = firstText(cell, "v");
+            if (v.isEmpty()) return "";
+            int idx = parseIdx(v);
+            return (idx >= 0 && idx < shared.size()) ? shared.get(idx) : "";
+        } else if ("inlineStr".equals(type) || "str".equals(type)) {
+            // 内联字符串：<is><t>..</t></is>
+            return collectText(cell, "t");
+        } else {
+            // 数值 / 公式结果 / 布尔：<v>..
+            return firstText(cell, "v");
+        }
     }
 
     /** 读取 xl/sharedStrings.xml 的共享字符串列表（<si><t>..</t></si>，含富文本 <r>）。 */
@@ -378,8 +414,8 @@ public final class OfficeTextDiff {
         StringBuilder sb = new StringBuilder();
         for (String slidePath : slides) {
             String name = slidePath.substring(slidePath.lastIndexOf('/') + 1);
-            sb.append("===== ").append(name).append(" =====\n");
-            byte[] xml = readZipEntry(zip, slidePath);
+            sb.append(SHEET_DIVIDER_PREFIX).append(name).append(SHEET_DIVIDER_SUFFIX);
+            byte[] xml = readZipEntry(zip, slidePath).orElse(null);
             if (xml == null) continue;
             Document doc = parseXml(xml);
             NodeList paras = doc.getElementsByTagNameNS("*", "p");
@@ -430,11 +466,7 @@ public final class OfficeTextDiff {
             DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
             f.setNamespaceAware(true);
             f.setExpandEntityReferences(false);
-            try {
-                f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            } catch (Exception ignored) {
-                // 老 JDK 无此 feature：跳过
-            }
+            disableDoctypeDeclaration(f);
             f.setXIncludeAware(false);
             return f.newDocumentBuilder().parse(new ByteArrayInputStream(xml));
         } catch (Exception e) {
@@ -442,21 +474,30 @@ public final class OfficeTextDiff {
         }
     }
 
-    /** 从 zip 字节中读取指定条目（精确名，未命中时尝试小写匹配一次）。 */
-    private static byte[] readZipEntry(byte[] zip, String path) {
+    /** 关闭 DOCTYPE 声明以防护 XXE：老 JDK 无此 feature 时静默跳过（仅弱化该层防护，不影响解析）。 */
+    private static void disableDoctypeDeclaration(DocumentBuilderFactory f) {
+        try {
+            f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        } catch (Exception ignored) {
+            // 老 JDK 无此 feature：跳过
+        }
+    }
+
+    /** 从 zip 字节中读取指定条目（精确名，未命中时尝试小写匹配一次）；缺失/读取失败返回 Optional.empty()。 */
+    private static Optional<byte[]> readZipEntry(byte[] zip, String path) {
         String lowerPath = path.toLowerCase(Locale.ROOT);
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zip))) {
             ZipEntry e;
             while ((e = zis.getNextEntry()) != null) {
                 String name = e.getName();
                 if (name.equals(path) || name.toLowerCase(Locale.ROOT).equals(lowerPath)) {
-                    return zis.readAllBytes();
+                    return Optional.of(zis.readAllBytes());
                 }
             }
         } catch (IOException ignored) {
-            return null;
+            return Optional.empty();
         }
-        return null;
+        return Optional.empty();
     }
 
     /** 列出 zip 内前缀匹配的条目名（用于枚举 xl/worksheets/、ppt/slides/）。 */

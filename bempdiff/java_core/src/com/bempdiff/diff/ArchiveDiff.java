@@ -70,7 +70,8 @@ public final class ArchiveDiff {
             String newListing = (newPath != null) ? readListing(newPath) : null;
             String diff;
             if (oldListing == null) {
-                diff = "// [新增文件] 老侧无此归档\n" + (newListing == null ? "" : newListing);
+                // 老侧无此归档时，早前已保证两侧非全空，故 newListing 必非 null（直接拼接）
+                diff = "// [新增文件] 老侧无此归档\n" + newListing;
             } else if (newListing == null) {
                 diff = "// [删除文件] 新侧无此归档（资源移除，需确认引用方）\n" + oldListing;
             } else {
@@ -88,7 +89,7 @@ public final class ArchiveDiff {
         } catch (Exception e) {
             // 损坏/非 zip 结构/IO 错误：返回失败而不是抛异常冒泡到调用方
             // （否则前端 spinner 会一直转，违反"不再卡死"承诺）。
-            LOG.log(Level.WARNING, "[ArchiveDiff] 归档清单解析失败: " + key, e);
+            LOG.log(Level.WARNING, e, () -> "[ArchiveDiff] 归档清单解析失败: " + key);
             return DecompiledUnit.fail(key, "归档清单不可读（非 zip 结构或已损坏）: " + e.getMessage());
         }
     }
@@ -148,7 +149,9 @@ public final class ArchiveDiff {
             Files.write(tmp, zipBytes);
             return readListing(tmp);
         } finally {
-            try { Files.deleteIfExists(tmp); } catch (IOException ignore) { }
+            try { Files.deleteIfExists(tmp); } catch (IOException ignore) {
+                // 清理失败静默：仅测试用临时文件，残留不影响结果
+            }
         }
     }
 

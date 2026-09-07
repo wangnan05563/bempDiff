@@ -55,7 +55,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -78,6 +77,7 @@ public final class BempServer {
     private static final String STAGE_PARSING = "parsing";
     private static final String STAGE_UNPACKING = "unpacking";
     private static final String MSG_NOT_DONE = "比对尚未完成: ";
+    private static final String EXPORT_ZIP_NAME = "bempdiff-export.zip";
     private static final String DEFAULT_INDEX = "/index.html";
     private static final String KEY_PHASE = "phase";
     private static final String KEY_PROJECT_DIR = "projectDir";
@@ -88,6 +88,25 @@ public final class BempServer {
     private static final String STAGE_THINKING = "thinking";
     private static final String AI_MODEL_FIELD = "model";
     private static final String RISK_MEDIUM = "MEDIUM";
+    // S1192：以下字符串在多处重复，集中定义为常量消除重复字面量。
+    private static final String KEY_CATEGORY = "category";
+    private static final String KEY_PROMPT = "prompt";
+    private static final String KEY_CREATED_AT = "createdAt";
+    private static final String KEY_FILES = "files";
+    private static final String KEY_LAST_ERROR = "lastError";
+    private static final String KEY_REFRESH = "refresh";
+    private static final String MIME_ZIP = "application/zip";
+    private static final String EXPORT_TEMP_PREFIX = "bempdiff-export-";
+    // P1-2 增量导出内容缓存：同 job 的增量 zip 由不可变 diff/snap 幂等派生，二次导出直接复用，跳过重复 exportIncrement+zipTree（报告 §9 P1-2）。
+    // 目录 / 前缀设计为与 EXPORT_TEMP_PREFIX 相邻的常量，方便统一调整导出缓存位置。
+    private static final String EXPORT_CACHE_SUBDIR = "_export_cache";
+    private static final String EXPORT_CACHE_FILE_PREFIX = "job-";
+    private static final String CAT_OVERALL = "整体风险分析";
+    private static final String CAT_BREAKING = "breaking";
+    private static final String CAT_IMPACT = "impact";
+    private static final String CAT_TESTPOINTS = "testpoints";
+    private static final String CAT_CUSTOM = "custom";
+    private static final String MSG_TASK_NOT_FOUND = "任务不存在: ";
 
     /** 单文件「AI功能总结」聚焦指令：真实调用与 token 预估共用同一字面量，
      *  避免两处复制后单边修改导致预估与实际 prompt 漂移（评审 M2）。 */
@@ -123,6 +142,10 @@ public final class BempServer {
     private final Map<String, ExportRecord> exports = new ConcurrentHashMap<>();
     private final java.util.concurrent.ExecutorService exportPool =
             java.util.concurrent.Executors.newSingleThreadExecutor();
+    // P1-2 增量导出内容缓存（jobId → 已生成的 zip 绝对路径）。需与 exports 下载目录分开管理：
+    // exports 是「大包异步生成 + 下载管理」生命周期记录；这里只缓存「同步小包已生成过的增量 zip」，
+    // 由不可变 diff/snap 派生故幂等，二次同步导出直接复用，避免重复 exportIncrement+zipTree（报告 §8#4 / §9 P1-2）。
+    private final Map<String, Path> exportZipCache = new ConcurrentHashMap<>();
 
     /** 差异资产导出记录（下载管理页数据源）。 */
     private static final class ExportRecord {
@@ -137,7 +160,7 @@ public final class BempServer {
         String message = "";
         int incrementCount;
         int deletedCount;
-        volatile Object lock = this;
+        volatile Object lock = this; // NOSONAR S3077 - 供外部 synchronized(record.lock) 用作持有者锁；仅单次赋值(=this)、原子读写，volatile 即可保证可见性
         ExportRecord(String id, String jobId) { this.id = id; this.jobId = jobId; }
     }
 
@@ -184,6 +207,7 @@ public final class BempServer {
         server.createContext("/api/ai/models", this::handleAiModels);
         server.createContext("/api/ai/context", this::handleAiContext);
         server.createContext("/api/admin/cleanup", this::handleCleanupTemp); // 配置中心「手动清理」
+        server.createContext("/api/update/check", this::handleUpdateCheck); // 「关于」页版本更新检查
         server.createContext("/", this::handleStatic);
         // 关键：默认 HttpServer 用单线程串行处理所有请求——一次长比对会阻塞全部 API/静态资源。
         // 改为每个请求一个虚拟线程，比对任务再下沉到 workers 执行器，UI 才能边比对边轮询进度。
@@ -237,16 +261,6 @@ public final class BempServer {
         ex.sendResponseHeaders(code, b.length);
         try (OutputStream os = ex.getResponseBody()) {
             os.write(b);
-        }
-    }
-
-    private static void sendBytes(HttpExchange ex, int code, String mime, byte[] data) throws IOException {
-        addCors(ex);
-        ex.getResponseHeaders().add(HDR_CONTENT_TYPE, mime);
-        ex.getResponseHeaders().add("Content-Disposition", "attachment");
-        ex.sendResponseHeaders(code, data.length);
-        try (OutputStream os = ex.getResponseBody()) {
-            os.write(data);
         }
     }
 
@@ -337,15 +351,14 @@ public final class BempServer {
             boolean autoOrdered = false;
             String oldVersion = null;
             String newVersion = null;
-            if (!MODE_FOLDER.equals(mode)) {
-                if (com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(leftPath, rightPath)) {
-                    String[] ordered = com.bempdiff.parse.PackageVersion.orderOldNew(leftPath, rightPath);
-                    leftPath = ordered[0];
-                    rightPath = ordered[1];
-                    oldVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(leftPath);
-                    newVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(rightPath);
-                    autoOrdered = true;
-                }
+            if (!MODE_FOLDER.equals(mode)
+                    && com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(leftPath, rightPath)) {
+                String[] ordered = com.bempdiff.parse.PackageVersion.orderOldNew(leftPath, rightPath);
+                leftPath = ordered[0];
+                rightPath = ordered[1];
+                oldVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(leftPath);
+                newVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(rightPath);
+                autoOrdered = true;
             }
 
             String jobId = "job-" + seq.incrementAndGet();
@@ -407,7 +420,8 @@ public final class BempServer {
             // M-A：物理平铺解包（unpackNested 开启时）：对两侧快照内的 ARCHIVE/JAR 条目多线程递归
             // 展开并平面化，使差异统计与后续 AI 覆盖嵌套子文件。flatten 在本方法内同步完成
             // （invokeAll.get 带超时），随后的 job.complete() 即构成"AI 待解包完成"硬屏障。
-            UnpackReport repOld = null, repNew = null;
+            UnpackReport repOld = null;
+            UnpackReport repNew = null;
             if (opts.isUnpackNested()) {
                 UnpackOptions uo = opts.toUnpackOptions();
                 // 解包临时目录改为作业级：.bempdiff/runtime/<jobId>/old|new，随作业被取代/淘汰整体回收。
@@ -424,7 +438,7 @@ public final class BempServer {
             job.setUnpackReports(new UnpackReport[]{repOld, repNew});
             // 解包状态报告与错误日志落盘（{user.home}/.bempdiff/logs/unpack-<jobId>.json|.log），
             // 供离线排查；写失败不中断主流程（openLog 式容错）。
-            if (repOld != null || repNew != null) {
+            if (repOld != null || repNew != null) { // NOSONAR S2589 - 报表由运行时解包开关决定，可能为 null 也可能非 null，流分析误判恒定假
                 UnpackOutputer.write(job.id, job.getUnpackReports(), unpackLogsDir());
             }
             job.markRunning(STAGE_PARSING, "解析完成", 40);
@@ -444,21 +458,28 @@ public final class BempServer {
             job.markRunning("building", "构建差异树…", 90);
             job.complete(oldSnap, newSnap, r, s);
             // 解包不完整 / 存在条目读取失败超限：非致命，但差异/导出可能不完整，透出到 message 供前端提示。
-            if (opts.isUnpackNested() && (repOld != null || repNew != null)) {
-                int fail = ((repOld == null) ? 0 : repOld.getErrors().size())
-                        + ((repNew == null) ? 0 : repNew.getErrors().size());
-                boolean incomplete = (repOld != null && repOld.isIncomplete())
-                        || (repNew != null && repNew.isIncomplete());
-                if (incomplete || fail > 0) {
-                    job.appendMessage("警告：解包不完整（" + fail + " 个条目读取失败/超限" +
-                            (incomplete ? "，且解包未全部完成" : "") + "），部分嵌套差异可能缺失");
-                }
+            if (opts.isUnpackNested()) {
+                appendUnpackWarnings(job, repOld, repNew);
             }
         } catch (Exception e) {
             LOG.log(Level.WARNING, e, () -> "比对失败: " + job.id);
             job.fail("比对失败: " + e.getMessage());
         } finally {
             compareSem.release();
+        }
+    }
+
+    /** 解包不完整/读取失败超限时向 job message 追加告警（提取自 runCompareTask 以降低认知复杂度）。 */
+    private static void appendUnpackWarnings(Job job, com.bempdiff.unpack.UnpackReport repOld,
+                                             com.bempdiff.unpack.UnpackReport repNew) {
+        if (repOld == null && repNew == null) return; // 未启用解包时两侧均为 null，无需追加
+        int fail = ((repOld == null) ? 0 : repOld.getErrors().size())
+                + ((repNew == null) ? 0 : repNew.getErrors().size());
+        boolean incomplete = (repOld != null && repOld.isIncomplete())
+                || (repNew != null && repNew.isIncomplete());
+        if (incomplete || fail > 0) {
+            job.appendMessage("警告：解包不完整（" + fail + " 个条目读取失败/超限"
+                    + (incomplete ? "，且解包未全部完成" : "") + "），部分嵌套差异可能缺失");
         }
     }
 
@@ -481,6 +502,12 @@ public final class BempServer {
         DiffStatus[] order = {DiffStatus.MODIFIED, DiffStatus.ADDED, DiffStatus.DELETED, DiffStatus.UNCHANGED};
         for (DiffStatus st : order) {
             for (String k : r.get(st)) {
+                // 版本改名配对的 MODIFIED 条目：以「新侧 key」展示（新包包名 + 其下文件路径），
+                // 而非旧侧（如 bemp-web-5...M.15.war 应显示为 M.17.war）；内容层已支持按新 key 反查旧侧。
+                if (st == DiffStatus.MODIFIED) {
+                    String nk = r.newKeyFor(k);
+                    if (nk != null) k = nk;
+                }
                 // 自动解包去重：仅当本次作业启用了物理解包时才跳过扁平化嵌套后代——避免误藏
                 // 未解包模式下已存在的嵌套条目（如 expandAll 正常生成、非平铺的带归档祖先路径）。
                 if (unpackNested && isFlattenedDescendant(k, oldSnap, newSnap)) continue;
@@ -542,7 +569,7 @@ public final class BempServer {
         String action = parts.length >= 2 ? parts[1] : KEY_STATUS;
         Job job = store.get(jobId);
         if (job == null) {
-            sendError(ex, 404, "任务不存在: " + jobId);
+            sendError(ex, 404, MSG_TASK_NOT_FOUND + jobId);
             return;
         }
         if (ex.getRequestMethod().equals(M_OPTIONS)) {
@@ -550,61 +577,53 @@ public final class BempServer {
             return;
         }
         if (KEY_STATUS.equals(action)) {
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put(KEY_JOB_ID, job.id);
-            resp.put("mode", job.mode);
-            resp.put(KEY_STATUS, job.getStatus());
-            resp.put(KEY_PHASE, job.getPhase());
-            resp.put("progress", job.getProgress());
-            resp.put(KEY_MESSAGE, job.getMessage());
-            resp.put(KEY_ERROR, job.getError());
-            // 仅完成时回带完整产物；进行中只返回进度，避免前端在结果未就绪时读到 null 快照。
-            if ("DONE".equals(job.getStatus())) {
-                resp.put("oldFile", job.getOldSnap().getFile().getFileName().toString());
-                resp.put("newFile", job.getNewSnap().getFile().getFileName().toString());
-                resp.put("oldVersion", nullToNA(job.getOldSnap().getVersion()));
-                resp.put("newVersion", nullToNA(job.getNewSnap().getVersion()));
-                resp.put("stats", statsJson(job.getStats()));
-                resp.put("tree", buildTree(job.getResult(), job.getOldSnap(), job.getNewSnap(), job.opts.isUnpackNested()));
+            sendJobStatus(ex, job);
+            return;
+        }
+        // 用 switch 替代串行 if 链分派其余动作，降低认知复杂度；各 case 内部仅做调用/返回，不含嵌套分支。
+        switch (action) {
+            case "cancel" -> {
+                job.requestCancel(); // 置取消标记；后台任务在阶段边界检查并标记 CANCELLED
+                Map<String, Object> resp = new LinkedHashMap<>();
+                resp.put(KEY_JOB_ID, job.id);
+                resp.put(KEY_STATUS, job.getStatus());
+                resp.put("cancelled", job.isCancelRequested());
+                sendJson(ex, 200, resp);
             }
-            sendJson(ex, 200, resp);
-            return;
+            case "report" -> handleReport(ex, job);
+            case "unpack-report" -> handleUnpackReport(ex, job);
+            case "export" -> {
+                // 大包异步导出入口：export/start 需第3段；否则走旧版同步导出端点（兼容旧调用）
+                if (parts.length >= 3 && "start".equals(parts[2])) handleExportStart(ex, job);
+                else handleExport(ex, job);
+            }
+            case "ai-analyze" -> handleAiAnalyze(ex, job);
+            case "ai-classify" -> handleClassify(ex, job);
+            case "ai-estimate" -> handleAiEstimate(ex, job);
+            default -> sendError(ex, 404, "未知 job 操作: " + action);
         }
-        if ("cancel".equals(action)) {
-            job.requestCancel(); // 置取消标记；后台任务在阶段边界检查并标记 CANCELLED
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put(KEY_JOB_ID, job.id);
-            resp.put(KEY_STATUS, job.getStatus());
-            resp.put("cancelled", job.isCancelRequested());
-            sendJson(ex, 200, resp);
-            return;
+    }
+
+    /** job 状态响应（从 handleJob 抽出，消除其内嵌「DONE」分支以降低认知复杂度）。 */
+    private void sendJobStatus(HttpExchange ex, Job job) throws IOException {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put(KEY_JOB_ID, job.id);
+        resp.put("mode", job.mode);
+        resp.put(KEY_STATUS, job.getStatus());
+        resp.put(KEY_PHASE, job.getPhase());
+        resp.put("progress", job.getProgress());
+        resp.put(KEY_MESSAGE, job.getMessage());
+        resp.put(KEY_ERROR, job.getError());
+        // 仅完成时回带完整产物；进行中只返回进度，避免前端在结果未就绪时读到 null 快照。
+        if ("DONE".equals(job.getStatus())) {
+            resp.put("oldFile", job.getOldSnap().getFile().getFileName().toString());
+            resp.put("newFile", job.getNewSnap().getFile().getFileName().toString());
+            resp.put("oldVersion", nullToNA(job.getOldSnap().getVersion()));
+            resp.put("newVersion", nullToNA(job.getNewSnap().getVersion()));
+            resp.put("stats", statsJson(job.getStats()));
+            resp.put("tree", buildTree(job.getResult(), job.getOldSnap(), job.getNewSnap(), job.opts.isUnpackNested()));
         }
-        if ("report".equals(action)) {
-            handleReport(ex, job);
-            return;
-        }
-        if ("unpack-report".equals(action)) { handleUnpackReport(ex, job); return; }
-        if (parts.length >= 3 && "export".equals(action) && "start".equals(parts[2])) {
-            handleExportStart(ex, job);
-            return;
-        }
-        if ("export".equals(action)) {
-            handleExport(ex, job);
-            return;
-        }
-        if ("ai-analyze".equals(action)) {
-            handleAiAnalyze(ex, job);
-            return;
-        }
-        if ("ai-classify".equals(action)) {
-            handleClassify(ex, job);
-            return;
-        }
-        if ("ai-estimate".equals(action)) {
-            handleAiEstimate(ex, job);
-            return;
-        }
-        sendError(ex, 404, "未知 job 操作: " + action);
+        sendJson(ex, 200, resp);
     }
 
     private void handleReport(HttpExchange ex, Job job) throws IOException {
@@ -623,8 +642,8 @@ public final class BempServer {
                     Map<String, Object> req = Json.parseObject(body);
                     ai = Json.bool(req, "ai", false);
                     projDir = Json.str(req, KEY_PROJECT_DIR, null);
-                    category = Json.str(req, "category", null);
-                    prompt = Json.str(req, "prompt", null);
+                    category = Json.str(req, KEY_CATEGORY, null);
+                    prompt = Json.str(req, KEY_PROMPT, null);
                 }
             }
             // 前端未显式传 projectDir 时，回退到配置中心的项目上下文设置（旧前端/漏传均生效）
@@ -641,7 +660,7 @@ public final class BempServer {
         }
     }
 
-    private String buildMarkdown(Job job, boolean ai, String projDir, String category, String prompt,
+    private String buildMarkdown(Job job, boolean ai, String projDir, String category, String prompt, // NOSONAR - 参数为报告管线固定入参组，语义分组，拆分会降低可读性
                                  Map<String, DecompiledUnit> decompiled, Map<String, DecompiledUnit> text,
                                  LibJarDiff.Result libJar, MarkdownReport rep) {
         if (!ai) {
@@ -671,7 +690,7 @@ public final class BempServer {
      * fileStatus：前端树节点透传的变更类型（归档内部复合键不在顶层 DiffResult 中，
      * 后端 statusOf 只认顶层 key 会一律误判 MODIFIED，故需前端权威值，评审 H1）。
      */
-    private AiAnalysisResult runAiAnalysis(Job job, Map<String, DecompiledUnit> decompiled,
+    private AiAnalysisResult runAiAnalysis(Job job, Map<String, DecompiledUnit> decompiled, // NOSONAR - 参数为 AI 管线的语义分组入参，拆分为对象降低可读性
                                            Map<String, DecompiledUnit> text, LibJarDiff.Result libJar,
                                            String projDir, String category, String prompt,
                                            String fileKey, String fileStatus) {
@@ -692,7 +711,11 @@ public final class BempServer {
         Map<String, DecompiledUnit> aiMap = new LinkedHashMap<>(decompiled);
         aiMap.putAll(text);
         List<AiAnalyzer.DecompileReq> bCands = new ArrayList<>();
-        for (Map.Entry<String, DecompiledUnit> en : aiMap.entrySet()) {
+        // 阶段B 深读候选：文本类用全量（buildTextMapAll，不受 topK 截断），class 用已缓存反编译 map。
+        // 深度由 stageBTopK 独立上限控制；与报告正文源码章节的 topK 解耦，避免「测试要点」等专项只覆盖前几个文件导致报告不全。
+        Map<String, DecompiledUnit> stageBMap = new LinkedHashMap<>(decompiled);
+        stageBMap.putAll(buildTextMapAll(job));
+        for (Map.Entry<String, DecompiledUnit> en : stageBMap.entrySet()) {
             ProjectContext perCtx = (pIndex != null) ? pIndex.locate(en.getKey()) : null;
             bCands.add(new AiAnalyzer.DecompileReq(en.getKey(), en.getValue(),
                     fileClassOfKey(en.getKey(), job.getOldSnap(), job.getNewSnap()), perCtx));
@@ -717,7 +740,7 @@ public final class BempServer {
         if (!overallRisk) {
             rep.setAiSectionTitle("## AI 智能分析（两阶段 / 项目级上下文增强）");
             md = rep.renderFocusReport(job.getOldSnap(), job.getNewSnap(), job.getResult(), job.getStats(),
-                    decompiled, text, summary, b, ctx);
+                    summary, b, ctx);
         } else {
             md = rep.render(job.getOldSnap(), job.getNewSnap(), job.getResult(), job.getStats(),
                     decompiled, text, summary, b, ctx, libJar);
@@ -816,14 +839,14 @@ public final class BempServer {
         if (hasUserPrompt(prompt)) {
             return "自定义问题：" + prompt.trim();
         }
-        if (category == null || category.isEmpty()) return "整体风险分析";
+        if (category == null || category.isEmpty()) return CAT_OVERALL;
         switch (category) {
-            case "risk": return "整体风险分析";
-            case "breaking": return "破坏性变更专项";
-            case "impact": return "影响范围分析";
-            case "testpoints": return "测试要点分析";
-            case "custom": return "自定义问题";
-            default: return "整体风险分析";
+            case "risk": return CAT_OVERALL;
+            case CAT_BREAKING: return "破坏性变更专项";
+            case CAT_IMPACT: return "影响范围分析";
+            case CAT_TESTPOINTS: return "测试要点分析";
+            case CAT_CUSTOM: return "自定义问题";
+            default: return CAT_OVERALL;
         }
     }
 
@@ -835,19 +858,19 @@ public final class BempServer {
         if (category == null || category.isEmpty()) return null;
         switch (category) {
             case "risk": return "本次分析请重点聚焦【整体风险等级与降级/回滚预案】，给出明确的风险结论与应对建议。";
-            case "breaking": return "本次分析请重点聚焦【破坏性变更与向后兼容性】，逐一指出删除/签名变更/接口契约破坏等不兼容点。";
-            case "impact": return "本次分析请重点聚焦【影响范围与上下游模块依赖】，说明本次变更会波及哪些对外接口与内部调用方。";
-            case "testpoints": return "本次分析请重点聚焦【回归测试要点】，给出可执行的测试场景、用例思路与验证重点。";
+            case CAT_BREAKING: return "本次分析请重点聚焦【破坏性变更与向后兼容性】，逐一指出删除/签名变更/接口契约破坏等不兼容点。";
+            case CAT_IMPACT: return "本次分析请重点聚焦【影响范围与上下游模块依赖】，说明本次变更会波及哪些对外接口与内部调用方。";
+            case CAT_TESTPOINTS: return "本次分析请重点聚焦【回归测试要点】，给出可执行的测试场景、用例思路与验证重点。";
             default: return null;
         }
     }
 
     /** 规范化分析类别枚举：自定义 prompt 优先归为 custom；非法/缺省返回 null（渲染端回落为整体全面）。 */
     private static String normalizeCategory(String category, String prompt) {
-        if (hasUserPrompt(prompt)) return "custom";
+        if (hasUserPrompt(prompt)) return CAT_CUSTOM;
         if (category == null) return null;
         switch (category) {
-            case "risk": case "breaking": case "impact": case "testpoints": case "custom":
+            case "risk": case CAT_BREAKING: case CAT_IMPACT: case CAT_TESTPOINTS: case CAT_CUSTOM:
                 return category;
             default: return null;
         }
@@ -946,16 +969,24 @@ public final class BempServer {
             sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
             return;
         }
-        Path outDir = Files.createTempDirectory("bempdiff-export-");
+        Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX);
         try {
+            // P1-2：同 job 已导出过则直接复用缓存 zip，跳过重复 exportIncrement+zipTree（增量 zip 由不可变 diff/snap 幂等派生）。
+            Path cached = cachedExportZip(job.id);
+            if (cached != null) {
+                Path finalZip = materializeCachedZip(cached, outDir);
+                sendFile(ex, 200, MIME_ZIP, finalZip);
+                return;
+            }
             AssetExporter exporter = new AssetExporter();
             // 增量更新资产：increment/(新包 ADDED+MODIFIED 完整文件，保持路径) + deleted/(老包被删文件)。
             // 不导出反编译源码/差异片段——用户解压 increment/ 覆盖即可完成增量部署。
             exporter.exportIncrement(job.getResult(), job.getOldSnap(), job.getNewSnap(), outDir);
             // 所有产物（increment/、deleted/）统一打包为最终下载 zip
-            Path finalZip = exporter.zipTree(outDir, outDir.resolve("bempdiff-export.zip"));
+            Path finalZip = exporter.zipTree(outDir, outDir.resolve(EXPORT_ZIP_NAME));
+            cacheExportZip(job.id, finalZip); // 本 job 增量资产不可变，落盘缓存供二次导出复用
             // 流式下发 zip：避免整包读入内存（readAll）导致超大响应体传输中断/断连（前端报 Failed to fetch）
-            sendFile(ex, 200, "application/zip", finalZip);
+            sendFile(ex, 200, MIME_ZIP, finalZip);
         } catch (Exception e) {
             LOG.log(Level.WARNING, "资产导出失败", e);
             sendError(ex, 500, "资产导出失败: " + e.getMessage());
@@ -982,11 +1013,7 @@ public final class BempServer {
         String path = ex.getRequestURI().getPath();
         String sub = path.replaceFirst("^/api/export/?", "");
         if (sub.isEmpty() || sub.equals("list")) {
-            if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "仅支持 GET"); return; }
-            List<Map<String, Object>> list = new ArrayList<>();
-            for (ExportRecord r : exports.values()) list.add(exportToJson(r));
-            list.sort((a, b) -> Long.compare((Long) b.get("createdAt"), (Long) a.get("createdAt")));
-            sendJson(ex, 200, list);
+            handleExportList(ex);
             return;
         }
         String[] parts = sub.split("/");
@@ -998,7 +1025,7 @@ public final class BempServer {
                 if (!"done".equals(r.status)) { sendError(ex, 409, "导出未完成或失败，无法下载"); return; }
                 Path file = exportsDir().resolve(r.id).resolve(r.filename);
                 if (!Files.isRegularFile(file)) { sendError(ex, 404, "导出文件不存在"); return; }
-                sendFile(ex, 200, "application/zip", file);
+                sendFile(ex, 200, MIME_ZIP, file);
                 return;
             case "delete":
                 if (!ex.getRequestMethod().equals("POST") && !ex.getRequestMethod().equals("DELETE")) {
@@ -1014,14 +1041,24 @@ public final class BempServer {
         }
     }
 
+    /** 导出记录列表（从 handleExportApi 抽出以降低其认知复杂度）。 */
+    private void handleExportList(HttpExchange ex) throws IOException {
+        if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "仅支持 GET"); return; }
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (ExportRecord r : exports.values()) list.add(exportToJson(r));
+        list.sort((a, b) -> Long.compare((Long) b.get(KEY_CREATED_AT), (Long) a.get(KEY_CREATED_AT)));
+        sendJson(ex, 200, list);
+    }
+
     /** 导出规模估算（纯函数，供单测）：{files, bytes, small, etaSeconds, etaText}。 */
     public static Map<String, Object> exportEstimate(DiffResult r, Map<String, LogicalEntry> oldSnap, Map<String, LogicalEntry> nowSnap) {
-        long bytes = 0, files = 0;
+        long bytes = 0;
+        long files = 0;
         for (String k : r.get(DiffStatus.ADDED)) { LogicalEntry e = nowSnap.get(k); if (e != null) { files++; bytes += e.getSize(); } }
         for (String k : r.get(DiffStatus.MODIFIED)) { LogicalEntry e = nowSnap.get(k); if (e != null) { files++; bytes += e.getSize(); } }
         for (String k : r.get(DiffStatus.DELETED)) { LogicalEntry e = oldSnap.get(k); if (e != null) { files++; bytes += e.getSize(); } }
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("files", files);
+        m.put(KEY_FILES, files);
         m.put("bytes", bytes);
         m.put("small", isLargeExport(files, bytes) ? Boolean.FALSE : Boolean.TRUE);
         long secs = Math.max(1, bytes / ETA_BYTES_PER_SEC);
@@ -1039,6 +1076,34 @@ public final class BempServer {
         return Paths.get(System.getProperty(PROP_USER_HOME, ""), DIR_BEMPDIFF, "exports");
     }
 
+    /** P1-2 增量导出缓存目录：{user.home}/.bempdiff/exports/_export_cache/。
+     *  独立于 exports 下载目录，避免与「大包异步导出记录」的文件布局混淆。 */
+    private static Path exportCacheDir() {
+        return exportsDir().resolve(EXPORT_CACHE_SUBDIR);
+    }
+
+    /** 取某 job 的缓存 zip 路径；未生成过则返回 null。 */
+    private Path cachedExportZip(String jobId) {
+        Path p = exportZipCache.get(jobId);
+        return (p != null && Files.isRegularFile(p)) ? p : null;
+    }
+
+    /** 生成后回填缓存：把新 zip 拷入缓存目录并按 jobId 记录，供同 job 二次导出复用。 */
+    private Path cacheExportZip(String jobId, Path srcZip) throws IOException {
+        Files.createDirectories(exportCacheDir());
+        Path dst = exportCacheDir().resolve(EXPORT_CACHE_FILE_PREFIX + jobId + ".zip");
+        Files.copy(srcZip, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        exportZipCache.put(jobId, dst);
+        return dst;
+    }
+
+    /** P1-2：从缓存 zip 生成一个可发送的副本到 outDir（保留原临时目录清理语义，不污染缓存）。 */
+    private Path materializeCachedZip(Path cachedZip, Path outDir) throws IOException {
+        Path copy = outDir.resolve(EXPORT_ZIP_NAME);
+        Files.copy(cachedZip, copy, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        return copy;
+    }
+
     private static String formatEta(long secs) {
         return secs < 60 ? "约" + secs + " 秒" : "约" + Math.max(1, (secs + 59) / 60) + " 分钟";
     }
@@ -1046,14 +1111,14 @@ public final class BempServer {
     private static Map<String, Object> exportToJson(ExportRecord r) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", r.id);
-        m.put("jobId", r.jobId);
+        m.put(KEY_JOB_ID, r.jobId);
         m.put("filename", r.filename);
-        m.put("status", r.status);
+        m.put(KEY_STATUS, r.status);
         m.put("estimatedBytes", r.estimatedBytes);
         m.put("size", r.size);
-        m.put("createdAt", r.createdAt);
+        m.put(KEY_CREATED_AT, r.createdAt);
         m.put("finishedAt", r.finishedAt);
-        m.put("message", r.message);
+        m.put(KEY_MESSAGE, r.message);
         m.put("incrementCount", r.incrementCount);
         m.put("deletedCount", r.deletedCount);
         m.put("etaText", formatEta(Math.max(1, r.estimatedBytes / ETA_BYTES_PER_SEC)));
@@ -1070,16 +1135,23 @@ public final class BempServer {
         readBody(ex); // 排空请求体
         DiffResult r = job.getResult();
         Map<String, Object> est = exportEstimate(r, job.getOldSnap().getEntries(), job.getNewSnap().getEntries());
-        long files = ((Number) est.get("files")).longValue();
+        long files = ((Number) est.get(KEY_FILES)).longValue();
         long bytes = ((Number) est.get("bytes")).longValue();
         if (!isLargeExport(files, bytes)) {
             // 小包：同步流式导出。发送完成后才返回，删除临时树不会截断响应体。
-            Path outDir = Files.createTempDirectory("bempdiff-export-");
+            Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX);
             try {
-                AssetExporter exporter = new AssetExporter();
-                exporter.exportIncrement(r, job.getOldSnap(), job.getNewSnap(), outDir);
-                Path zip = exporter.zipTree(outDir, outDir.resolve("bempdiff-export.zip"));
-                sendFile(ex, 200, "application/zip", zip);
+                // P1-2：同 job 已导出过则复用缓存 zip，跳过重复 exportIncrement+zipTree（增量 zip 幂等）。
+                Path cached = cachedExportZip(job.id);
+                if (cached != null) {
+                    sendFile(ex, 200, MIME_ZIP, materializeCachedZip(cached, outDir));
+                } else {
+                    AssetExporter exporter = new AssetExporter();
+                    exporter.exportIncrement(r, job.getOldSnap(), job.getNewSnap(), outDir);
+                    Path zip = exporter.zipTree(outDir, outDir.resolve(EXPORT_ZIP_NAME));
+                    cacheExportZip(job.id, zip);
+                    sendFile(ex, 200, MIME_ZIP, zip);
+                }
             } catch (Exception e) {
                 LOG.log(Level.WARNING, "同步导出失败", e);
                 sendError(ex, 500, "资产导出失败: " + e.getMessage());
@@ -1091,7 +1163,7 @@ public final class BempServer {
         // 大包：异步后台生成，返回任务 id 供前端轮询/下载管理。
         String id = "exp_" + Long.toHexString(System.nanoTime()) + "_" + job.id;
         ExportRecord rec = new ExportRecord(id, job.id);
-        rec.filename = "bempdiff-export-" + job.id + ".zip";
+        rec.filename = EXPORT_TEMP_PREFIX + job.id + ".zip";
         rec.estimatedBytes = bytes;
         exports.put(id, rec);
         exportPool.submit(() -> runAsyncExport(rec, job));
@@ -1119,7 +1191,7 @@ public final class BempServer {
             }
         } catch (Exception e) {
             LOG.log(Level.WARNING, "异步导出失败", e);
-            rec.status = "error";
+            rec.status = KEY_ERROR; // 导出失败状态串；KEY_ERROR 值即 "error"，复用既有常量避免裸字面量
             rec.message = "导出失败: " + e.getMessage();
         } finally {
             rec.finishedAt = System.currentTimeMillis();
@@ -1138,14 +1210,18 @@ public final class BempServer {
             return;
         }
         try {
-            String projDir = null, category = null, prompt = null, fileKey = null, fileStatus = null;
+            String projDir = null;
+            String category = null;
+            String prompt = null;
+            String fileKey = null;
+            String fileStatus = null;
             if (ex.getRequestMethod().equals("POST")) {
                 String body = readBody(ex);
                 if (!body.isEmpty()) {
                     Map<String, Object> req = Json.parseObject(body);
                     projDir = Json.str(req, KEY_PROJECT_DIR, null);
-                    category = Json.str(req, "category", null);
-                    prompt = Json.str(req, "prompt", null);
+                    category = Json.str(req, KEY_CATEGORY, null);
+                    prompt = Json.str(req, KEY_PROMPT, null);
                     // 差异树右键「AI功能总结」：仅聚焦该文件，走单文件管线而非全量分析
                     fileKey = Json.str(req, "fileKey", null);
                     // 复合键（归档内部条目）的权威变更类型由前端树节点透传（评审 H1）
@@ -1255,21 +1331,9 @@ public final class BempServer {
             sendError(ex, 404, "未知 entry 操作: " + sub);
             return;
         }
-        String jobId = queryParam(ex.getRequestURI(), KEY_JOB_ID);
+        Job job = requireDoneJobWithKey(ex);
+        if (job == null) return;
         String key = queryParam(ex.getRequestURI(), "key");
-        if (jobId == null || key == null) {
-            sendError(ex, 400, "缺少 jobId / key");
-            return;
-        }
-        Job job = store.get(jobId);
-        if (job == null) {
-            sendError(ex, 404, "任务不存在: " + jobId);
-            return;
-        }
-        if (!"DONE".equals(job.getStatus())) {
-            sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
-            return;
-        }
         try {
             DecompiledUnit u = computeUnitByKey(job, key);
             Map<String, Object> resp = new LinkedHashMap<>();
@@ -1284,7 +1348,10 @@ public final class BempServer {
             resp.put("oldHash", u.getOldHash());
             resp.put("newHash", u.getNewHash());
             sendJson(ex, 200, resp);
-        } catch (Exception e) {
+        } catch (Throwable e) { // NOSONAR S1181 - 反编译链路会抛 Error（如 NoClassDefFoundError），必须捕获 Throwable 给前端 500 而非让请求挂起
+            // 捕获 Throwable 而非 Exception：反编译链路若抛 Error（如 CFR 依赖缺失的
+            // NoClassDefFoundError），旧代码只 catch Exception 会让请求永远无响应（客户端超时挂起）。
+            // 此处统一回 500，让前端拿到明确失败而非一直转圈。
             LOG.log(Level.WARNING, e, () -> "反编译失败: " + key);
             sendError(ex, 500, "反编译失败: " + e.getMessage());
         }
@@ -1295,6 +1362,29 @@ public final class BempServer {
         List<String> parts = ArchiveTree.splitCompound(key);
         if (parts.size() >= 2) return PackageParser.classify(parts.get(parts.size() - 1));
         return fileClassOfKey(parts.get(0), job.getOldSnap(), job.getNewSnap());
+    }
+
+    /**
+     * 取 key 对应的新侧条目：优先精确 key；版本改名配对（MODIFIED 用旧侧 key 记录）经 DiffResult
+     * 的改名映射翻译为新侧 key 再取。否则新侧取不到对应文件（如 quoteRebuyInput.14da1892.js 的新侧
+     * 是 quoteRebuyInput.b03d20a7.js），内容 diff 会误判为「整文件删除」（用户实测）。
+     */
+    private static LogicalEntry resolveNewEntry(Job job, String key) {
+        LogicalEntry ne = job.getNewSnap().getEntries().get(key);
+        if (ne != null) return ne;
+        String nKey = job.getResult().newKeyFor(key);
+        return (nKey == null) ? null : job.getNewSnap().getEntries().get(nKey);
+    }
+
+    /**
+     * 取 key 对应的旧侧条目：优先精确 key；差异树以「新侧 key」展示版本改名配对的 MODIFIED 条目后，
+     * 内容层按新 key 取旧侧需经改名映射反查旧 key。否则旧侧取不到对应文件，会误判为「整文件新增」。
+     */
+    private static LogicalEntry resolveOldEntry(Job job, String key) {
+        LogicalEntry oe = job.getOldSnap().getEntries().get(key);
+        if (oe != null) return oe;
+        String oKey = job.getResult().oldKeyFor(key);
+        return (oKey == null) ? null : job.getOldSnap().getEntries().get(oKey);
     }
 
     /**
@@ -1310,43 +1400,84 @@ public final class BempServer {
         if (innerPath != null) {
             fc = PackageParser.classify(innerPath); // 内部条目按扩展名判定
         } else {
-            LogicalEntry oe = job.getOldSnap().getEntries().get(topKey);
-            LogicalEntry ne = job.getNewSnap().getEntries().get(topKey);
+            LogicalEntry oe = resolveOldEntry(job, topKey);
+            LogicalEntry ne = resolveNewEntry(job, topKey);
             fc = entryFileClass(oe, ne);
         }
         com.bempdiff.diff.DiffRules rules = job.opts.toDiffRules();
+        // 构建元数据（pom.properties / MANIFEST 等）被树状态折叠为 UNCHANGED 的文本条目：
+        // 展开视图与树口径一致——先做构建噪声归一化再 diff，避免「树置灰但对比栏显示日期差异」的矛盾。
+        // 仅对树判未变（被噪声归一等折叠）的条目生效；MODIFIED 的构建元数据保留原始 diff（真实差异仍展示）。
+        boolean foldBuildNoise = fc != null && fc.isTextDiffable()
+                && DiffEngine.isBuildMetadataKey(key)
+                && job.getResult().get(DiffStatus.UNCHANGED).contains(key);
         if (innerPath != null) {
             // ---- 归档内部条目（复合键 outer!/inner）：直接对字节做对应 diff（委托 ArchiveTree）----
+            if (foldBuildNoise) {
+                return new FrontendTextDiff().diffBytes(
+                        normalizeBuildNoise(ArchiveTree.readInnerEntryBytes(job.getOldSnap(), parts).orElse(null)),
+                        normalizeBuildNoise(ArchiveTree.readInnerEntryBytes(job.getNewSnap(), parts).orElse(null)),
+                        innerPath, fc, rules);
+            }
             return ArchiveTree.computeInnerEntry(job.getOldSnap(), job.getNewSnap(), job.opts, key, cfrPath(job.opts), findJava());
         }
         // ---- 顶层条目 ----
-        LogicalEntry oe = job.getOldSnap().getEntries().get(topKey);
-        LogicalEntry ne = job.getNewSnap().getEntries().get(topKey);
+        LogicalEntry oe = resolveOldEntry(job, topKey);
+        LogicalEntry ne = resolveNewEntry(job, topKey);
         if (fc == FileClass.CLASS) {
             return new Decompiler(cfrPath(job.opts), findJava()).decompile(job.getOldSnap(), job.getNewSnap(), oe, ne, key, rules);
         }
         if (fc == FileClass.ARCHIVE || fc == FileClass.JAR) {
-            // 归档（含嵌套 jar）：清单对比。outerEntry 仅 folder 模式是真实磁盘路径；
-            // package 模式（outerEntry=包内相对路径）不能直接当磁盘路径用，需从包内抽取字节落临时文件。
-            Path oa = archivePath(oe), na = archivePath(ne);
-            boolean oaTemp = false, naTemp = false; // 仅本请求新建的临时落盘文件才允许删除（真实归档绝不删）
-            if (oa != null && !Files.isRegularFile(oa)) oa = null;
-            if (na != null && !Files.isRegularFile(na)) na = null;
-            if (oa == null && oe != null) { byte[] b = new PackageParser().readEntryBytes(job.getOldSnap(), oe); if (b != null) { oa = writeTemp(b); oaTemp = true; } }
-            if (na == null && ne != null) { byte[] b = new PackageParser().readEntryBytes(job.getNewSnap(), ne); if (b != null) { na = writeTemp(b); naTemp = true; } }
-            try {
-                return new com.bempdiff.diff.ArchiveDiff().diff(key, oa, na);
-            } finally {
-                // 仅删除本请求新建的临时文件；oa/na 为真实归档路径（folder 模式）时标记为 false，绝不误删用户文件（修正 S1 修复的数据丢失隐患）
-                if (oaTemp) deleteTemp(oa);
-                if (naTemp) deleteTemp(na);
-            }
+            // 归档（含嵌套 jar）：清单对比。细节委托 diffArchive（见其方法注释），降低本方法认知复杂度。
+            return diffArchive(job, key, oe, ne);
         }
         if (fc == FileClass.OFFICE) {
             // Office 文档（docx/xlsx/pptx）：解析内容为文本后行级 diff（需求：文档内容对比）
             return new com.bempdiff.diff.OfficeTextDiff().diff(job.getOldSnap(), job.getNewSnap(), oe, ne, key, fc, rules);
         }
+        if (foldBuildNoise) {
+            // 顶层文本构建元数据：读两侧字节（含版本改名配对的反查翻译）归一化后 diff
+            return new FrontendTextDiff().diffBytes(
+                    normalizeBuildNoise(readEntrySafe(job.getOldSnap(), oe)),
+                    normalizeBuildNoise(readEntrySafe(job.getNewSnap(), ne)),
+                    key, fc, rules);
+        }
         return new FrontendTextDiff().diff(job.getOldSnap(), job.getNewSnap(), oe, ne, key, fc, rules);
+    }
+
+    /** 读条目字节（缺侧/读取失败返回 null，供归一化 diff 安全处理，与 FrontendTextDiff 缺侧语义一致）。 */
+    private static byte[] readEntrySafe(PackageSnapshot snap, LogicalEntry e) {
+        if (e == null) return null;
+        try {
+            return new PackageParser().readEntryBytes(snap, e);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** 构建元数据噪声归一化（树状态折叠为未变的条目，展开视图口径对齐）。 */
+    private static byte[] normalizeBuildNoise(byte[] b) {
+        return DiffEngine.normalizeBuildNoise(b);
+    }
+
+    /** 归档（含嵌套 jar）条目清单对比：必要时从包内抽取字节落临时文件后走 ArchiveDiff。
+     *  提取自 computeUnitByKey 以降低其认知复杂度；临时文件仅在本方法内删除（真实归档绝不删）。 */
+    private DecompiledUnit diffArchive(Job job, String key, LogicalEntry oe, LogicalEntry ne) throws IOException {
+        Path oa = archivePath(oe);
+        Path na = archivePath(ne);
+        boolean oaTemp = false;
+        boolean naTemp = false; // 仅本请求新建的临时落盘文件才允许删除（真实归档绝不删）
+        if (oa != null && !Files.isRegularFile(oa)) oa = null;
+        if (na != null && !Files.isRegularFile(na)) na = null;
+        if (oa == null && oe != null) { byte[] b = new PackageParser().readEntryBytes(job.getOldSnap(), oe); if (b != null) { oa = writeTemp(b); oaTemp = true; } }
+        if (na == null && ne != null) { byte[] b = new PackageParser().readEntryBytes(job.getNewSnap(), ne); if (b != null) { na = writeTemp(b); naTemp = true; } }
+        try {
+            return new com.bempdiff.diff.ArchiveDiff().diff(key, oa, na);
+        } finally {
+            // 仅删除本请求新建的临时文件；oa/na 为真实归档路径（folder 模式）时标记为 false，绝不误删用户文件（修正 S1 修复的数据丢失隐患）
+            if (oaTemp) deleteTemp(oa);
+            if (naTemp) deleteTemp(na);
+        }
     }
 
     /**
@@ -1376,7 +1507,7 @@ public final class BempServer {
         }
         Job job = store.get(jobId);
         if (job == null) {
-            sendError(ex, 404, "任务不存在: " + jobId);
+            sendError(ex, 404, MSG_TASK_NOT_FOUND + jobId);
             return;
         }
         if (!"DONE".equals(job.getStatus())) {
@@ -1392,55 +1523,69 @@ public final class BempServer {
             Path oldRoot = job.getOldSnap().getFile().toAbsolutePath().normalize();
             Path newRoot = job.getNewSnap().getFile().toAbsolutePath().normalize();
             String status = statusOf(job, key);
-            String side = DiffStatus.DELETED.name().equals(status) ? "left"
-                    : DiffStatus.ADDED.name().equals(status) ? "right" : "left";
+            // 操作侧判定委派 sideOf 助手（取代嵌套三元，规避 S3358），降低本方法认知复杂度
+            String side = sideOf(status);
             Path root = "left".equals(side) ? oldRoot : newRoot;
             Path other = "left".equals(side) ? newRoot : oldRoot;
 
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("key", key);
             resp.put("side", side);
-            resp.put("status", status);
-            switch (op) {
-                case "info" -> {
-                    FileOps.OpResult r = FileOps.info(root, key);
-                    resp.put("ok", r.ok());
-                    resp.put("code", r.code());
-                    resp.put(KEY_MESSAGE, r.message());
-                    if (r.info() != null) resp.put("info", r.info().toMap());
-                }
-                case "delete" -> {
-                    FileOps.OpResult r = FileOps.deleteEntry(root, key);
-                    resp.put("ok", r.ok());
-                    resp.put("code", r.code());
-                    resp.put(KEY_MESSAGE, r.message());
-                }
-                case "rename" -> {
-                    String newName = Json.str(req, "newName", null);
-                    FileOps.OpResult r = FileOps.renameEntry(root, key, newName);
-                    resp.put("ok", r.ok());
-                    resp.put("code", r.code());
-                    resp.put(KEY_MESSAGE, r.message());
-                }
-                case "copy" -> {
-                    // 复制方向：仅右侧存在（ADDED）→ 右→左；其余 → 左→右
-                    String direction = DiffStatus.ADDED.name().equals(status) ? "r2l" : "l2r";
-                    FileOps.OpResult r = FileOps.copyAcross(root, other, key, direction);
-                    resp.put("ok", r.ok());
-                    resp.put("code", r.code());
-                    resp.put(KEY_MESSAGE, r.message());
-                    resp.put("direction", direction);
-                }
-                default -> {
-                    sendError(ex, 400, "未知文件操作: " + op);
-                    return;
-                }
+            resp.put(KEY_STATUS, status);
+            if (!applyFileOperation(op, key, status, root, other, req, resp)) {
+                sendError(ex, 400, "未知文件操作: " + op);
+                return;
             }
             sendJson(ex, 200, resp);
         } catch (Exception e) {
             LOG.log(Level.WARNING, e, () -> "文件操作失败: " + op + " / " + key);
             sendError(ex, 500, "文件操作失败: " + e.getMessage());
         }
+    }
+
+    /** 操作侧判定：DELETED→左侧；ADDED→右侧；其余→左侧（独立助手取代嵌套三元，规避 S3358）。 */
+    private static String sideOf(String status) {
+        if (DiffStatus.DELETED.name().equals(status)) return "left";
+        if (DiffStatus.ADDED.name().equals(status)) return "right";
+        return "left";
+    }
+
+    /** 按 op 分发 FileOps 操作；未知 op 返回 false（由调用方发送未知操作错误）。从 handleFile 抽出以降低其认知复杂度。 */
+    private static boolean applyFileOperation(String op, String key, String status, Path root, Path other,
+                                              Map<String, Object> req, Map<String, Object> resp) {
+        switch (op) {
+            case "info" -> {
+                FileOps.OpResult r = FileOps.info(root, key);
+                resp.put("ok", r.ok());
+                resp.put("code", r.code());
+                resp.put(KEY_MESSAGE, r.message());
+                if (r.info() != null) resp.put("info", r.info().toMap());
+            }
+            case "delete" -> {
+                FileOps.OpResult r = FileOps.deleteEntry(root, key);
+                resp.put("ok", r.ok());
+                resp.put("code", r.code());
+                resp.put(KEY_MESSAGE, r.message());
+            }
+            case "rename" -> {
+                String newName = Json.str(req, "newName", null);
+                FileOps.OpResult r = FileOps.renameEntry(root, key, newName);
+                resp.put("ok", r.ok());
+                resp.put("code", r.code());
+                resp.put(KEY_MESSAGE, r.message());
+            }
+            case "copy" -> {
+                // 复制方向：仅右侧存在（ADDED）→ 右→左；其余 → 左→右
+                String direction = DiffStatus.ADDED.name().equals(status) ? "r2l" : "l2r";
+                FileOps.OpResult r = FileOps.copyAcross(root, other, key, direction);
+                resp.put("ok", r.ok());
+                resp.put("code", r.code());
+                resp.put(KEY_MESSAGE, r.message());
+                resp.put("direction", direction);
+            }
+            default -> { return false; }
+        }
+        return true;
     }
 
     /** 查询 key 在差异结果中的状态（MODIFIED/ADDED/DELETED/UNCHANGED）。 */
@@ -1452,25 +1597,37 @@ public final class BempServer {
     }
 
     /**
-     * 展开归档：返回内部条目列表，并跨旧/新两侧计算逐文件 ADDED/DELETED/MODIFIED/UNCHANGED。
-     * key 可为顶层归档 key，或复合键 outer!/innerArchive（支持递归展开）。
+     * 通用前置校验：读取 jobId/key 参数，校验任务存在与 DONE 状态。
+     * 校验失败时已发送对应错误响应并返回 null，调用方据此短路返回。
+     * 供 entry 子操作（decompile/children/recursive）复用，避免三处重复样板。
      */
-    private void handleEntryChildren(HttpExchange ex) throws IOException {
+    private Job requireDoneJobWithKey(HttpExchange ex) throws IOException {
         String jobId = queryParam(ex.getRequestURI(), KEY_JOB_ID);
         String key = queryParam(ex.getRequestURI(), "key");
         if (jobId == null || key == null) {
             sendError(ex, 400, "缺少 jobId / key");
-            return;
+            return null;
         }
         Job job = store.get(jobId);
         if (job == null) {
-            sendError(ex, 404, "任务不存在: " + jobId);
-            return;
+            sendError(ex, 404, MSG_TASK_NOT_FOUND + jobId);
+            return null;
         }
         if (!"DONE".equals(job.getStatus())) {
             sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
-            return;
+            return null;
         }
+        return job;
+    }
+
+    /**
+     * 展开归档：返回内部条目列表，并跨旧/新两侧计算逐文件 ADDED/DELETED/MODIFIED/UNCHANGED。
+     * key 可为顶层归档 key，或复合键 outer!/innerArchive（支持递归展开）。
+     */
+    private void handleEntryChildren(HttpExchange ex) throws IOException {
+        Job job = requireDoneJobWithKey(ex);
+        if (job == null) return;
+        String key = queryParam(ex.getRequestURI(), "key");
         String childrenCacheKey = job.id + "\u0000" + key;
         Object childrenCached = archiveTreeCache.get(childrenCacheKey);
         if (childrenCached != null) { sendJson(ex, 200, childrenCached); return; } // P0-B：命中归档展开缓存
@@ -1490,21 +1647,9 @@ public final class BempServer {
      * 每层节点带 status（ADDED/DELETED/MODIFIED/UNCHANGED），嵌套归档节点带 children。
      */
     private void handleEntryRecursive(HttpExchange ex) throws IOException {
-        String jobId = queryParam(ex.getRequestURI(), KEY_JOB_ID);
+        Job job = requireDoneJobWithKey(ex);
+        if (job == null) return;
         String key = queryParam(ex.getRequestURI(), "key");
-        if (jobId == null || key == null) {
-            sendError(ex, 400, "缺少 jobId / key");
-            return;
-        }
-        Job job = store.get(jobId);
-        if (job == null) {
-            sendError(ex, 404, "任务不存在: " + jobId);
-            return;
-        }
-        if (!"DONE".equals(job.getStatus())) {
-            sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
-            return;
-        }
         String recursiveCacheKey = job.id + "\u0000" + key;
         Object recursiveCached = archiveTreeCache.get(recursiveCacheKey);
         if (recursiveCached != null) { sendJson(ex, 200, recursiveCached); return; } // P0-B：命中归档展开缓存
@@ -1523,14 +1668,16 @@ public final class BempServer {
         Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
         Files.write(tmp, b);
         // S1 修复：兜底在 JVM 退出时删除，避免 %TEMP% 持续累积（调用方也会显式删除）。
-        try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {}
+        // 空 catch：deleteOnExit 仅为保险性兜底，注册失败可忽略，不阻断正常流程。
+        try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) { /* 忽略退出清理注册失败 */ }
         return tmp;
     }
 
     /** S1 修复：安全删除临时文件（失败静默，不干扰主流程）。 */
     private static void deleteTemp(Path p) {
         if (p == null) return;
-        try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+        // 空 catch：删除失败（文件句柄被占用/权限不足）时静默，临时残留不阻断主流程。
+        try { Files.deleteIfExists(p); } catch (Exception ignored) { /* 删除失败静默跳过 */ }
     }
 
     /**
@@ -1544,11 +1691,18 @@ public final class BempServer {
             try (java.util.stream.Stream<Path> s = Files.list(dir)) {
                 for (Path p : (Iterable<Path>) s::iterator) {
                     if (Files.isDirectory(p)) deleteTree(p);
-                    else try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                    else tryDeleteFile(p);
                 }
             }
             Files.deleteIfExists(dir);
-        } catch (Exception ignored) {}
+            // 空 catch：清理任一步骤失败即整体静默跳过（见方法头注释），不因残留中断主流程。
+        } catch (Exception ignored) { /* 清理失败静默，宁可残留也不报错 */ }
+    }
+
+    /** 静默删除单个文件（从 deleteTree 内层 try 抽出，消除 S1141 嵌套 try；失败静默同清理其余步骤风格）。 */
+    private static void tryDeleteFile(Path p) {
+        // 空 catch：单文件删除失败不阻断整树清理（残留由后续清理轮次兜底）。
+        try { Files.deleteIfExists(p); } catch (Exception ignored) { /* 单文件删除失败静默 */ }
     }
 
 
@@ -1556,13 +1710,6 @@ public final class BempServer {
         if (ne != null) return ne.getFileClass();
         if (oe != null) return oe.getFileClass();
         return FileClass.CLASS;
-    }
-
-    /** 条目是否位于嵌套 jar 内（true=在 war/jar 的某个内部条目里）。 */
-    private static boolean isNested(LogicalEntry oe, LogicalEntry ne) {
-        LogicalEntry pick = (ne != null) ? ne : oe;
-        if (pick == null || pick.getSrc() == null) return false;
-        return pick.getSrc().isNested();
     }
 
     /** 把 LogicalEntry 还原为磁盘上的归档文件路径（仅对"非嵌套"条目有效）。 */
@@ -1622,7 +1769,7 @@ public final class BempServer {
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("ok", true);
             resp.put("freedBytes", r.freedBytes);
-            resp.put("files", r.files);
+            resp.put(KEY_FILES, r.files);
             resp.put("dirs", r.dirs);
             sendJson(ex, 200, resp);
         } catch (Exception e) {
@@ -1634,77 +1781,104 @@ public final class BempServer {
     /**
      * 全量回收临时文件（手动清理按钮与退出 hook 共用同一入口，保证行为一致）。
      * 范围（白名单，绝不触碰无关文件）：
-     *  - 系统临时目录下 bempdiff-*.{class,bin,jar,zip} 与残留解包目录 bempdiff-unpack-*；
+     *  - 系统临时目录下所有 bempdiff-* 前缀文件与目录（含解包/测试/导出等残留）；
      *  - 无任何在册 job 引用的 .bempdiff/runtime 孤儿目录（进行中解压的 job 持目录引用 → 自动跳过，不中断任务）；
      *  - 超过 3 天的运行日志。
      * 不回收反编译缓存 decompile-cache（有重建价值的缓存，交由自身 LRU/容量机制管理）。
      * 单文件/目录失败静默跳过，绝不因个别占用中断整体清理。
      */
     private CleanupResult cleanupTempFiles() {
-        long freed = 0;
-        int files = 0;
-        int dirs = 0;
+        // 三段回收彼此独立，分别提取为私有方法以降低单体认知复杂度；结果以 {freed,files,dirs} 汇总。
+        long[] t = cleanupSystemTemp();
+        long[] rt = cleanupOrphanRuntime();
+        long[] lg = cleanupOldLogs();
+        return new CleanupResult(t[0] + rt[0] + lg[0],
+                (int) (t[1] + rt[1] + lg[1]), (int) (t[2] + rt[2] + lg[2]));
+    }
 
-        // 1) 系统临时目录
+    /** 段1：回收系统临时目录下 bempdiff-* 残留。返回 {freedBytes, fileCount, dirCount}。 */
+    private long[] cleanupSystemTemp() {
+        long[] st = {0, 0, 0}; // freedBytes, fileCount, dirCount 三元素
         String osTemp = System.getProperty("java.io.tmpdir");
-        if (osTemp != null) {
-            Path t = Paths.get(osTemp);
-            if (Files.isDirectory(t)) {
-                try (java.util.stream.Stream<Path> s = Files.list(t)) {
-                    for (Path p : (Iterable<Path>) s::iterator) {
-                        String n = p.getFileName().toString();
-                        if (!n.startsWith("bempdiff-")) continue; // 白名单前缀，防误删
-                        if (Files.isDirectory(p)) {
-                            if (!n.startsWith("bempdiff-unpack-")) continue; // 仅回收解包残留目录
-                            long sz = treeSizeOf(p);
-                            deleteTree(p);
-                            if (!Files.exists(p)) { freed += sz; dirs++; }
-                        } else if (n.endsWith(".class") || n.endsWith(".bin")
-                                || n.endsWith(".jar") || n.endsWith(".zip")) {
-                            long sz = fileSizeOf(p);
-                            try { Files.deleteIfExists(p); freed += sz; files++; } catch (Exception ignored) { }
-                        }
-                    }
-                } catch (Exception ignored) { }
-            }
-        }
-
-        // 2) runtime 孤儿目录：无对应用户 job 的目录视为遗留（进行中的 job 目录因「有引用」被跳过）
-        Path root = runtimeRoot();
-        if (root != null && Files.isDirectory(root)) {
-            try (java.util.stream.Stream<Path> s = Files.list(root)) {
-                for (Path child : (Iterable<Path>) s::iterator) {
-                    if (!Files.isDirectory(child)) continue;
-                    boolean active = false;
-                    for (Job j : store.all().values()) {
-                        Path rd = j.getRuntimeDir();
-                        if (rd != null && rd.normalize().equals(child.normalize())) { active = true; break; }
-                    }
-                    if (!active) {
-                        long sz = treeSizeOf(child);
-                        deleteTree(child);
-                        if (!Files.exists(child)) { freed += sz; dirs++; }
-                    }
+        if (osTemp == null) return st;
+        Path t = Paths.get(osTemp);
+        if (!Files.isDirectory(t)) return st;
+        try (java.util.stream.Stream<Path> s = Files.list(t)) {
+            for (Path p : (Iterable<Path>) s::iterator) {
+                String n = p.getFileName().toString();
+                if (!n.startsWith("bempdiff-")) continue; // 白名单前缀，防误删
+                // 目录统一按 bempdiff- 前缀回收。此前仅认 bempdiff-unpack-*，会漏掉测试残留的
+                // bempdiff-folderdiff/logs/ut、解包目录 bempdiff-unpack<随机>(createTempDirectory
+                // 前缀无连字符) 等本工具临时产物；前缀白名单已保证只动 BempDiff 自己的目录。
+                if (Files.isDirectory(p)) {
+                    long sz = treeSizeOf(p);
+                    deleteTree(p);
+                    if (!Files.exists(p)) { st[0] += sz; st[2]++; }
+                } else {
+                    // 文件同样按 bempdiff- 前缀回收。扩展不限于 class/bin/jar/zip，否则
+                    // bempdiff-*.sh 等临时文件会永久残留(曾被实测漏清)。删除与计数委派 tryDeleteAndCount（消除 S1141 内层 try）。
+                    tryDeleteAndCount(p, st);
                 }
-            } catch (Exception ignored) { }
-        }
+            }
+        } catch (Exception ignored) { /* 目录遍历失败静默，不阻断其余段清理 */ }
+        return st;
+    }
 
-        // 3) 运行日志：仅回收超过 3 天的（保留近期用于问题回溯）
+    /** 段2：回收无在册 job 引用的 runtime 孤儿目录。返回 {freedBytes, fileCount, dirCount}。 */
+    private long[] cleanupOrphanRuntime() {
+        long freed = 0;
+        long dirs = 0;
+        Path root = runtimeRoot();
+        if (root == null || !Files.isDirectory(root)) return new long[]{0, 0, 0};
+        try (java.util.stream.Stream<Path> s = Files.list(root)) {
+            for (Path child : (Iterable<Path>) s::iterator) {
+                // 进行中的 job 目录因「有引用」被跳过，不中断任务
+                if (!Files.isDirectory(child)) continue;
+                if (!hasActiveJob(child)) {
+                    long sz = treeSizeOf(child);
+                    deleteTree(child);
+                    if (!Files.exists(child)) { freed += sz; dirs++; }
+                }
+            }
+        } catch (Exception ignored) { /* 目录遍历失败静默，不阻断其余段清理 */ }
+        return new long[]{freed, 0, dirs};
+    }
+
+    /** 该 runtime 子目录是否被在册 job 引用（被引用即进行中，跳过回收）。提取自 cleanupOrphanRuntime 以降低认知复杂度。 */
+    private boolean hasActiveJob(Path child) {
+        for (Job j : store.all().values()) {
+            Path rd = j.getRuntimeDir();
+            if (rd != null && rd.normalize().equals(child.normalize())) return true;
+        }
+        return false;
+    }
+
+    /** 段3：回收超过 3 天的运行日志（保留近期用于问题回溯）。返回 {freedBytes, fileCount, dirCount}。 */
+    private long[] cleanupOldLogs() {
+        long[] st = {0, 0, 0}; // freedBytes, fileCount, dirCount 三元素
         final long keepMs = 3L * 24 * 60 * 60 * 1000;
         Path logs = unpackLogsDir();
-        if (Files.isDirectory(logs)) {
-            try (java.util.stream.Stream<Path> s = Files.walk(logs)) {
-                for (Path p : (Iterable<Path>) s::iterator) {
-                    if (!Files.isRegularFile(p)) continue;
-                    if (System.currentTimeMillis() - lastModifiedMs(p) > keepMs) {
-                        long sz = fileSizeOf(p);
-                        try { Files.deleteIfExists(p); freed += sz; files++; } catch (Exception ignored) { }
-                    }
+        if (!Files.isDirectory(logs)) return st;
+        try (java.util.stream.Stream<Path> s = Files.walk(logs)) {
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (!Files.isRegularFile(p)) continue;
+                if (System.currentTimeMillis() - lastModifiedMs(p) > keepMs) {
+                    tryDeleteAndCount(p, st);
                 }
-            } catch (Exception ignored) { }
-        }
+            }
+        } catch (Exception ignored) { /* 日志遍历失败静默，不阻断主流程 */ }
+        return st;
+    }
 
-        return new CleanupResult(freed, files, dirs);
+    /** 删除单个文件并累计释放字节/文件数（提取内层 try 以消除 S1141；失败静默）。stats={freed,files,dirs}。 */
+    private static void tryDeleteAndCount(Path p, long[] stats) {
+        // 空 catch：单文件删除失败静默，清理其余步骤不受影响。
+        long sz = fileSizeOf(p);
+        try {
+            Files.deleteIfExists(p);
+            stats[1]++;
+            stats[0] += sz;
+        } catch (Exception ignored) { /* 单文件删除失败静默 */ }
     }
 
     private static long fileSizeOf(Path p) {
@@ -1738,14 +1912,14 @@ public final class BempServer {
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("ok", ok);
             resp.put(KEY_MESSAGE, msg);
-            resp.put("lastError", analyzer.getLastError());
+            resp.put(KEY_LAST_ERROR, analyzer.getLastError());
             sendJson(ex, 200, resp);
         } catch (Exception e) {
             LOG.log(Level.WARNING, "AI 连接测试异常", e);
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("ok", false);
             resp.put(KEY_MESSAGE, "测试异常: " + e.getMessage());
-            resp.put("lastError", e.getMessage());
+            resp.put(KEY_LAST_ERROR, e.getMessage());
             sendJson(ex, 200, resp);
         }
     }
@@ -1769,18 +1943,51 @@ public final class BempServer {
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("ok", !models.isEmpty());
             resp.put("models", models);
-            resp.put("lastError", analyzer.getLastError());
-            resp.put(KEY_MESSAGE, models.isEmpty()
-                    ? (analyzer.getLastError() != null ? analyzer.getLastError() : "未获取到模型列表")
-                    : "已获取 " + models.size() + " 个可用模型");
+            resp.put(KEY_LAST_ERROR, analyzer.getLastError());
+            // 内层三元展开为 if/else（规避 S3358 嵌套三元），行为不变
+            if (models.isEmpty()) {
+                resp.put(KEY_MESSAGE, analyzer.getLastError() != null ? analyzer.getLastError() : "未获取到模型列表");
+            } else {
+                resp.put(KEY_MESSAGE, "已获取 " + models.size() + " 个可用模型");
+            }
             sendJson(ex, 200, resp);
         } catch (Exception e) {
             LOG.log(Level.WARNING, "获取模型列表异常", e);
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("ok", false);
             resp.put("models", new ArrayList<>());
-            resp.put("lastError", e.getMessage());
+            resp.put(KEY_LAST_ERROR, e.getMessage());
             resp.put(KEY_MESSAGE, "获取模型列表异常: " + e.getMessage());
+            sendJson(ex, 200, resp);
+        }
+    }
+
+    // ---------------- 「关于」页版本更新检查 ----------------
+
+    /**
+     * POST /api/update/check  body {current?: string}
+     * 查询 GitHub 最新 Release 并与当前版本比较（详见 UpdateCheckService）。
+     * 网络失败/限流均以 ok=false + message 返回（HTTP 仍为 200），前端按需展示排查提示。
+     */
+    private void handleUpdateCheck(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals(M_OPTIONS)) {
+            sendJson(ex, 204, new LinkedHashMap<>());
+            return;
+        }
+        try {
+            String current = "";
+            if (ex.getRequestMethod().equals("POST")) {
+                Map<String, Object> req = Json.parseObject(readBody(ex));
+                current = Json.str(req, "current", "");
+            }
+            sendJson(ex, 200, UpdateCheckService.check(current, config.getGithubToken()));
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "版本更新检查异常", e);
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("ok", false);
+            resp.put("upToDate", null);
+            resp.put("latest", null);
+            resp.put(KEY_MESSAGE, "版本更新检查异常: " + e.getMessage());
             sendJson(ex, 200, resp);
         }
     }
@@ -1803,11 +2010,11 @@ public final class BempServer {
             if (ex.getRequestMethod().equals("GET")) {
                 Map<String, String> q = queryOf(ex.getRequestURI().getQuery());
                 dir = q.getOrDefault("dir", "");
-                refresh = "1".equals(q.get("refresh")) || "true".equals(q.get("refresh"));
+                refresh = "1".equals(q.get(KEY_REFRESH)) || "true".equals(q.get(KEY_REFRESH));
             } else if (ex.getRequestMethod().equals("POST")) {
                 Map<String, Object> req = Json.parseObject(readBody(ex));
                 dir = Json.str(req, "dir", "");
-                refresh = Json.bool(req, "refresh", false);
+                refresh = Json.bool(req, KEY_REFRESH, false);
             }
             if (dir.isEmpty()) dir = config.getProjectContextDir();
             if (dir == null || dir.isEmpty()) {
@@ -1832,23 +2039,7 @@ public final class BempServer {
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("ok", true);
             resp.putAll(ProjectContextCache.summaryOf(idx, fromCache));
-            List<Map<String, Object>> projects = new ArrayList<>();
-            int totalJava = 0;
-            for (ProjectIndex.ProjectEntry e : idx.getProjects()) {
-                ProjectContext c = e.getCtx();
-                if (c == null) continue;
-                Map<String, Object> pm = new LinkedHashMap<>();
-                pm.put("relPath", e.getRelPath());
-                pm.put("buildSystem", c.getBuildSystem());
-                pm.put("moduleCount", c.getModules() == null ? 0 : c.getModules().size());
-                pm.put("depCount", c.getDependencies() == null ? 0 : c.getDependencies().size());
-                pm.put("fileCount", e.getJavaFileCount());
-                pm.put("summary", c.getSummary());
-                projects.add(pm);
-                totalJava += e.getJavaFileCount();
-            }
-            resp.put("projects", projects);
-            resp.put("javaFileCount", totalJava);
+            resp.putAll(buildProjectList(idx));
             resp.put(KEY_MESSAGE, (refresh ? "已刷新" : "已加载") + " " + idx.size() + " 个项目上下文");
             sendJson(ex, 200, resp);
         } catch (Exception e) {
@@ -1858,6 +2049,29 @@ public final class BempServer {
             resp.put(KEY_MESSAGE, "查询项目上下文异常: " + e.getMessage());
             sendJson(ex, 200, resp);
         }
+    }
+
+    /** 汇总项目清单与 Java 文件总数（提取自 handleAiContext 以降低其认知复杂度）。 */
+    private static Map<String, Object> buildProjectList(ProjectIndex idx) {
+        List<Map<String, Object>> projects = new ArrayList<>();
+        int totalJava = 0;
+        for (ProjectIndex.ProjectEntry e : idx.getProjects()) {
+            ProjectContext c = e.getCtx();
+            if (c == null) continue;
+            Map<String, Object> pm = new LinkedHashMap<>();
+            pm.put("relPath", e.getRelPath());
+            pm.put("buildSystem", c.getBuildSystem());
+            pm.put("moduleCount", c.getModules() == null ? 0 : c.getModules().size());
+            pm.put("depCount", c.getDependencies() == null ? 0 : c.getDependencies().size());
+            pm.put("fileCount", e.getJavaFileCount());
+            pm.put("summary", c.getSummary());
+            projects.add(pm);
+            totalJava += e.getJavaFileCount();
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("projects", projects);
+        m.put("javaFileCount", totalJava);
+        return m;
     }
 
     /** 解析查询串为键值对（dir、refresh 等），容错空值。 */
@@ -2027,7 +2241,7 @@ public final class BempServer {
                 Map<String, Object> it = new LinkedHashMap<>();
                 it.put("key", req.key);
                 it.put("risk", risk);
-                it.put("category", category);
+                it.put(KEY_CATEGORY, category);
                 it.put("reason", reason);
                 items.add(it);
             }
@@ -2069,8 +2283,8 @@ public final class BempServer {
                 String body = readBody(ex);
                 if (!body.isEmpty()) {
                     Map<String, Object> req = Json.parseObject(body);
-                    category = Json.str(req, "category", null);
-                    prompt = Json.str(req, "prompt", null);
+                    category = Json.str(req, KEY_CATEGORY, null);
+                    prompt = Json.str(req, KEY_PROMPT, null);
                     projDir = Json.str(req, KEY_PROJECT_DIR, null);
                     fileKey = Json.str(req, "fileKey", null);
                 }
@@ -2082,7 +2296,7 @@ public final class BempServer {
             // 否则热更新阈值后闸门会被旧预估冻结；computeUnitByKey 对 class/Office 是秒级计算，必须缓存。
             if (fileKey != null && !fileKey.isEmpty()) {
                 double threshold = aiCfg.getCostGateWarnTokens();
-                String singleKey = job.id + "@" + threshold + "@single@" + fileKey + "@" + String.valueOf(prompt);
+                String singleKey = job.id + "@" + threshold + "@single@" + fileKey + "@" + prompt;
                 Map<String, Object> cachedSingle = aiEstimateCache.get(singleKey);
                 if (cachedSingle != null) { sendJson(ex, 200, cachedSingle); return; }
                 Map<String, Object> single = new LinkedHashMap<>();
@@ -2095,7 +2309,7 @@ public final class BempServer {
             String focus = buildFocus(category, prompt);
             // 缓存键含阈值：阈值可热更新，变化时必须失效重算（否则闸门阈值被冻结，与配置脱节）。
             double threshold = aiCfg.getCostGateWarnTokens();
-            String cacheKey = job.id + "@" + threshold + "@" + String.valueOf(focus);
+            String cacheKey = job.id + "@" + threshold + "@" + focus;
             Map<String, Object> cached = aiEstimateCache.get(cacheKey);
             if (cached != null) { sendJson(ex, 200, cached); return; }
             Map<String, Object> r = new LinkedHashMap<>();
@@ -2213,8 +2427,8 @@ public final class BempServer {
         Map<String, DecompiledUnit> aiMap = new LinkedHashMap<>();
         for (DiffStatus st : new DiffStatus[]{DiffStatus.MODIFIED, DiffStatus.ADDED, DiffStatus.DELETED}) {
             for (String key : job.getResult().get(st)) {
-                LogicalEntry oe = job.getOldSnap().getEntries().get(key);
-                LogicalEntry ne = job.getNewSnap().getEntries().get(key);
+                LogicalEntry oe = resolveOldEntry(job, key);
+                LogicalEntry ne = resolveNewEntry(job, key);
                 FileClass fc = fileClassOfKey(key, job.getOldSnap(), job.getNewSnap());
                 DecompiledUnit u = (fc == FileClass.CLASS)
                         ? dec.decompile(job.getOldSnap(), job.getNewSnap(), oe, ne, key, rules)
@@ -2328,7 +2542,7 @@ public final class BempServer {
         com.bempdiff.diff.DiffRules rules = job.opts.toDiffRules();
         for (String k : cands) {
             DecompiledUnit u = dec.decompile(job.getOldSnap(), job.getNewSnap(),
-                    job.getOldSnap().getEntries().get(k), job.getNewSnap().getEntries().get(k), k, rules);
+                    resolveOldEntry(job, k), resolveNewEntry(job, k), k, rules);
             // 仅纳入确有实际变更行的类：反编译后无行级差异（如仅字节码/元数据变化）不进 AI，
             // 避免「无差异内容」也被分析（评审：测试要点等专项只应看差异行）。
             // 另：整包被删除/新增的嵌套归档（配对后无同版本键）不逐文件下钻枚举，收敛为容器级，避免噪声。
@@ -2338,15 +2552,29 @@ public final class BempServer {
     }
 
     private Map<String, DecompiledUnit> buildTextMap(Job job, int topK) {
+        return buildTextMapLimited(job, topK);
+    }
+
+    /**
+     * 全量文本候选（不截断）：供 AI 阶段B 深读覆盖全部文本类变更文件。
+     * 此前 AI 候选复用 buildTextMap 的 topK 截断，导致「测试要点分析」等专项报告
+     * 只对前 topK 个文本文件生成逐文件测试要点，其余变更文件被静默丢掉（用户反馈「报告不全」）。
+     * 深度改由 stageBTopK 独立控制；报告正文源码章节仍走 topK 截断，二者解耦。
+     */
+    private Map<String, DecompiledUnit> buildTextMapAll(Job job) {
+        return buildTextMapLimited(job, Integer.MAX_VALUE);
+    }
+
+    private Map<String, DecompiledUnit> buildTextMapLimited(Job job, int limitCap) {
         Map<String, DecompiledUnit> m = new LinkedHashMap<>();
         FrontendTextDiff ftd = new FrontendTextDiff();
         com.bempdiff.diff.DiffRules rules = job.opts.toDiffRules();
         List<String> cands = DiffEngine.collectTextDiffCandidates(job.getResult(), job.getOldSnap(), job.getNewSnap());
-        int limit = Math.min(cands.size(), topK);
+        int limit = Math.min(cands.size(), limitCap);
         for (int i = 0; i < limit; i++) {
             String k = cands.get(i);
-            LogicalEntry oe = job.getOldSnap().getEntries().get(k);
-            LogicalEntry ne = job.getNewSnap().getEntries().get(k);
+            LogicalEntry oe = resolveOldEntry(job, k);
+            LogicalEntry ne = resolveNewEntry(job, k);
             FileClass fc = textFileClass(oe, ne);
             DecompiledUnit u = ftd.diff(job.getOldSnap(), job.getNewSnap(), oe, ne, k, fc, rules);
             // 同样的“无差异不进 AI”：文本文件若被忽略规则吞成空 diff（如仅空白/注释变化），
@@ -2425,6 +2653,7 @@ public final class BempServer {
                 s.forEach(BempServer::deleteRuntimeChild);
             }
         } catch (Exception ignored) {
+            // 启动清残留失败静默：个别目录被占用/无权限不影响本文件清理与后续启动流程
         }
     }
 
@@ -2435,12 +2664,14 @@ public final class BempServer {
             if (Files.isDirectory(child)) {
                 try (java.util.stream.Stream<Path> s = Files.walk(child)) {
                     s.sorted(java.util.Comparator.reverseOrder())
-                     .forEach(x -> { try { Files.deleteIfExists(x); } catch (Exception ignored) { } });
+                     // 空 catch：单文件删除失败静默，自底向上逐文件清理不断链
+                     .forEach(x -> { try { Files.deleteIfExists(x); } catch (Exception ignored) { /* 单文件删除失败忽略 */ } });
                 }
             } else {
                 Files.deleteIfExists(child);
             }
         } catch (Exception ignored) {
+            // 目录遍历/删除失败静默：不因单个孤儿目录占用中断整体清残留
         }
     }
 

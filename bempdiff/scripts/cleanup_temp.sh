@@ -71,7 +71,7 @@ rm_ok() { # rm_ok <path> <is_dir>
 
 echo "= [1/4] 系统临时文件 (dir=$TMPDIR_PATH, older than ${DAYS}d) ="
 if [ -d "$TMPDIR_PATH" ]; then
-  for pat in 'bempdiff-*.class' 'bempdiff-*.bin' 'bempdiff-*.jar' 'bempdiff-*.zip'; do
+  for pat in 'bempdiff-*'; do
     while IFS= read -r -d '' f; do
       sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
       free_count 1 0 "$sz"
@@ -82,7 +82,7 @@ if [ -d "$TMPDIR_PATH" ]; then
     sz=$(du -sb "$d" 2>/dev/null | awk '{print $1}')
     free_count 0 1 "$sz"
     rm_ok "$d" 1
-  done < <(find "$TMPDIR_PATH" -maxdepth 2 -type d -name 'bempdiff-unpack-*' -mtime +"$DAYS" -print0 2>/dev/null)
+  done < <(find "$TMPDIR_PATH" -maxdepth 2 -type d -name 'bempdiff-*' -mtime +"$DAYS" -print0 2>/dev/null)
 fi
 
 echo "= [2/4] 作业解包运行时目录 (dir=$RUN_ROOT) ="

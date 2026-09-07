@@ -9,6 +9,7 @@ import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.FileClass;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -77,7 +78,12 @@ public final class PromptBuilders {
     private static String buildStageABody(DiffResult diff, Map<String, DecompiledUnit> decompiled,
                                           AiConfig cfg, ProjectContext ctx, DiffStats topStats) {
         StringBuilder p = new StringBuilder();
-        appendDiffHeader(p, diff, cfg, topStats);
+        // 差异文件过多（超出 stageATopK 概览上限）时：剥离逐文件初评（fileRisks），
+        // 只要求整体结论——文件多时模型输出的 fileRisks 数组很容易撞输出 token 上限被腰斩，
+        // 且被省略的文件本就无法逐文件初评，输出不全的初评反而稀释整体结论（实测事故）。
+        int totalChanged = collectChangedFiles(diff).size();
+        boolean compactMode = totalChanged > cfg.getStageATopK();
+        appendDiffHeader(p, diff, cfg, topStats, compactMode, totalChanged);
         appendContextSection(p, ctx);
         appendFileSummaries(p, diff, decompiled, cfg);
         return sanitize(p.toString(), cfg);
@@ -92,17 +98,21 @@ public final class PromptBuilders {
         p.append("说明项目级上下文如何修正、支撑或限定了你的结论（若无影响填\"无显著影响\"）。\n\n");
     }
 
-    private static void appendDiffHeader(StringBuilder p, DiffResult diff, AiConfig cfg) {
-        appendDiffHeader(p, diff, cfg, null);
-    }
-
-    private static void appendDiffHeader(StringBuilder p, DiffResult diff, AiConfig cfg, DiffStats topStats) {
+    private static void appendDiffHeader(StringBuilder p, DiffResult diff, AiConfig cfg, DiffStats topStats,
+                                         boolean compactMode, int totalChanged) {
         p.append("你是软件构建包（含 Java 后端与前端 JS/HTML/CSS 资源）升级的差异分析助手。下面是新/老两个构建包的差异清单，");
         p.append("请据此以 JSON 返回，字段固定为：\n");
         p.append("- `overallRisk`：整体风险等级(LOW/MEDIUM/HIGH)\n");
         p.append("- `impactScope`：影响范围描述（受影响的模块/对外接口）\n");
         p.append("- `testThemes`：全局测试要点字符串数组\n");
-        p.append("- `fileRisks`：每个改动文件的初评数组，元素含 `key`(文件路径)、`risk`(LOW/MEDIUM/HIGH)、`oneLineReason`(一句话理由)\n\n");
+        if (compactMode) {
+            // 文件过多：不要求逐文件初评，避免输出 JSON 超长被腰斩；引导用单文件深读补齐粒度
+            p.append("- `fileRisks`：差异文件过多（共 ").append(totalChanged)
+             .append(" 个），本次仅输出整体结论、不输出逐文件初评（返回空数组即可）；"
+                     + "逐文件风险可右键差异树「AI功能总结」单文件深读\n\n");
+        } else {
+            p.append("- `fileRisks`：每个改动文件的初评数组，元素含 `key`(文件路径)、`risk`(LOW/MEDIUM/HIGH)、`oneLineReason`(一句话理由)\n\n");
+        }
         p.append("## 差异统计\n");
         // 有顶层统计（与折叠树一致）优先用；否则回退叶子级计数。嵌套 zip 内部不单独计入顶部统计，
         // 但文件摘要/深读仍覆盖其内部，避免「头部聚合数误导模型」。
@@ -125,12 +135,17 @@ public final class PromptBuilders {
     private static void appendFileSummaries(StringBuilder p, DiffResult diff,
                                             Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         List<String> files = collectChangedFiles(diff);
-        int limit = Math.min(files.size(), cfg.getStageATopK());
+        // 差异文件超出概览上限时按目录分组聚合：每组的「新增/修改/删除」统计覆盖全部文件，
+        // 组内只列代表文件摘要——让模型看到全量规模分布，而不是只见前 N 个文件、其余被省略
+        if (files.size() > cfg.getStageATopK()) {
+            appendGroupedSummaries(p, files, diff, decompiled, cfg);
+            return;
+        }
         int budget = STAGE_A_TOTAL_CHAR_CAP;
         int omitted = 0;
-        for (int i = 0; i < limit; i++) {
+        for (int i = 0; i < files.size(); i++) {
             // 剩余预算不足以容纳一个有意义的文件摘要时停止，避免产出零碎截断内容
-            if (budget < STAGE_A_MIN_FILE_BUDGET) { omitted = limit - i; break; }
+            if (budget < STAGE_A_MIN_FILE_BUDGET) { omitted = files.size() - i; break; }
             budget -= appendSingleFileSummary(p, files.get(i), diff, decompiled, cfg, budget);
         }
         if (omitted > 0) {
@@ -139,6 +154,67 @@ public final class PromptBuilders {
              .append(" 个变更文件未纳入；完整清单见报告「变更文件」章节，"
                      + "可用差异树右键「AI功能总结」对单个文件深读)\n");
         }
+    }
+
+    /** 分组聚合路径：按目录分组，每组先输出「该组全量统计」，再在组预算内列代表文件摘要。
+     *  组预算按剩余组数均摊，避免前面的大组挤占后组的全部预算；组顺序保持文件首次出现顺序。
+     *  组内文件展示配额全局受 stageATopK 约束（总列出数不超 Top-K 契约），统计则覆盖全部文件。 */
+    private static void appendGroupedSummaries(StringBuilder p, List<String> files, DiffResult diff,
+                                               Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
+        Map<String, List<String>> groups = new LinkedHashMap<>();
+        for (String k : files) {
+            int idx = k.lastIndexOf('/');
+            String dir = idx < 0 ? "/" : k.substring(0, idx);
+            groups.computeIfAbsent(dir, x -> new ArrayList<>()).add(k);
+        }
+        p.append("> 差异文件较多（共 ").append(files.size())
+         .append(" 个），按目录分组展示各组统计与代表文件；未列出的文件也计入各组统计。\n");
+        int budget = STAGE_A_TOTAL_CHAR_CAP;
+        int quota = cfg.getStageATopK();
+        List<String> dirs = new ArrayList<>(groups.keySet());
+        int remainingGroups = dirs.size();
+        for (String dir : dirs) {
+            if (budget < STAGE_A_MIN_FILE_BUDGET || quota <= 0) {
+                p.append("\n... (阶段A 概览已达上限，剩余目录的代表文件未列出；可用差异树右键「AI功能总结」对单个文件深读)\n");
+                break;
+            }
+            List<String> group = groups.get(dir);
+            int groupBudget = Math.max(STAGE_A_MIN_FILE_BUDGET, budget / remainingGroups);
+            int groupQuota = Math.max(1, (int) Math.ceil(quota / (double) remainingGroups));
+            budget -= appendGroupSummary(p, dir, group, diff, decompiled, cfg, groupBudget, groupQuota);
+            quota -= groupQuota;
+            remainingGroups--;
+        }
+    }
+
+    /** 输出单个目录分组的统计头与组内代表文件摘要（组预算/配额耗尽即停），返回实际消耗字符数。 */
+    private static int appendGroupSummary(StringBuilder p, String dir, List<String> group, DiffResult diff,
+                                          Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                          int groupBudget, int groupQuota) {
+        int before = p.length();
+        int added = 0, deleted = 0, modified = 0;
+        for (String k : group) {
+            switch (stOf(diff, k)) {
+                case ADDED: added++; break;
+                case DELETED: deleted++; break;
+                default: modified++;
+            }
+        }
+        p.append("\n### [目录] ").append(dir.isEmpty() ? "/" : dir)
+         .append("（共 ").append(group.size()).append(" 个变更：新增").append(added)
+         .append("/修改").append(modified).append("/删除").append(deleted).append("）\n");
+        int groupLeft = groupBudget;
+        int shown = 0;
+        for (String k : group) {
+            if (shown >= groupQuota) break;
+            if (groupLeft < STAGE_A_MIN_FILE_BUDGET) break;
+            groupLeft -= appendSingleFileSummary(p, k, diff, decompiled, cfg, groupLeft);
+            shown++;
+        }
+        if (shown < group.size()) {
+            p.append("\n... (该组另有 ").append(group.size() - shown).append(" 个变更文件未列出)\n");
+        }
+        return p.length() - before;
     }
 
     /** 收集所有有变动的文件列表（新增/删除/修改），按优先级排序。 */

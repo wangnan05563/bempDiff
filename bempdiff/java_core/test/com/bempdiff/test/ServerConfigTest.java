@@ -163,6 +163,7 @@ public final class ServerConfigTest {
         m.put("stageATopK", 10);
         m.put("stageAFileSampleLines", 40);
         m.put("maxPromptTokens", 32000);
+        m.put("maxOutputTokens", 2048);
         a.updateFrom(m);
 
         ServerConfig b = new ServerConfig(f); // 模拟重启：读磁盘
@@ -173,6 +174,8 @@ public final class ServerConfigTest {
             throw new AssertionError("stageAFileSampleLines 重启后丢失/不符: " + j.get("stageAFileSampleLines"));
         if (!Integer.valueOf(32000).equals(j.get("maxPromptTokens")))
             throw new AssertionError("maxPromptTokens 重启后丢失/不符: " + j.get("maxPromptTokens"));
+        if (!Integer.valueOf(2048).equals(j.get("maxOutputTokens")))
+            throw new AssertionError("maxOutputTokens 重启后丢失/不符: " + j.get("maxOutputTokens"));
 
         // toAiConfig 必须透传三参（核心守护：此前 stageATopK 在此被遗漏，配置改了也不生效）
         com.bempdiff.config.AiConfig ai = b.toAiConfig();
@@ -182,6 +185,8 @@ public final class ServerConfigTest {
             throw new AssertionError("toAiConfig 未透传 stageAFileSampleLines: " + ai.getStageAFileSampleLines());
         if (ai.getMaxPromptTokens() != 32000)
             throw new AssertionError("toAiConfig 未透传 maxPromptTokens: " + ai.getMaxPromptTokens());
+        if (ai.getMaxOutputTokens() != 2048)
+            throw new AssertionError("toAiConfig 未透传 maxOutputTokens: " + ai.getMaxOutputTokens());
         Files.deleteIfExists(f);
     }
 
@@ -193,6 +198,7 @@ public final class ServerConfigTest {
         m.put("stageATopK", 0);
         m.put("stageAFileSampleLines", -5);
         m.put("maxPromptTokens", 0);
+        m.put("maxOutputTokens", -5);
         a.updateFrom(m);
         if ((Integer) a.toJson().get("stageATopK") < 1)
             throw new AssertionError("stageATopK 应钳制到 ≥1: " + a.toJson().get("stageATopK"));
@@ -200,6 +206,9 @@ public final class ServerConfigTest {
             throw new AssertionError("stageAFileSampleLines 应钳制到 ≥1");
         if ((Integer) a.toJson().get("maxPromptTokens") < 1000)
             throw new AssertionError("maxPromptTokens 应钳制到 ≥1000");
+        // maxOutputTokens 语义不同：0=禁用（合法，请求体不带 max_tokens），仅负值钳制到 0
+        if ((Integer) a.toJson().get("maxOutputTokens") < 0)
+            throw new AssertionError("maxOutputTokens 应钳制到 ≥0: " + a.toJson().get("maxOutputTokens"));
 
         // 重启（load）后仍保持钳制后的合法值
         ServerConfig b = new ServerConfig(f);

@@ -57,7 +57,7 @@ const diffOnly = ref(false)
 const gitMode = ref(false)
 /** 折叠条点击：差异模式 → 切回全量内容（同时重置折叠）并展开；普通折叠 → 展开该段。 */
 function onFoldClick() {
-  if (diffOnly.value) { diffOnly.value = false; collapse = false }
+  if (diffOnly.value) { diffOnly.value = false; collapse.value = false }
   else collapse.value = false
 }
 /** 折叠条文案（区分两种折叠来源）。 */
@@ -148,13 +148,6 @@ function gtIcon(v, side) {
 // ======================================================================
 const rawOld = computed(() => (dec.value && dec.value.oldSource) ? dec.value.oldSource : '')
 const rawNew = computed(() => (dec.value && dec.value.newSource) ? dec.value.newSource : '')
-// 删除型文件：旧侧有内容、新侧为空。全量模式下需让左右两侧都通读全量内容（见 foldedRows/getInline），
-// 而非默认 del 只落在左侧；切到「仅差异内容」仍按删除行（红）呈现，保留删除语义。
-const deletedFile = computed(() => {
-  const oldText = rawOld.value || ''
-  const newText = rawNew.value || ''
-  return oldText.trim().length > 0 && newText.trim().length === 0
-})
 const parseGen = ref(0)
 const parseStatus = ref('idle') // idle | done（对齐为同步计算，无需分块）
 const rows = shallowRef([])     // 对齐后的行（含原始下标 _i，供行内差异缓存与定位）
@@ -201,21 +194,6 @@ function startParse() {
 const foldedRows = computed(() => {
   if (!rows.value.length) return []
   if (diffOnly.value) return foldContext(rows.value, true, 0)
-  // 删除型文件全量模式：整篇镜像为 ctx（左右两侧都显示全量内容，便于通读原文）；不参与折叠。
-  if (deletedFile.value) {
-    const out = new Array(rows.value.length)
-    let ln = 0
-    for (let k = 0; k < rows.value.length; k++) {
-      const r = rows.value[k]
-      if (r.type === 'del') {
-        ln++
-        out[k] = { type: 'ctx', _i: k, left: '' + ln, leftText: r.leftText, right: '' + ln, rightText: r.leftText, _chg: -1, lDel: true }
-      } else {
-        out[k] = { ...r, _chg: -1 }
-      }
-    }
-    return out
-  }
   const hasChanges = rows.value.some(r => r.type === 'del' || r.type === 'add' || r.type === 'rep')
   return foldContext(rows.value, collapse.value && hasChanges, foldWin)
 })
@@ -254,11 +232,6 @@ function getInline(ri) {
   // 注：即便单段也必须用数组包裹——模板按 v-for="s in leftSegs" 遍历，传入对象会被当成
   // 4 个属性（m/kind/s/toks）展开，渲染出空 span，常见 ctx 文件全量内容"看不见"的根因。
   if (!inlineOn.value || r.type !== 'rep') {
-    // 删除型文件全量模式：左侧/右侧均普通镜像（整列不再刷红），差异由左行号红(lDel)提示。
-    if (deletedFile.value && !diffOnly.value && r.type === 'del') {
-      const seg = withToks({ m: false, kind: '', s: r.leftText })
-      return { left: [seg], right: [seg] }
-    }
     return { left: [withToks({ m: false, kind: '', s: r.leftText })], right: [withToks({ m: false, kind: '', s: r.rightText })] }
   }
   if (inlineCache.has(key)) return inlineCache.get(key)
@@ -1187,7 +1160,7 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
-                <span class="ln" :class="{ 'ln-del': v.lDel }">{{ v.left }}</span>
+                <span class="ln">{{ v.left }}</span>
                 <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -1384,8 +1357,6 @@ onUpdated(() => measureVisible())
 .row .gt.gt-del, .prow .gt.gt-del { background: rgba(248, 81, 73, 0.10); color: #cf222e; }
 .row .gt.gt-rep, .prow .gt.gt-rep { background: rgba(187, 128, 9, 0.10); color: #9a6700; }
 .row:hover, .prow:hover { background: var(--bs-tertiary-bg); }
-/* 删除型文件全量模式：删除行左侧行号红，提示"此行已被删除"（内容不整行刷红，便于通读） */
-.row .ln.ln-del, .prow .ln.ln-del { color: var(--bs-danger); font-weight: 700; }
 .row .ln, .prow .ln {
   text-align: right; padding: 0 .4rem;
   color: var(--bs-secondary-color);

@@ -17,10 +17,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
@@ -60,8 +64,8 @@ public final class ArchiveTree {
     public static List<Map<String, Object>> computeChildren(PackageSnapshot oldSnap, PackageSnapshot newSnap, String key,
                                                         java.util.List<String> ignoreExtensions) throws IOException {
         List<String> parts = splitCompound(key);
-        Path oldArch = extractInnerArchive(oldSnap, parts, true);
-        Path newArch = extractInnerArchive(newSnap, parts, false);
+        Path oldArch = extractInnerArchive(oldSnap, parts);
+        Path newArch = extractInnerArchive(newSnap, parts);
         Map<String, long[]> oldMap = listArchive(oldArch);
         Map<String, long[]> newMap = listArchive(newArch);
 
@@ -82,36 +86,50 @@ public final class ArchiveTree {
 
         List<Map<String, Object>> children = new ArrayList<>();
         for (String name : names) {
-            // 比对级忽略扩展名：嵌套归档内部条目（如 jar!/META-INF/MANIFEST.MF）同样跳过，
-            // 否则仅顶层过滤而嵌套内部 .MF 仍会出现在展开列表里（用户反馈的"嵌套不生效"根因）。
-            if (!name.endsWith("/") && isIgnoredExt(name, ignoreExtensions)) continue;
-            boolean isDir = name.endsWith("/");
-            boolean inOld = isDir ? oldDirs.containsKey(name) : oldMap.containsKey(name);
-            boolean inNew = isDir ? newDirs.containsKey(name) : newMap.containsKey(name);
-            String status;
-            if (inOld && inNew) {
-                if (isDir) {
-                    // 目录只比对存在性（新增/删除/未变），内容变化由内部文件条目体现
-                    status = "UNCHANGED";
-                } else {
-                    long[] a = oldMap.get(name), b = newMap.get(name);
-                    status = (a[0] == b[0] && a[1] == b[1]) ? "UNCHANGED" : "MODIFIED";
-                }
-            } else if (inOld) status = "DELETED";
-            else status = "ADDED";
-            FileClass fc = isDir ? FileClass.OTHER : PackageParser.classify(name);
-            Map<String, Object> node = new LinkedHashMap<>();
-            node.put("key", key + "!/" + name);
-            node.put("status", status);
-            node.put("fileClass", fc.name());
-            node.put("size", isDir ? 0L : (inNew ? newMap.get(name)[0] : oldMap.get(name)[0]));
-            node.put("name", name);
-            node.put("isDir", isDir);
-            // 目录/普通文件不可展开；嵌套归档（zip/jar/war 等）可继续递归展开
-            node.put("expandable", !isDir && isArchiveType(fc));
-            children.add(node);
+            Map<String, Object> node = buildChildNode(name, key, oldMap, newMap, oldDirs, newDirs, ignoreExtensions);
+            if (!node.isEmpty()) children.add(node);
         }
         return children;
+    }
+
+    /** 为单个条目构建子节点；命中忽略扩展名的条目返回空 Map（调用方跳过）。 */
+    private static Map<String, Object> buildChildNode(String name, String key, Map<String, long[]> oldMap,
+                                                      Map<String, long[]> newMap, Map<String, Boolean> oldDirs,
+                                                      Map<String, Boolean> newDirs, java.util.List<String> ignoreExtensions) {
+        // 比对级忽略扩展名：嵌套归档内部条目（如 jar!/META-INF/MANIFEST.MF）同样跳过，
+        // 否则仅顶层过滤而嵌套内部 .MF 仍会出现（用户反馈的"嵌套不生效"根因）。
+        if (!name.endsWith("/") && isIgnoredExt(name, ignoreExtensions)) return Collections.emptyMap();
+        boolean isDir = name.endsWith("/");
+        boolean inOld = isDir ? oldDirs.containsKey(name) : oldMap.containsKey(name);
+        boolean inNew = isDir ? newDirs.containsKey(name) : newMap.containsKey(name);
+        String status = entryStatus(isDir, inOld, inNew, oldMap, newMap, name);
+        FileClass fc = isDir ? FileClass.OTHER : PackageParser.classify(name);
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("key", key + "!/" + name);
+        node.put("status", status);
+        node.put("fileClass", fc.name());
+        // 目录无尺寸概念（记 0）；文件取所在侧的字节数（单层选择，避免嵌套三元）
+        long size;
+        if (isDir) size = 0L;
+        else size = inNew ? newMap.get(name)[0] : oldMap.get(name)[0];
+        node.put("size", size);
+        node.put("name", name);
+        node.put("isDir", isDir);
+        // 目录/普通文件不可展开；嵌套归档（zip/jar/war 等）可继续递归展开
+        node.put("expandable", !isDir && isArchiveType(fc));
+        return node;
+    }
+
+    /** 判定条目在差异树中的状态（新增/删除/未变/修改）；目录只看存在性，文件再比大小。 */
+    private static String entryStatus(boolean isDir, boolean inOld, boolean inNew,
+                                      Map<String, long[]> oldMap, Map<String, long[]> newMap, String name) {
+        if (inOld && inNew) {
+            if (isDir) return "UNCHANGED";
+            long[] a = oldMap.get(name);
+            long[] b = newMap.get(name);
+            return (a[0] == b[0] && a[1] == b[1]) ? "UNCHANGED" : "MODIFIED";
+        }
+        return inOld ? "DELETED" : "ADDED";
     }
 
     /**
@@ -161,8 +179,8 @@ public final class ArchiveTree {
         }
         String innerPath = parts.get(parts.size() - 1);
         FileClass fc = PackageParser.classify(innerPath);
-        byte[] oldBytes = readInnerEntryBytes(oldSnap, parts, true);
-        byte[] newBytes = readInnerEntryBytes(newSnap, parts, false);
+        byte[] oldBytes = readInnerEntryBytes(oldSnap, parts).orElse(null);
+        byte[] newBytes = readInnerEntryBytes(newSnap, parts).orElse(null);
         DiffRules rules = opts.toDiffRules();
         DecompiledUnit u;
         if (fc == FileClass.CLASS) {
@@ -197,7 +215,8 @@ public final class ArchiveTree {
         boolean inNew = isDir ? newDirs.containsKey(name) : newMap.containsKey(name);
         if (inOld && inNew) {
             if (isDir) return 3; // 目录仅存在性比对：未变
-            long[] a = oldMap.get(name), b = newMap.get(name);
+            long[] a = oldMap.get(name);
+            long[] b = newMap.get(name);
             return (a[0] == b[0] && a[1] == b[1]) ? 3 : 0; // UNCHANGED=3, MODIFIED=0
         }
         return inOld ? 1 : 2; // DELETED=1, ADDED=2
@@ -254,19 +273,8 @@ public final class ArchiveTree {
             if (alt != null) e = snap.getEntries().get(alt);
         }
         if (e == null) return null;
-        EntrySource src = e.getSrc();
-        if (src != null && !src.isNested()) {
-            String outer = src.getOuterEntry();
-            if (outer != null) {
-                Path candidate = Paths.get(outer);
-                // 文件夹模式（或真实压缩包文件）：outerEntry 就是磁盘上的归档文件 → 直接打开。
-                // 包对比模式（直接比对两个 .zip/.war）：顶层条目 key 是外层包内的条目名，
-                // outerEntry 也是该条目名（如 "lib/bundle.zip"），并非独立磁盘文件，
-                // 必须从 snap.getFile()（外层包）抽取该条目后再打开——否则 ZipFile 打开失败
-                // （此前实测：NoSuchFileException: lib\bundle.zip，嵌套归档无法解包）。
-                if (Files.isRegularFile(candidate)) return candidate;
-            }
-        }
+        Path direct = directArchiveFile(e.getSrc());
+        if (direct != null) return direct;
         // 包内条目（含嵌套归档）：从 snap.getFile() 读取落临时文件。
         // 非嵌套条目：直接从外层包的 ZipFile 流式复制该条目到临时文件，不驻留整 byte[]——
         // 大 war 内嵌的 zip 若整存内存再写盘，内存与磁盘峰值双高（磁盘空间不足时更易触顶）。
@@ -279,6 +287,19 @@ public final class ArchiveTree {
         return writeTemp(b);
     }
 
+    /** 文件夹/真实压缩包模式：outerEntry 是磁盘上的归档文件时直接打开（否则 null，由调用方走包内抽取）。
+     *  包对比模式的 outerEntry 仅是包内条目名（如 "lib/bundle.zip"），并非独立磁盘文件，须从外层包抽取。 */
+    private static Path directArchiveFile(EntrySource src) {
+        if (src != null && !src.isNested()) {
+            String outer = src.getOuterEntry();
+            if (outer != null) {
+                Path candidate = Paths.get(outer);
+                if (Files.isRegularFile(candidate)) return candidate;
+            }
+        }
+        return null;
+    }
+
     /** 从外层 zip 流式把「条目名」复制到临时文件（返回 null 表示不适用/条目缺失，交由调用方退化为整读）。 */
     private static Path writeEntryStreaming(Path archiveFile, String entryName) throws IOException {
         if (archiveFile == null || entryName == null) return null;
@@ -286,19 +307,21 @@ public final class ArchiveTree {
         try (ZipFile zf = new ZipFile(archiveFile.toFile())) {
             ZipEntry ze = zf.getEntry(entryName);
             if (ze == null) return null;
-            return writeTempStream(zf.getInputStream(ze), ze.getSize());
+            return writeTempStream(zf.getInputStream(ze));
         }
     }
 
     /** 流式写临时文件：从 InputStream 边读边写，不整存 byte[]（降低内存与磁盘峰值）。 */
-    private static Path writeTempStream(InputStream in, long declared) throws IOException {
+    private static Path writeTempStream(InputStream in) throws IOException {
         if (in == null) return null;
         Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
         try (InputStream is = in) {
             Files.copy(is, tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } finally {
             // 用后即删：避免运行期 %TEMP% 持续累积（磁盘泄漏）。
-            try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {}
+            try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {
+                // deleteOnExit 注册失败可忽略：临时文件仍正常使用，残留由系统清理兜底
+            }
         }
         return tmp;
     }
@@ -317,7 +340,7 @@ public final class ArchiveTree {
     }
 
     /** 顺着复合键链 descent，落在最后一个分段所指的"归档"上（用于 children 枚举 / 嵌套归档反编译）。 */
-    static Path extractInnerArchive(PackageSnapshot snap, List<String> parts, boolean oldSide) throws IOException {
+    static Path extractInnerArchive(PackageSnapshot snap, List<String> parts) throws IOException {
         Path cur = resolveTopArchive(snap, parts.get(0));
         if (cur == null) return null;
         for (int i = 1; i < parts.size(); i++) {
@@ -329,13 +352,13 @@ public final class ArchiveTree {
     }
 
     /** 顺着复合键链 descent，读取最后一个分段所指条目的字节（用于内部文件反编译/文本 diff）。 */
-    static byte[] readInnerEntryBytes(PackageSnapshot snap, List<String> parts, boolean oldSide) throws IOException {
-        if (parts.size() < 2) return null;
+    public static Optional<byte[]> readInnerEntryBytes(PackageSnapshot snap, List<String> parts) throws IOException {
+        if (parts.size() < 2) return Optional.empty();
         Path cur = resolveTopArchive(snap, parts.get(0));
-        if (cur == null) return null;
+        if (cur == null) return Optional.empty();
         for (int i = 1; i < parts.size() - 1; i++) {
             Path next = extractEntryToTemp(cur, parts.get(i));
-            if (next == null) return null;
+            if (next == null) return Optional.empty();
             cur = next;
         }
         return readZipEntryBytes(cur, parts.get(parts.size() - 1));
@@ -347,18 +370,18 @@ public final class ArchiveTree {
             ZipEntry ze = resolveEntry(zf, entryPath);
             if (ze == null || ze.isDirectory()) return null;
             if (ze.getSize() > ENTRY_READ_CAP) return null;
-            byte[] b = readZipEntryBytes(archive, ze.getName());
+            byte[] b = readZipEntryBytes(archive, ze.getName()).orElse(null);
             if (b == null) return null;
             return writeTemp(b);
         }
     }
 
-    /** 读归档内某条目的全部字节（受 ENTRY_READ_CAP 约束）。 */
-    static byte[] readZipEntryBytes(Path archive, String entryPath) throws IOException {
+    /** 读归档内某条目的全部字节（受 ENTRY_READ_CAP 约束）；缺失/目录/过大返回 Optional.empty()。 */
+    static Optional<byte[]> readZipEntryBytes(Path archive, String entryPath) throws IOException {
         try (ZipFile zf = new ZipFile(archive.toFile())) {
             ZipEntry ze = resolveEntry(zf, entryPath);
-            if (ze == null || ze.isDirectory()) return null;
-            if (ze.getSize() > ENTRY_READ_CAP) return null;
+            if (ze == null || ze.isDirectory()) return Optional.empty();
+            if (ze.getSize() > ENTRY_READ_CAP) return Optional.empty();
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             try (InputStream in = zf.getInputStream(ze)) {
                 byte[] buf = new byte[8192];
@@ -370,7 +393,7 @@ public final class ArchiveTree {
                     bos.write(buf, 0, n);
                 }
             }
-            return bos.toByteArray();
+            return Optional.of(bos.toByteArray());
         }
     }
 
@@ -385,18 +408,24 @@ public final class ArchiveTree {
         Enumeration<? extends ZipEntry> en = zf.entries();
         while (en.hasMoreElements()) {
             ZipEntry cand = en.nextElement();
-            if (cand.isDirectory()) continue;
             String cn = cand.getName();
-            if (cn.equals(entryPath)) continue;
-            if (PackageVersion.sameBaseDifferentVersion(entryPath, cn)) {
-                if (alt != null) return null; // 多个候选 → 不匹配
-                alt = cn;
-            }
+            if (!cand.isDirectory() && !cn.equals(entryPath) && PackageVersion.sameBaseDifferentVersion(entryPath, cn)) {
+                    if (alt != null) return null; // 多个候选 → 不匹配
+                    alt = cn;
+                }
         }
         return alt == null ? null : zf.getEntry(alt);
     }
 
-    /** 枚举归档条目为 name → {size, crc}（CRC 用于判断同内容修改）。目录条目也纳入（空目录/结构变化可见）。 */
+    /** 枚举归档条目为 name → {size, crc}（CRC 用于判断同内容修改）。目录条目也纳入（空目录/结构变化可见）。
+     *  <p>附加：部分归档工具（ant / 部分 Spring Boot 打包器等）把目录条目写成
+     *  「name 不以 / 结尾 + size=0 + 设了目录外部属性」的形式，Java 的
+     *  {@link ZipEntry#isDirectory()} 只看 name 末尾 '/'，导致此类 0 字节目录被
+     *  误识别为 0 字节文件，参与差异统计（用户截图：嵌套 jar 内 log4j2 显示
+     *  OTHER / 0B / 未变，错误纳入未变计数）。此处做一次启发式升级：
+     *  「name 不以 / 结尾 & size=0 & m 中至少一个其他条目以 name+"/" 开头」
+     *  → 视为目录条目。误伤面极窄：常规文件系统中同名 0 字节空文件与同名子文件
+     *  不可能同时存在，heuristic 倾向于更常见的"打包器漏写尾斜杠"场景。</p> */
     static Map<String, long[]> listArchive(Path archive) throws IOException {
         Map<String, long[]> m = new TreeMap<>();
         if (archive == null) return m;
@@ -409,9 +438,32 @@ public final class ArchiveTree {
                 String n = e.getName();
                 if (e.isDirectory()) {
                     m.put(n.endsWith("/") ? n : n + "/", new long[]{0, 0});
-                    continue;
+                } else {
+                    m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
                 }
-                m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
+            }
+            // 伪目录条目升级：见方法 javadoc。
+            if (!m.isEmpty()) {
+                Set<String> dirPrefixes = new HashSet<>();
+                for (String key : m.keySet()) {
+                    if (key.startsWith("... (")) continue;
+                    int idx = 0;
+                    while ((idx = key.indexOf('/', idx)) >= 0) {
+                        dirPrefixes.add(key.substring(0, idx + 1));
+                        idx++;
+                    }
+                }
+                List<String> toUpgrade = new ArrayList<>();
+                for (Map.Entry<String, long[]> me : m.entrySet()) {
+                    String n = me.getKey();
+                    if (n.endsWith("/") || n.startsWith("... (")) continue;
+                    if (me.getValue()[0] != 0) continue;
+                    if (dirPrefixes.contains(n + "/")) toUpgrade.add(n);
+                }
+                for (String n : toUpgrade) {
+                    m.remove(n);
+                    m.put(n + "/", new long[]{0, 0});
+                }
             }
         } catch (IOException ioe) {
             throw new IOException("无法读取归档条目: " + ioe.getMessage(), ioe);
@@ -424,13 +476,17 @@ public final class ArchiveTree {
         Files.write(tmp, b);
         // S1 修复：临时抽取文件用后即删，避免运行期 %TEMP% 持续累积（磁盘泄漏）。
         // 注册 JVM 退出时清理；调用方在 diff 完成后也应尽快用完落盘的文件（此处统一兜底）。
-        try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {}
+        try { tmp.toFile().deleteOnExit(); } catch (Exception ignored) {
+            // deleteOnExit 注册失败可忽略：临时文件仍正常使用，残留由系统清理兜底
+        }
         return tmp;
     }
 
     /** S1 修复：安全删除临时文件（失败静默，不干扰主流程）。 */
     static void deleteTemp(Path p) {
         if (p == null) return;
-        try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+        try { Files.deleteIfExists(p); } catch (Exception ignored) {
+            // 删除失败静默：不留垃圾文件的目标是尽力而为，失败不干扰主流程
+        }
     }
 }

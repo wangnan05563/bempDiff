@@ -15,9 +15,12 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.logging.Logger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -80,14 +83,14 @@ public final class PackageParser {
     }
 
     private void processLibEntries(ZipFile zf, String libPrefix, ParseConfig cfg,
-                                   Map<String, LogicalEntry> entries) throws IOException {
+                                   Map<String, LogicalEntry> entries, Set<String> topDirs) throws IOException {
         Enumeration<? extends ZipEntry> en = zf.entries();
         while (en.hasMoreElements()) {
             ZipEntry e = en.nextElement();
             String n = e.getName();
             if (!e.isDirectory() && n.startsWith(libPrefix) && n.endsWith(".jar")) {
                 try {
-                    handleLibJar(zf, n, e, cfg, entries);
+                    handleLibJar(zf, n, e, cfg, entries, topDirs);
                 } catch (IOException bad) {
                     // 隔离：单个可疑 lib 条目被拒（如路径穿越），跳过其余照常比对
                     LOG.warning("[隔离] 跳过可疑 lib 条目（已拒绝，不影响其余比对）: " + bad.getMessage());
@@ -98,7 +101,7 @@ public final class PackageParser {
 
     private void processNonLibEntries(ZipFile zf, String libPrefix, String classesPrefix,
                                       PackageType type, boolean expandAll, ParseConfig cfg,
-                                      Map<String, LogicalEntry> entries) throws IOException {
+                                      Map<String, LogicalEntry> entries, Set<String> topDirs) throws IOException {
         Enumeration<? extends ZipEntry> en = zf.entries();
         while (en.hasMoreElements()) {
             ZipEntry e = en.nextElement();
@@ -107,7 +110,7 @@ public final class PackageParser {
                 continue;
             }
             try {
-                addFromZip(zf, e, n, layerForEntry(n, classesPrefix, type, expandAll, cfg), entries);
+                addFromZip(zf, e, n, layerForEntry(n, classesPrefix, type, expandAll, cfg), entries, topDirs);
             } catch (IOException bad) {
                 LOG.warning("[隔离] 跳过可疑条目（已拒绝，不影响其余比对）: " + bad.getMessage());
             }
@@ -141,15 +144,18 @@ public final class PackageParser {
         try (ZipFile zf = new ZipFile(file.toFile())) {
             Map<String, LogicalEntry> entries = new LinkedHashMap<>();
             Prefixes prefixes = detectPrefixes(type);
+            // 目录前缀集合：识别「无尾斜杠 + 0 字节」的伪目录条目（ant 等打包器产物），
+            // 避免被当作 0 字节文件纳入差异统计（见 isDirectoryEntry）。
+            Set<String> topDirs = deriveDirPrefixes(zf);
 
             // 第一遍：lib/*.jar 单独处理（内嵌 jar 需先判定是否内部业务码）
             if (prefixes.libPrefix != null) {
-                processLibEntries(zf, prefixes.libPrefix, cfg, entries);
+                processLibEntries(zf, prefixes.libPrefix, cfg, entries, topDirs);
             }
 
             // 第二遍：非 lib 条目
             processNonLibEntries(zf, prefixes.libPrefix, prefixes.classesPrefix,
-                    type, expandAll, cfg, entries);
+                    type, expandAll, cfg, entries, topDirs);
 
             String version = pickBestVersion(extractVersion(zf), extractVersionFromFileName(file));
             return new PackageSnapshot(file, type, version, entries);
@@ -157,11 +163,11 @@ public final class PackageParser {
     }
 
     private void handleLibJar(ZipFile zf, String jarPath, ZipEntry jarEntry,
-                              ParseConfig cfg, Map<String, LogicalEntry> out) throws IOException {
+                              ParseConfig cfg, Map<String, LogicalEntry> out, Set<String> topDirs) throws IOException {
         jarPath = sanitizeKey(jarPath);
         if (jarEntry.getSize() > cfg.getMaxEntryBytes()) {
             // 超大 lib：仅记为 L2 单条目
-            addFromZip(zf, jarEntry, jarPath, Layer.L2, out);
+            addFromZip(zf, jarEntry, jarPath, Layer.L2, out, topDirs);
             return;
         }
         // P1-2：流式把嵌套 jar 落到临时文件（不经整 byte[] 缓冲），直接打开扫描/展开。
@@ -184,18 +190,20 @@ public final class PackageParser {
         }
         if (isInternal && cfg.isExpandInternalLib()) {
             try (ZipFile jz = new ZipFile(tmpJar)) {
+                // 内层 jar 自己的目录前缀集合：其内部伪目录条目（无尾斜杠 + 0 字节）同样跳过，
+                // 否则会作为 0 字节文件进入 L1/L0 展开、污染差异统计。
+                Set<String> innerDirs = deriveDirPrefixes(jz);
                 Enumeration<? extends ZipEntry> jen = jz.entries();
                 while (jen.hasMoreElements()) {
                     ZipEntry je = jen.nextElement();
-                    if (!je.isDirectory()) {
-                        String inner = sanitizeKey(je.getName());
-                        String key = jarPath + "/" + inner;
-                        if (ignoredKey(key)) continue; // 比对级忽略扩展名：嵌套 jar 内部条目同样过滤
-                        // P1-2：流式算内部类 hash，避免整条目 byte[] 驻留
-                        String h = sha256Stream(jz, je);
-                        out.put(key, new LogicalEntry(key, Layer.L1, classify(inner),
-                                je.getSize(), h, new EntrySource(jarPath, inner)));
-                    }
+                    if (isDirectoryEntry(je, innerDirs)) continue; // 目录（含伪目录）不是原子文件，跳过
+                    String inner = sanitizeKey(je.getName());
+                    String key = jarPath + "/" + inner;
+                    if (ignoredKey(key)) continue; // 比对级忽略扩展名：嵌套 jar 内部条目同样过滤
+                    // P1-2：流式算内部类 hash，避免整条目 byte[] 驻留
+                    String h = sha256Stream(jz, je);
+                    out.put(key, new LogicalEntry(key, Layer.L1, classify(inner),
+                            je.getSize(), h, new EntrySource(jarPath, inner)));
                 }
             } finally {
                 deleteTempFile(tmpJar);
@@ -276,13 +284,45 @@ public final class PackageParser {
     }
 
     private void addFromZip(ZipFile zf, ZipEntry e, String key, Layer layer,
-                            Map<String, LogicalEntry> out) throws IOException {
+                            Map<String, LogicalEntry> out, Set<String> topDirs) throws IOException {
         key = sanitizeKey(key);
         if (ignoredKey(key)) return; // 比对级忽略扩展名：命中则整体跳过该条目，不参与差异比对
+        if (isDirectoryEntry(e, topDirs)) return; // 目录（含伪目录）不是原子文件，不纳入统计
         // P1-2：流式计算 sha256（边读边 digest），不把整条目 byte[] 驻留内存，降低大包解析内存峰值。
         long size = e.getSize();
         String h = sha256Stream(zf, e);
         out.put(key, new LogicalEntry(key, layer, classify(key), size, h, new EntrySource(key, null)));
+    }
+
+    /**
+     * 收集 zip 内全部「目录前缀」：显式目录条目（尾斜杠）+ 真实文件路径派生出的父目录。
+     * <p>用途：识别「name 不以 / 结尾 + size=0」的伪目录条目（ant / 部分打包器把目录条目
+     * 写成 0 字节且不带尾斜杠，Java 的 {@link ZipEntry#isDirectory()} 只看尾斜杠会误判），
+     * 与 {@link ArchiveTree} 展开树的口径保持一致，避免解析层统计与展示层口径分裂。</p>
+     */
+    public static Set<String> deriveDirPrefixes(ZipFile zf) {
+        Set<String> dirs = new HashSet<>();
+        for (Enumeration<? extends ZipEntry> en = zf.entries(); en.hasMoreElements(); ) {
+            String n = en.nextElement().getName();
+            if (n.endsWith("/")) {
+                dirs.add(n); // 显式目录条目
+                continue;
+            }
+            int idx = n.indexOf('/');
+            while (idx >= 0) {
+                dirs.add(n.substring(0, idx + 1)); // 父目录前缀
+                idx = n.indexOf('/', idx + 1);
+            }
+        }
+        return dirs;
+    }
+
+    /** 条目是否为目录：显式目录（尾斜杠）或「无尾斜杠 + 0 字节 + 存在同名子路径」的伪目录；dirPrefixes 可空。 */
+    public static boolean isDirectoryEntry(ZipEntry e, Set<String> dirPrefixes) {
+        if (e == null || e.isDirectory()) return true;
+        String n = e.getName();
+        return !n.endsWith("/") && e.getSize() == 0
+                && dirPrefixes != null && dirPrefixes.contains(n + "/");
     }
 
     // 忽略集合由 parse(..) 时暂存到字段；null 表示未启用比对级过滤
@@ -302,39 +342,62 @@ public final class PackageParser {
         // 物理平铺解包/文件夹模式的磁盘文件条目：outerEntry 即真实磁盘文件绝对路径，直接整读。
         // 需置于 ZipFile 分支前，否则 zip 模式的条目名（如 WEB-INF/lib/a.jar）被误当磁盘路径；
         // 相对名不可能命中 isRegularFile（不含盘符/绝对前缀），故判定安全。
-        if (src != null && !src.isNested() && src.getOuterEntry() != null) {
-            Path disk = Paths.get(src.getOuterEntry());
-            if (Files.isRegularFile(disk)) { return Files.readAllBytes(disk); }
-        }
+        Optional<byte[]> flatDisk = tryReadFlatDisk(src);
+        if (flatDisk.isPresent()) return flatDisk.get();
         Path file = snap.getFile();
+        // 文件夹模式：条目即磁盘文件（outerEntry=绝对路径），直接整读
         if (Files.isDirectory(file)) {
-            // 文件夹模式：条目即磁盘文件（outerEntry=绝对路径），直接整读
-            if (src == null || src.getOuterEntry() == null) {
-                throw new IOException("文件夹模式条目缺少磁盘路径: " + (entry != null ? entry.getKey() : "null"));
-            }
-            Path disk = Paths.get(src.getOuterEntry());
-            if (!Files.isRegularFile(disk)) {
-                throw new IOException("文件夹模式条目不是可读文件: " + disk);
-            }
-            return Files.readAllBytes(disk);
+            return readFolderFile(src, entry);
         }
         try (ZipFile zf = new ZipFile(file.toFile())) {
-            if (!src.isNested()) {
-                ZipEntry ze = zf.getEntry(src.getOuterEntry());
-                if (ze == null) throw new IOException("missing entry: " + src.getOuterEntry());
-                return readAll(zf, ze);
-            } else {
-                ZipEntry libEntry = zf.getEntry(src.getOuterEntry());
-                if (libEntry == null) throw new IOException("missing lib: " + src.getOuterEntry());
-                byte[] libBytes = readAll(zf, libEntry);
-                File tmpJar = createTempJar(libBytes);
-                try (ZipFile jz = new ZipFile(tmpJar)) {
-                    ZipEntry inner = jz.getEntry(src.getInnerEntry());
-                    if (inner == null) throw new IOException("missing inner: " + src.getInnerEntry());
-                    return readAll(jz, inner);
-                } finally {
-                    deleteTempFile(tmpJar);
+            return readZipEntry(zf, src);
+        }
+    }
+
+    /** 物理平铺解包/文件夹模式的磁盘文件条目整读；非磁盘条目（src 为空/nested/无 outerEntry）返回 Optional.empty()。 */
+    private Optional<byte[]> tryReadFlatDisk(EntrySource src) throws IOException {
+        if (src != null && !src.isNested() && src.getOuterEntry() != null) {
+            Path disk = Paths.get(src.getOuterEntry());
+            if (Files.isRegularFile(disk)) { return Optional.of(Files.readAllBytes(disk)); }
+        }
+        return Optional.empty();
+    }
+
+    /** 文件夹模式条目整读：outerEntry 为磁盘真实文件名，校验存在且可读后读入。 */
+    private byte[] readFolderFile(EntrySource src, LogicalEntry entry) throws IOException {
+        if (src == null || src.getOuterEntry() == null) {
+            throw new IOException("文件夹模式条目缺少磁盘路径: " + (entry != null ? entry.getKey() : "null"));
+        }
+        Path disk = Paths.get(src.getOuterEntry());
+        if (!Files.isRegularFile(disk)) {
+            throw new IOException("文件夹模式条目不是可读文件: " + disk);
+        }
+        return Files.readAllBytes(disk);
+    }
+
+    /** zip 模式条目读取：非嵌套时读外层条目，嵌套（库 jar 内）时解包临时 jar 再读内层。 */
+    private byte[] readZipEntry(ZipFile zf, EntrySource src) throws IOException {
+        EntrySource safe = java.util.Objects.requireNonNull(src, "zip 条目缺失 EntrySource");
+        if (!safe.isNested()) {
+            ZipEntry ze = zf.getEntry(safe.getOuterEntry());
+            if (ze == null) {
+                if (Paths.get(safe.getOuterEntry()).isAbsolute()) {
+                    throw new IOException("该项的物理解包临时文件已被新的比对回收（失效源=" + safe.getOuterEntry() + "），请重新发起比对后查看");
                 }
+                throw new IOException("missing entry: " + safe.getOuterEntry());
+            }
+            return readAll(zf, ze);
+        } else {
+            ZipEntry libEntry = zf.getEntry(safe.getOuterEntry());
+            if (libEntry == null) throw new IOException("missing lib: " + safe.getOuterEntry());
+            byte[] libBytes = readAll(zf, libEntry);
+            File tmpJar = createTempJar(libBytes);
+            try (ZipFile jz = new ZipFile(tmpJar)) {
+                ZipEntry inner = jz.getEntry(safe.getInnerEntry());
+                if (inner == null) throw new IOException("missing inner: " + safe.getInnerEntry());
+                return readAll(jz, inner);
+            } finally {
+                deleteTempFile(tmpJar);
             }
         }
     }
@@ -433,8 +496,7 @@ public final class PackageParser {
         // 单独归到 FileClass.ARCHIVE 并由 ArchiveDiff 做"条目清单"diff。
         // 注意：.jar 仍归 JAR（库 jar 已有专门链路；war 内的 lib jar 也按此规则）。
         String lower = name.toLowerCase();
-        if (lower.endsWith(".zip") || lower.endsWith(".war") || lower.endsWith(".ear")
-                || lower.endsWith(".tar") || lower.endsWith(".tar.gz") || lower.endsWith(".tgz"))
+        if (isArchiveExt(lower))
             return FileClass.ARCHIVE;
         // JSP 页面/标签文件：服务端文本，需内容级逐行 diff（必须先于 CONFIG 判定，
         // 否则 .jspx 等 XML 语法变体会被 CONFIG 抢走）。
@@ -472,6 +534,12 @@ public final class PackageParser {
                 || name.endsWith(".so") || name.endsWith(".dll") || name.endsWith(".exe"))
             return FileClass.STATIC;
         return FileClass.OTHER;
+    }
+
+    /** 顶层归档压缩包扩展名判定（.jar 单独走 JAR 链路，故排除在外）。 */
+    private static boolean isArchiveExt(String lower) {
+        return lower.endsWith(".zip") || lower.endsWith(".war") || lower.endsWith(".ear")
+                || lower.endsWith(".tar") || lower.endsWith(".tar.gz") || lower.endsWith(".tgz");
     }
 
     private static boolean startsWithAny(String s, List<String> prefixes) {

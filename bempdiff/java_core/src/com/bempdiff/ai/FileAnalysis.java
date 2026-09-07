@@ -10,6 +10,7 @@ public final class FileAnalysis {
     private String impact;       // 影响范围
     private List<String> testPoints;  // 测试要点
     private String contextInfluence;  // 项目级上下文如何影响本文件结论（AI 增强）
+    private boolean outputTruncated;  // 本次调用输出被 max_tokens 截断（结论不完整），渲染端提示
 
     public FileAnalysis(String key, String intent, String risk, String impact, List<String> testPoints) {
         this(key, intent, risk, impact, testPoints, "");
@@ -31,4 +32,6 @@ public final class FileAnalysis {
     public String getImpact() { return impact; }
     public List<String> getTestPoints() { return testPoints; }
     public String getContextInfluence() { return contextInfluence; }
+    public boolean isOutputTruncated() { return outputTruncated; }
+    public void setOutputTruncated(boolean v) { this.outputTruncated = v; }
 }

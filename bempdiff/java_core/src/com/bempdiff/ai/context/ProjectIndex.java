@@ -24,6 +24,10 @@ public final class ProjectIndex {
     private final long scannedAt;
     private final List<ProjectEntry> projects;
 
+    /** 缓存 JSON 键常量（读/写多处复用，规避 S1192）。 */
+    private static final String KEY_SCANNED_AT = "scannedAt";
+    private static final String KEY_JAVA_FILE_COUNT = "javaFileCount";
+
     public ProjectIndex(String rootPath, long scannedAt, List<ProjectEntry> projects) {
         this.rootPath = rootPath;
         this.scannedAt = scannedAt;
@@ -53,25 +57,26 @@ public final class ProjectIndex {
         int idx = 0;
         for (ProjectEntry e : projects) {
             ProjectContext c = e.getCtx();
-            if (c == null) continue;
-            idx++;
-            sb.append("\n### 项目 ").append(idx).append('/').append(projects.size())
-              .append("：").append(c.getBuildSystem()).append("（").append(e.getRelPath()).append("）\n");
-            sb.append("- 模块：").append(join(c.getModules())).append("\n");
-            sb.append("- 核心依赖：").append(join(c.getDependencies())).append("\n");
-            sb.append("- 入口/主类：").append(join(c.getEntryPoints())).append("\n");
-            sb.append("- 配置文件：").append(join(c.getConfigFiles())).append("\n");
-            sb.append("- 技术栈：").append(join(c.getTechStack())).append("\n");
-            if (c.getConventions() != null && !c.getConventions().isEmpty()) {
-                sb.append("- 约定：").append(join(c.getConventions())).append("\n");
-            }
-            if (c.getSummary() != null && !c.getSummary().isEmpty()) {
-                sb.append("- 简述：").append(c.getSummary()).append("\n");
-            }
-            if (sb.length() > maxChars) {
-                sb.setLength(maxChars);
-                sb.append("\n…（上下文超长截断，剩余项目省略）");
-                break;
+            if (c != null) {
+                idx++;
+                sb.append("\n### 项目 ").append(idx).append('/').append(projects.size())
+                  .append("：").append(c.getBuildSystem()).append("（").append(e.getRelPath()).append("）\n");
+                sb.append("- 模块：").append(join(c.getModules())).append("\n");
+                sb.append("- 核心依赖：").append(join(c.getDependencies())).append("\n");
+                sb.append("- 入口/主类：").append(join(c.getEntryPoints())).append("\n");
+                sb.append("- 配置文件：").append(join(c.getConfigFiles())).append("\n");
+                sb.append("- 技术栈：").append(join(c.getTechStack())).append("\n");
+                if (c.getConventions() != null && !c.getConventions().isEmpty()) {
+                    sb.append("- 约定：").append(join(c.getConventions())).append("\n");
+                }
+                if (c.getSummary() != null && !c.getSummary().isEmpty()) {
+                    sb.append("- 简述：").append(c.getSummary()).append("\n");
+                }
+                if (sb.length() > maxChars) {
+                    sb.setLength(maxChars);
+                    sb.append("\n…（上下文超长截断，剩余项目省略）");
+                    break;
+                }
             }
         }
         return sb.toString();
@@ -89,7 +94,7 @@ public final class ProjectIndex {
         int bestLen = -1;
         for (ProjectEntry e : projects) {
             String rel = e.getRelPath();
-            if (rel == null || rel.isEmpty() || ".".equals(rel)) {
+            if (isRootProjectRel(rel)) {
                 // 仓库根本身即项目（单项目兜底）：任意 key 均属该项目，但不参与最长前缀竞争（优先级最低）
                 if (best == null) best = e.getCtx();
                 continue;
@@ -101,6 +106,11 @@ public final class ProjectIndex {
             }
         }
         return best;
+    }
+
+    /** 是否为「仓库根本身即单项目」的相对路径（空/点号）。 */
+    private static boolean isRootProjectRel(String rel) {
+        return rel == null || rel.isEmpty() || ".".equals(rel);
     }
 
     private static String join(List<String> l) {
@@ -118,37 +128,47 @@ public final class ProjectIndex {
     @SuppressWarnings("unchecked")
     public static ProjectIndex fromJson(Map<String, Object> m) {
         String root = str(m.get("rootPath"));
-        long scanned = (m.get("scannedAt") instanceof Number)
-                ? ((Number) m.get("scannedAt")).longValue() : 0L;
+        long scanned = (m.get(KEY_SCANNED_AT) instanceof Number)
+                ? ((Number) m.get(KEY_SCANNED_AT)).longValue() : 0L;
         List<ProjectEntry> entries = new ArrayList<>();
         Object arr = m.get("projects");
         if (arr instanceof List) {
             for (Object o : (List<Object>) arr) {
-                if (!(o instanceof Map)) continue;
-                Map<String, Object> em = (Map<String, Object>) o;
-                String rel = str(em.get("relPath"));
-                String fp = str(em.get("fingerprint"));
-                int jc = (em.get("javaFileCount") instanceof Number)
-                        ? ((Number) em.get("javaFileCount")).intValue() : 0;
-                Object ctm = em.get("ctx");
-                ProjectContext ctx = (ctm instanceof Map)
-                        ? ProjectContext.fromJsonMap((Map<String, Object>) ctm) : null;
-                if (ctx != null) entries.add(new ProjectEntry(rel, fp, jc, ctx));
+                ProjectEntry e = parseEntry(o);
+                if (e != null) entries.add(e);
             }
         }
         return new ProjectIndex(root, scanned, entries);
     }
 
+    /**
+     * 解析单个项目条目（提取自 fromJson 以降低认知复杂度；
+     * 非 Map / 无有效 ctx 返回 null，循环据此跳过，与内联语义一致）。
+     */
+    @SuppressWarnings("unchecked")
+    private static ProjectEntry parseEntry(Object o) {
+        if (!(o instanceof Map)) return null;
+        Map<String, Object> em = (Map<String, Object>) o;
+        String rel = str(em.get("relPath"));
+        String fp = str(em.get("fingerprint"));
+        int jc = (em.get(KEY_JAVA_FILE_COUNT) instanceof Number)
+                ? ((Number) em.get(KEY_JAVA_FILE_COUNT)).intValue() : 0;
+        Object ctm = em.get("ctx");
+        ProjectContext ctx = (ctm instanceof Map)
+                ? ProjectContext.fromJsonMap((Map<String, Object>) ctm) : null;
+        return (ctx != null) ? new ProjectEntry(rel, fp, jc, ctx) : null;
+    }
+
     public Map<String, Object> toJsonMap() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("rootPath", rootPath);
-        m.put("scannedAt", scannedAt);
+        m.put(KEY_SCANNED_AT, scannedAt);
         List<Map<String, Object>> arr = new ArrayList<>();
         for (ProjectEntry e : projects) {
             Map<String, Object> em = new LinkedHashMap<>();
             em.put("relPath", e.getRelPath());
             em.put("fingerprint", e.getFingerprint());
-            em.put("javaFileCount", e.getJavaFileCount());
+            em.put(KEY_JAVA_FILE_COUNT, e.getJavaFileCount());
             em.put("ctx", e.getCtx().toJsonMap());
             arr.add(em);
         }

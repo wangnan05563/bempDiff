@@ -131,6 +131,34 @@ set "_orig_temp=%TEMP%"
 if "%_orig_temp%"=="" set "_orig_temp=%_orig_tmp%"
 set "TMP=%CD%\..\release\.buildtmp"
 set "TEMP=%CD%\..\release\.buildtmp"
+
+REM Read the version BEFORE packaging. Two reasons:
+REM   (a) Delete any previous installer of the SAME version first. A locked leftover (antivirus
+REM       scanner, Explorer preview) makes electron-builder log "output file is locked for
+REM       writing => waiting for unlock" and then skip producing a new file while still exiting 0.
+REM   (b) The freshness check below must never accept an OLD release as this build.
+REM NOTE: read it with node, NOT PowerShell ConvertFrom-Json. PowerShell 5.1 decodes a BOM-less
+REM UTF-8 file with the ANSI codepage, which mangles the Chinese "description" field and makes
+REM ConvertFrom-Json fail ("invalid object, expected ':' or '}'"), yielding an EMPTY version --
+REM that is why the check used to look for "BempDiff--setup.exe" and always reported "not produced".
+node -p "require('./dev-shell/package.json').version" > "..\release\.version" 2>nul
+set /p "_ver=" < "..\release\.version"
+if not defined _ver (
+  echo "[ERROR] Unable to read version from dev-shell\package.json"
+  pause
+  exit /b 1
+)
+echo [INFO] Target version: %_ver%
+if exist "..\release\BempDiff-%_ver%-setup.exe" (
+  echo [STEP] Removing previous installer for %_ver% ...
+  del /q "..\release\BempDiff-%_ver%-setup.exe" >nul 2>&1
+  if exist "..\release\BempDiff-%_ver%-setup.exe" (
+    echo [WARNING] Previous installer is still locked - electron-builder may fail to overwrite it.
+    echo [WARNING] Close whatever holds BempDiff-%_ver%-setup.exe, then re-run.
+  )
+)
+if exist "..\release\BempDiff-%_ver%-setup.exe.blockmap" del /q "..\release\BempDiff-%_ver%-setup.exe.blockmap" >nul 2>&1
+
 call npm run dist
 set "_dist_err=%errorlevel%"
 set "TMP=%_orig_tmp%"
@@ -144,17 +172,17 @@ exit /b 1
 :dist_check_size
 REM Guard against a truncated/stub installer: a disk-full can leave a ~200KB stub .exe
 REM that still "exists" yet is useless. The REAL version source is dev-shell/package.json
-REM (electron-builder reads it because build.directories.app = dev-shell). Match the exact
-REM version so we never mistake an OLD release for this build, and never rely on a time window
-REM (large app / slow disk can take longer than any fixed fresh-check threshold would allow).
-for /f "delims=" %%v in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Get-Content 'dev-shell\package.json' -Raw | ConvertFrom-Json; $p.version"') do set "_ver=%%v"
+REM (electron-builder reads it because build.directories.app = dev-shell). _ver was already
+REM read BEFORE packaging and any previous installer of that exact version was deleted there,
+REM so "exists and >= 50MB" here can only mean THIS build produced it - no time window needed
+REM (a large app on a slow disk can take longer than any fixed freshness threshold).
 if not defined _ver (
   echo "[ERROR] Unable to read version from dev-shell\package.json"
   pause
   exit /b 1
 )
 REM Require the exact fresh installer (>= 50MB) named after $_ver.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path '..\release' ('BempDiff-{0}-setup.exe' -f $env:_ver); if (Test-Path $f) { $len = (Get-Item $f).Length; if ($len -ge 52428800) { Write-Output $f } else { Write-Output ('STUB:' + $f) } }" > "..\release\.last_valid_exe"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path '%CD%\..\release' ('BempDiff-{0}-setup.exe' -f $env:_ver); if (-not (Test-Path $f)) { Write-Error ('MISSING: ' + $f + ' (ver=[' + $env:_ver + '])'); exit 1 }; $len = (Get-Item $f).Length; if ($len -ge 52428800) { Write-Output $f } else { Write-Output ('STUB:' + $f) }" > "..\release\.last_valid_exe"
 set /p "_valid_exe=" < "..\release\.last_valid_exe"
 if not defined _valid_exe (
   echo "[ERROR] No installer produced for version %_ver% - disk space issue or build failure. Check C:\ space."
@@ -183,3 +211,7 @@ if errorlevel 1 (
 echo.
 echo [DONE] Build complete.
 echo   Installer: release\BempDiff-*-setup.exe  (project root 18_comparePakage\release)
+echo.
+echo Finished. Press any key to close this window...
+pause >nul
+exit /b 0

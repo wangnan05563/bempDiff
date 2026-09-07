@@ -54,8 +54,22 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     /** TLSv1.2 协议名（多处重复，提取为常量规避 S1192）。 */
     private static final String TLS12 = "TLSv1.2";
 
+    /** 输出上限自适应：模型窗口扣除输入后仍需保留的安全余量（token），防估算误差导致超窗被拒收。 */
+    private static final int OUTPUT_SAFETY_MARGIN = 2048;
+    /** 输出上限自适应：无论窗口多紧张，至少保留的输出 token（防输出过小产出碎片化的截断片段）。 */
+    private static final int MIN_OUTPUT_TOKENS = 1024;
+    /**
+     * 输出上限自适应封顶：窗口允许时最多放宽到这个值，而不是直接填满窗口——
+     * 多数供应商对 max_tokens 参数有独立上限（非窗口大小），无脑填窗会触发 400。
+     * 16K 覆盖 OpenAI/Qwen 等常见模型；超限由 callChat 按 400+max_tokens 降级重试兜底。
+     */
+    private static final int OUTPUT_MAX_CAP = 16_384;
+
     /** 最近一次 testConnection 的失败原因（null 表示成功或未调用）。用于 UI 诊断展示。 */
     private volatile String lastError = null;
+    /** 最近一次 AI 调用是否被服务端按 max_tokens 截断（finish_reason=length）。
+     *  截断时不整体抛错，降级保留已返回的部分结论，由上层在报告标注「结果可能不完整」。 */
+    private volatile boolean lastOutputTruncated = false;
 
     /**
      * 通用兼容 SSLSocketFactory（静态初始化时创建并设为全局默认）。
@@ -145,28 +159,9 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
                 public String[] getDefaultCipherSuites() { return base.getDefaultCipherSuites(); }
                 public String[] getSupportedCipherSuites() { return base.getSupportedCipherSuites(); }
 
-                /** 对每个新创建的 SSLSocket 强制设置兼容参数。 */
+                /** 对每个新创建的 SSLSocket 强制设置兼容参数（具体逻辑见类的静态工具，便于复用与测试）。 */
                 private SSLSocket configure(SSLSocket s) {
-                    s.setEnabledProtocols(protocols);
-                    if (filterWeak) {
-                        String[] supported = s.getSupportedCipherSuites();
-                        List<String> filtered = new ArrayList<>(supported.length);
-                        for (String cs : supported) {
-                            String csl = cs.toLowerCase();
-                            if (csl.contains("_null_") || csl.contains("_anon_") ||
-                                csl.contains("_export_") || csl.contains("_rc4_") ||
-                                csl.contains("_des_") || csl.contains("_3des_") ||
-                                csl.contains("_md5_")) {
-                                continue;
-                            }
-                            if (csl.contains("_aes_") || csl.contains("_chacha20_")) {
-                                filtered.add(cs);
-                            }
-                        }
-                        if (!filtered.isEmpty()) {
-                            s.setEnabledCipherSuites(filtered.toArray(new String[0]));
-                        }
-                    }
+                    configureSocket(s, protocols, filterWeak);
                     return s;
                 }
             };
@@ -174,6 +169,41 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
             LOG.warning("[WARN] 无法创建" + warnTag + "工厂: " + e.getMessage());
             return null;
         }
+    }
+
+    /** 对每个新创建的 SSLSocket 强制设置兼容参数（提取自匿名类，降低 buildSslFactory 认知复杂度）。 */
+    private static void configureSocket(SSLSocket s, String[] protocols, boolean filterWeak) {
+        s.setEnabledProtocols(protocols);
+        if (filterWeak) {
+            String[] supported = s.getSupportedCipherSuites();
+            List<String> filtered = selectSafeCiphers(supported);
+            if (!filtered.isEmpty()) {
+                s.setEnabledCipherSuites(filtered.toArray(new String[0]));
+            }
+        }
+    }
+
+    /** 从候选套件中筛选出弱/被禁套件之外的 ECDHE/DHE + AES/CHACHA20 套件。 */
+    private static List<String> selectSafeCiphers(String[] supported) {
+        List<String> filtered = new ArrayList<>(supported.length);
+        for (String cs : supported) {
+            String csl = cs.toLowerCase();
+            if (isWeakCipher(csl)) {
+                continue;
+            }
+            if (csl.contains("_aes_") || csl.contains("_chacha20_")) {
+                filtered.add(cs);
+            }
+        }
+        return filtered;
+    }
+
+    /** 弱/被禁密码套件判定（兼容性优化：排除 NULL/匿名/导出/RC4/DES/MD5 等）。 */
+    private static boolean isWeakCipher(String csl) {
+        return csl.contains("_null_") || csl.contains("_anon_")
+                || csl.contains("_export_") || csl.contains("_rc4_")
+                || csl.contains("_des_") || csl.contains("_3des_")
+                || csl.contains("_md5_");
     }
 
     public HttpAiAnalyzer(AiConfig cfg) {
@@ -207,7 +237,9 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         String prompt = buildStageAPrompt(diff, decompiled, cfg);
         String json = callChat(prompt, 0.2);
-        return MockAiAnalyzer.parseStageAStatic(json);   // 复用轻量解析（同签名已抽象为静态）
+        StageASummary s = MockAiAnalyzer.parseStageAStatic(json);   // 复用轻量解析（同签名已抽象为静态）
+        s.setOutputTruncated(lastOutputTruncated);
+        return s;
     }
 
     @Override
@@ -216,7 +248,9 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         for (DecompileReq req : candidates) {
             String prompt = buildStageBPrompt(req.key, req.unit, req.fileClass, cfg);
             String json = callChat(prompt, 0.1);
-            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json));
+            FileAnalysis fa = MockAiAnalyzer.parseFileAnalysisStatic(req.key, json);
+            fa.setOutputTruncated(lastOutputTruncated);
+            out.add(fa);
         }
         return out;
     }
@@ -226,19 +260,22 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx);
         String json = callChat(prompt, 0.2);
         boolean withCtx = ctx != null && !ctx.isEmpty();
-        return MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        StageASummary s = MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        s.setOutputTruncated(lastOutputTruncated);
+        return s;
     }
 
     @Override
     public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx) {
         List<FileAnalysis> out = new ArrayList<>();
-        boolean withCtx = ctx != null && !ctx.isEmpty();
         for (DecompileReq req : candidates) {
             ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
             boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
             String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx);
             String json = callChat(prompt, 0.1);
-            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, effWithCtx));
+            FileAnalysis fa = MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, effWithCtx);
+            fa.setOutputTruncated(lastOutputTruncated);
+            out.add(fa);
         }
         return out;
     }
@@ -272,7 +309,9 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
         String json = callChat(prompt, 0.2);
         boolean withCtx = ctx != null && !ctx.isEmpty();
-        return MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        StageASummary s = MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        s.setOutputTruncated(lastOutputTruncated);
+        return s;
     }
 
     @Override
@@ -281,6 +320,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         String json = callChat(prompt, 0.2);
         boolean withCtx = ctx != null && !ctx.isEmpty();
         StageASummary s = MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        s.setOutputTruncated(lastOutputTruncated);
         if (category != null) {
             s.setCategory(category);
         }
@@ -296,6 +336,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         String json = callChat(prompt, 0.2);
         boolean withCtx = ctx != null && !ctx.isEmpty();
         StageASummary s = MockAiAnalyzer.parseStageAStatic(json, withCtx);
+        s.setOutputTruncated(lastOutputTruncated);
         if (category != null) s.setCategory(category);
         return s;
     }
@@ -303,13 +344,14 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     @Override
     public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx, String focus) {
         List<FileAnalysis> out = new ArrayList<>();
-        boolean withCtx = ctx != null && !ctx.isEmpty();
         for (DecompileReq req : candidates) {
             ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
             boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
             String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx, focus);
             String json = callChat(prompt, 0.1);
-            out.add(MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, effWithCtx));
+            FileAnalysis fa = MockAiAnalyzer.parseFileAnalysisStatic(req.key, json, effWithCtx);
+            fa.setOutputTruncated(lastOutputTruncated);
+            out.add(fa);
         }
         return out;
     }
@@ -339,8 +381,8 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     private boolean testConnectionHttp(AiConfig cfg) {
         lastError = null;
         String endpoint = cfg.getBaseUrl().endsWith("/")
-                ? cfg.getBaseUrl() + "models"
-                : cfg.getBaseUrl() + "/models";
+                ? cfg.getBaseUrl() + MODELS_PATH
+                : cfg.getBaseUrl() + "/" + MODELS_PATH;
         SSLSocketFactory[] ladder = buildTestLadder();
         StringBuilder diag = new StringBuilder();
         for (int i = 0; i < ladder.length; i++) {
@@ -447,23 +489,27 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
             if (!(parsed instanceof Map)) return out;
             Map<String, Object> root = (Map<String, Object>) parsed;
             Object arr = root.get("data");
-            if (!(arr instanceof List)) arr = root.get("models"); // Ollama 兜底
-            if (!(arr instanceof List)) return out;
-            for (Object item : (List<?>) arr) {
-                if (item instanceof Map) {
-                    Map<?, ?> m = (Map<?, ?>) item;
-                    Object id = m.get("id");
-                    if (id == null) id = m.get("name"); // Ollama 用 name
-                    if (id != null) {
-                        String s = String.valueOf(id);
-                        if (!s.isEmpty() && !out.contains(s)) out.add(s);
-                    }
-                }
-            }
+            if (!(arr instanceof List)) arr = root.get(MODELS_PATH); // Ollama 兜底
+            if (arr instanceof List) collectModelIds((List<?>) arr, out);
         } catch (Exception e) {
             LOG.log(Level.WARNING, "解析模型列表失败", e);
         }
         return out;
+    }
+
+    /** 从模型数组中收集去重的模型 ID（data[].id / models[].name，择优取 id）。 */
+    private static void collectModelIds(List<?> arr, List<String> out) {
+        for (Object item : arr) {
+            if (item instanceof Map) {
+                Map<?, ?> m = (Map<?, ?>) item;
+                Object id = m.get("id");
+                if (id == null) id = m.get("name"); // Ollama 用 name
+                if (id != null) {
+                    String s = String.valueOf(id);
+                    if (!s.isEmpty() && !out.contains(s)) out.add(s);
+                }
+            }
+        }
     }
 
     /**
@@ -611,29 +657,60 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
                         + "或改用差异树右键「AI功能总结」对单个文件分批深读。", null);
             }
         }
-        return callChat(prompt, temperature, null, 0);
+        // 每次调用前重置截断标记：finish_reason=length 时由 handleResponse 置位，供上层标注「结果可能不完整」
+        lastOutputTruncated = false;
+        // 输出上限按「窗口剩余空间」自适应放宽：固定配置在差异文件多/报告长时会把结论腰斩（实测事故）
+        return callChat(prompt, temperature, null, 0, effectiveOutputTokens(prompt));
     }
 
-    private String callChat(String prompt, double temperature, SSLSocketFactory sf, int attempt) {
+    /**
+     * 输出 token 上限自适应：以「模型窗口扣除输入后的剩余空间」为准，用户配置作为下限，
+     * 窗口允许时自动放宽（封顶 {@link #OUTPUT_MAX_CAP}），从源头避免长报告被固定值腰斩；
+     * 绝不超出窗口真实剩余（防「放大后仍超窗」被服务端拒收）。maxOutputTokens=0 同样生效。
+     */
+    private int effectiveOutputTokens(String prompt) {
+        int window = cfg.getMaxPromptTokens();
+        long estIn = (long) estimateTokens(prompt);
+        long windowLeft = (window > 0) ? Math.max(0, window - estIn - OUTPUT_SAFETY_MARGIN) : Long.MAX_VALUE;
+        long eff = Math.max(cfg.getMaxOutputTokens(), Math.min(windowLeft, OUTPUT_MAX_CAP));
+        eff = Math.min(Math.max(eff, MIN_OUTPUT_TOKENS),
+                window > 0 ? Math.max(0, window - estIn - 1) : Long.MAX_VALUE);
+        return (int) eff;
+    }
+
+    private String callChat(String prompt, double temperature, SSLSocketFactory sf, int attempt, int outTokens) {
         HttpURLConnection c = null;
         try {
             URL u = buildChatUrl();
             c = open(u, cfg, sf);
             configureConnection(c);
-            sendRequestBody(c, prompt, temperature);
+            sendRequestBody(c, prompt, temperature, outTokens);
             return handleResponse(c);
         } catch (IOException e) {
-            return handleCallFailure(prompt, temperature, sf, attempt, e);
+            return handleCallFailure(prompt, temperature, sf, attempt, e, outTokens);
         } finally {
             if (c != null) c.disconnect();
         }
     }
 
-    /** callChat 的失败处理：握手失败时降级 TLS 策略并重试，重试耗尽则抛出 AiCallException（用于降低 callChat 认知复杂度）。 */
-    private String handleCallFailure(String prompt, double temperature, SSLSocketFactory sf, int attempt, IOException e) {
+    /** callChat 的失败处理：握手失败时降级 TLS 策略并重试，重试耗尽则抛出 AiCallException（用于降低 callChat 认知复杂度）。
+     *  outTokens 为本次请求的输出上限，供「自适应放宽超模型限制」时降级重试使用。 */
+    private String handleCallFailure(String prompt, double temperature, SSLSocketFactory sf, int attempt, IOException e, int outTokens) {
         // 永久性客户端错误（400/401/403/404/422…）重试必然同样失败，且超大 prompt 重传代价高昂
         // （实测：token 超限 400 会把数十万字符请求体重发 3 次），故直接抛出不再重试。
         if (!isRetryable(e) || attempt >= MAX_RETRIES) {
+            // 例外：自适应放宽的 max_tokens 超过该模型供应商上限（如 DeepSeek 硬限 8192）时，
+            // 400 错误消息通常含 max_tokens 字样——按保守配额降级重试一次，而不是让自适应引入新失败。
+            if (e instanceof HttpStatusException && attempt < MAX_RETRIES
+                    && e.getMessage() != null && e.getMessage().contains("max_tokens")) {
+                int conservative = Math.min(cfg.getMaxOutputTokens() > 0 ? cfg.getMaxOutputTokens() : 4096, outTokens);
+                if (conservative < outTokens) {
+                    LOG.log(java.util.logging.Level.WARNING,
+                            "[AI] 自适应输出上限({0})超模型限制，降级为 {1} 重试：{2}",
+                            new Object[]{outTokens, conservative, e.getMessage()});
+                    return callChat(prompt, temperature, sf, attempt + 1, conservative);
+                }
+            }
             throw new AiCallException("AI 调用失败"
                     + (attempt > 0 ? "（已重试 " + attempt + " 次）" : "")
                     + ": " + friendlyMessage(e), e);
@@ -653,7 +730,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
                             RETRY_BACKOFF_MS / 1000, e.getMessage()});
         }
         sleepBackoff();
-        return callChat(prompt, temperature, nextSf, attempt + 1);
+        return callChat(prompt, temperature, nextSf, attempt + 1, outTokens);
     }
 
     /** 握手失败时选择的回退工厂：仅 TLSv1.2 优先，其次通用兼容，最后原工厂。 */
@@ -693,11 +770,16 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         setAuthHeader(c, cfg);
     }
 
-    private void sendRequestBody(HttpURLConnection c, String prompt, double temperature) throws IOException {
-        String body = "{\"model\":" + escapeJson(cfg.getModel()) + ",\"temperature\":" + temperature
-                + ",\"messages\":[{\"role\":\"user\",\"content\":" + escapeJson(prompt) + "}]}";
+    private void sendRequestBody(HttpURLConnection c, String prompt, double temperature, int outTokens) throws IOException {
+        StringBuilder body = new StringBuilder("{\"model\":").append(escapeJson(cfg.getModel()))
+                .append(",\"temperature\":").append(temperature);
+        // 显式声明输出上限 max_tokens：此前不携带时输出长度听任服务端默认值，
+        // 部分兼容服务（Ollama/vLLM/SiliconFlow 等）默认仅数百~2k，长报告会被硬切、尾部测试要点丢失。
+        // outTokens 由 effectiveOutputTokens 按窗口剩余空间自适应（恒为正，用户配置 0 同样生效）。
+        body.append(",\"max_tokens\":").append(outTokens);
+        body.append(",\"messages\":[{\"role\":\"user\",\"content\":").append(escapeJson(prompt)).append("}]}");
         try (OutputStream os = c.getOutputStream()) {
-            os.write(body.getBytes(StandardCharsets.UTF_8));
+            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
         }
     }
 
@@ -709,7 +791,28 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         if (code < 200 || code >= 300) {
             throw new HttpStatusException(code, "HTTP " + code + ": " + resp);
         }
-        return extractContent(resp);
+        String content = extractContent(resp);
+        // 校验 finish_reason：为 "length" 说明输出撞上了 max_tokens 硬上限、被服务端腰斩。
+        // 不再整体抛错（已生成的结论白白作废），降级保留部分结果并在报告标注「可能不完整」；
+        // 由各 stageA/stageB 解析后读 lastOutputTruncated 打标，报告渲染端据此提示用户。
+        if (isTruncatedByLength(resp)) {
+            lastOutputTruncated = true;
+            LOG.log(Level.WARNING,
+                    "[AI] 输出被 max_tokens 截断（finish_reason=length），已降级保留部分结论，结果可能不完整");
+        }
+        return content;
+    }
+
+    /** 判断 OpenAI 兼容响应中 finish_reason 是否为 "length"（输出被 token 上限截断）。 */
+    private static boolean isTruncatedByLength(String resp) {
+        int i = resp.indexOf("\"finish_reason\"");
+        if (i < 0) return false;
+        int colon = resp.indexOf(':', i);
+        if (colon < 0) return false;
+        int q = resp.indexOf('"', colon);
+        if (q < 0) return false;
+        int q2 = resp.indexOf('"', q + 1);
+        return q2 > q && "length".equals(resp.substring(q + 1, q2));
     }
 
     /** 从 OpenAI 风格响应提取 choices[0].message.content（轻量解析，够用；量产能用 JSON 库）。

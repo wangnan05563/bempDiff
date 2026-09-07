@@ -27,6 +27,12 @@ public final class FileOps {
         throw new UnsupportedOperationException("工具类不允许实例化");
     }
 
+    /** 操作结果错误码与提示（多处重复，提取为常量规避 S1192）。 */
+    private static final String CODE_NOT_FOUND = "NOT_FOUND";
+    private static final String CODE_INVALID_PATH = "INVALID_PATH";
+    private static final String CODE_IO_ERROR = "IO_ERROR";
+    private static final String MSG_NOT_EXIST = "不存在: ";
+
     /** 操作结果：ok=false 时 code 供前端映射提示文案（NOT_FOUND/EXISTS/INVALID_PATH/IO_ERROR 等）；info 仅供「属性」操作携带。 */
     public record OpResult(boolean ok, String code, String message, FileInfo info) {
         public OpResult(boolean ok, String code, String message) {
@@ -77,16 +83,16 @@ public final class FileOps {
     public static OpResult info(Path root, String key) {
         try {
             Path p = resolveWithin(root, key);
-            if (!Files.exists(p)) return new OpResult(false, "NOT_FOUND", "不存在: " + key);
+            if (!Files.exists(p)) return new OpResult(false, CODE_NOT_FOUND, MSG_NOT_EXIST + key);
             boolean dir = Files.isDirectory(p);
             long size = dir ? 0 : Files.size(p);
             long mtime = Files.getLastModifiedTime(p).toMillis();
             String sha = dir ? null : sha256(p);
             return OpResult.okWithInfo(new FileInfo(key, p.toString(), dir, size, mtime, sha));
         } catch (InvalidPathException e) {
-            return new OpResult(false, "INVALID_PATH", e.getMessage());
+            return new OpResult(false, CODE_INVALID_PATH, e.getMessage());
         } catch (IOException e) {
-            return new OpResult(false, "IO_ERROR", "读取属性失败: " + e.getMessage());
+            return new OpResult(false, CODE_IO_ERROR, "读取属性失败: " + e.getMessage());
         }
     }
 
@@ -97,7 +103,7 @@ public final class FileOps {
     public static OpResult deleteEntry(Path root, String key) {
         try {
             Path p = resolveWithin(root, key);
-            if (!Files.exists(p)) return new OpResult(false, "NOT_FOUND", "不存在: " + key);
+            if (!Files.exists(p)) return new OpResult(false, CODE_NOT_FOUND, MSG_NOT_EXIST + key);
             if (Files.isDirectory(p)) {
                 try (Stream<Path> s = Files.walk(p)) {
                     // 先删子后删父：按路径深度倒序
@@ -114,30 +120,30 @@ public final class FileOps {
             }
             return OpResult.ok("已删除: " + key);
         } catch (InvalidPathException e) {
-            return new OpResult(false, "INVALID_PATH", e.getMessage());
+            return new OpResult(false, CODE_INVALID_PATH, e.getMessage());
         } catch (DeleteFailure | IOException e) {
             Throwable c = (e instanceof DeleteFailure) ? e.getCause() : e;
-            return new OpResult(false, "IO_ERROR", "删除失败: " + (c != null ? c.getMessage() : e.getMessage()));
+            return new OpResult(false, CODE_IO_ERROR, "删除失败: " + (c != null ? c.getMessage() : e.getMessage()));
         }
     }
 
     /** 重命名条目（同目录内）：newName 必须是纯文件名（不含路径分隔符与 '..'）。 */
     public static OpResult renameEntry(Path root, String key, String newName) {
-        if (newName == null || newName.isEmpty()) return new OpResult(false, "INVALID_PATH", "新名称不能为空");
+        if (newName == null || newName.isEmpty()) return new OpResult(false, CODE_INVALID_PATH, "新名称不能为空");
         if (newName.indexOf('/') >= 0 || newName.indexOf('\\') >= 0 || newName.contains("..")) {
-            return new OpResult(false, "INVALID_PATH", "新名称必须是纯文件名（不含路径分隔符）");
+            return new OpResult(false, CODE_INVALID_PATH, "新名称必须是纯文件名（不含路径分隔符）");
         }
         try {
             Path p = resolveWithin(root, key);
-            if (!Files.exists(p)) return new OpResult(false, "NOT_FOUND", "不存在: " + key);
+            if (!Files.exists(p)) return new OpResult(false, CODE_NOT_FOUND, MSG_NOT_EXIST + key);
             Path target = p.resolveSibling(newName);
             if (Files.exists(target)) return new OpResult(false, "EXISTS", "目标已存在: " + newName);
             Files.move(p, target);
             return OpResult.ok("已重命名: " + key + " → " + newName);
         } catch (InvalidPathException e) {
-            return new OpResult(false, "INVALID_PATH", e.getMessage());
+            return new OpResult(false, CODE_INVALID_PATH, e.getMessage());
         } catch (IOException e) {
-            return new OpResult(false, "IO_ERROR", "重命名失败: " + e.getMessage());
+            return new OpResult(false, CODE_IO_ERROR, "重命名失败: " + e.getMessage());
         }
     }
 
@@ -147,12 +153,12 @@ public final class FileOps {
      */
     public static OpResult copyAcross(Path srcRoot, Path dstRoot, String key, String direction) {
         if (!"l2r".equals(direction) && !"r2l".equals(direction)) {
-            return new OpResult(false, "INVALID_PATH", "未知复制方向: " + direction);
+            return new OpResult(false, CODE_INVALID_PATH, "未知复制方向: " + direction);
         }
         try {
             Path src = resolveWithin(srcRoot, key);
             Path dst = resolveWithin(dstRoot, key);
-            if (!Files.exists(src)) return new OpResult(false, "NOT_FOUND", "源不存在: " + key);
+            if (!Files.exists(src)) return new OpResult(false, CODE_NOT_FOUND, "源不存在: " + key);
             if (Files.exists(dst)) return new OpResult(false, "EXISTS", "目标侧已存在同名条目: " + key);
             if (Files.isDirectory(src)) {
                 copyDir(src, dst);
@@ -162,9 +168,9 @@ public final class FileOps {
             }
             return OpResult.ok("已复制: " + key + "（" + ("l2r".equals(direction) ? "左 → 右" : "右 → 左") + "）");
         } catch (InvalidPathException e) {
-            return new OpResult(false, "INVALID_PATH", e.getMessage());
+            return new OpResult(false, CODE_INVALID_PATH, e.getMessage());
         } catch (IOException e) {
-            return new OpResult(false, "IO_ERROR", "复制失败: " + e.getMessage());
+            return new OpResult(false, CODE_IO_ERROR, "复制失败: " + e.getMessage());
         }
     }
 

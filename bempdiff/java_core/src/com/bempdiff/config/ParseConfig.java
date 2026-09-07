@@ -81,10 +81,13 @@ public final class ParseConfig {
         if (ignores == null || ignores.isEmpty() || key == null) return false;
         String k = key.toLowerCase();
         for (String e : ignores) {
-            if (e == null || e.isEmpty()) continue;
-            String norm = e.startsWith(".") ? e.toLowerCase() : "." + e.toLowerCase();
-            if (norm.isEmpty() || ".".equals(norm)) continue; // 忽略纯点项，防老师到匹配任何路径
-            if (k.endsWith(norm)) return true;
+            if (e != null && !e.isEmpty()) {
+                String norm = e.startsWith(".") ? e.toLowerCase() : "." + e.toLowerCase();
+                // 忽略纯点项（norm 仅可能为 "." 或非空串），命中忽略扩展名才返回
+                if (!norm.isEmpty() && !".".equals(norm) && k.endsWith(norm)) {
+                    return true;
+                }
+            }
         }
         return false;
     }

@@ -83,7 +83,6 @@ public final class ProjectIndexer {
         if (root == null || !Files.isDirectory(root)) {
             return new ProjectIndex(root == null ? "" : root.toString(), System.currentTimeMillis(), List.of());
         }
-        long t0 = System.currentTimeMillis();
         // 1) 收集构建文件（一次受限遍历）
         BuildCollector bc = collectBuildFiles(root);
         // 2) 解析 Maven 聚合关系，判定项目根
@@ -116,13 +115,10 @@ public final class ProjectIndexer {
                     new SimpleFileVisitor<Path>() {
                         @Override
                         public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                            if (dir.equals(root)) return FileVisitResult.CONTINUE;
-                            String n = dir.getFileName().toString();
-                            if (SKIP_DIRS.contains(n) || n.contains("@tmp") || n.startsWith(".")) {
+                            // 根目录必须进入遍历；仅对子目录应用剪枝，否则一次都走不到任何构建文件
+                            if (!dir.equals(root) && shouldSkipDir(bc, dir.getFileName().toString())) {
                                 return FileVisitResult.SKIP_SUBTREE;
                             }
-                            // 遍历文件总量达上限 → 剪掉后续子树（防 13.8 万级仓库拖垮扫描）
-                            if (bc.visitedFiles >= MAX_TRAVERSAL_FILES) return FileVisitResult.SKIP_SUBTREE;
                             return FileVisitResult.CONTINUE;
                         }
 
@@ -130,11 +126,7 @@ public final class ProjectIndexer {
                         public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                             if (bc.visitedFiles >= MAX_TRAVERSAL_FILES) return FileVisitResult.TERMINATE;
                             bc.visitedFiles++;
-                            String n = file.getFileName().toString();
-                            if (MVN_FILE.equals(n)) bc.poms.add(file);
-                            else if (PKG_JSON.equals(n)) bc.npmJsons.add(file);
-                            else if (GO_MOD.equals(n) || CARGO_TOML.equals(n)
-                                    || REQ_TXT.equals(n) || PYPROJECT.equals(n)) bc.otherBuildFiles.add(file);
+                            classifyBuildFile(bc, file);
                             // 构建文件收集到上限即终止（防 node_modules 式海量噪音）
                             if (bc.poms.size() + bc.npmJsons.size() + bc.otherBuildFiles.size() >= MAX_BUILD_FILES) {
                                 return FileVisitResult.TERMINATE;
@@ -146,6 +138,24 @@ public final class ProjectIndexer {
             // 部分子目录无权限：忽略，继续
         }
         return bc;
+    }
+
+    /** 目录是否应剪枝（产物/噪音目录，或遍历已达上限）。根目录自身恒不剪枝。 */
+    private static boolean shouldSkipDir(BuildCollector bc, String dirName) {
+        if (SKIP_DIRS.contains(dirName) || dirName.contains("@tmp") || dirName.startsWith(".")) {
+            return true;
+        }
+        // 遍历文件总量达上限 → 剪掉后续子树（防 13.8 万级仓库拖垮扫描）
+        return bc.visitedFiles >= MAX_TRAVERSAL_FILES;
+    }
+
+    /** 按文件名把构建文件归类到对应收集桶（Maven/前端/其它构建系统）。 */
+    private static void classifyBuildFile(BuildCollector bc, Path file) {
+        String n = file.getFileName().toString();
+        if (MVN_FILE.equals(n)) bc.poms.add(file);
+        else if (PKG_JSON.equals(n)) bc.npmJsons.add(file);
+        else if (GO_MOD.equals(n) || CARGO_TOML.equals(n)
+                || REQ_TXT.equals(n) || PYPROJECT.equals(n)) bc.otherBuildFiles.add(file);
     }
 
     // ---- Maven 聚合解析与项目根判定 ----
@@ -167,30 +177,21 @@ public final class ProjectIndexer {
         // 3.1) Maven：解析聚合关系
         Map<Path, PomNode> pomByDir = new LinkedHashMap<>();
         for (Path pom : bc.poms) {
-            Path dir = pom.getParent();
-            String txt = readSmall(pom);
-            boolean aggregator = false;
-            List<String> mods = new ArrayList<>();
-            if (txt != null) {
-                Matcher pm = POM_PACKAGING.matcher(txt);
-                boolean isPomPackaging = pm.find() && "pom".equals(pm.group(1).trim());
-                Matcher mm = POM_MODULES.matcher(txt);
-                while (mm.find()) mods.add(mm.group(1).trim());
-                aggregator = isPomPackaging && !mods.isEmpty();
-            }
-            pomByDir.put(dir, new PomNode(dir, aggregator, mods));
+            pomByDir.put(pom.getParent(), parsePomNode(pom));
         }
         for (PomNode n : pomByDir.values()) {
+            boolean aggregatorRoot = false;
             if (n.aggregator) {
                 roots.add(n.dir); // 聚合工程 = 项目根
-                continue;
+                aggregatorRoot = true;
             }
-            // 叶子 pom：检查是否被最近祖先聚合引用
-            PomNode parent = nearestAggregator(n.dir, pomByDir);
-            if (parent != null && parent.modules.contains(n.dir.getFileName().toString())) {
-                continue; // 被聚合引用 → 从属模块
+            if (!aggregatorRoot) {
+                // 叶子 pom：仅当未被最近祖先聚合引用时视为独立项目
+                PomNode parent = nearestAggregator(n.dir, pomByDir);
+                if (parent == null || !parent.modules.contains(n.dir.getFileName().toString())) {
+                    roots.add(n.dir); // 孤立叶子 → 独立项目
+                }
             }
-            roots.add(n.dir); // 孤立叶子 → 独立项目
         }
         // 3.2) 前端 / Go / Rust / Python：目录即项目
         for (Path p : bc.npmJsons) roots.add(p.getParent());
@@ -201,6 +202,19 @@ public final class ProjectIndexer {
         List<Path> sorted = new ArrayList<>(roots);
         sorted.sort(Comparator.comparing(p -> root.relativize(p).toString().replace('\\', '/')));
         return sorted;
+    }
+
+    /** 解析单个 pom 是否为聚合工程：packaging=pom 且声明了 &lt;modules&gt; 时为聚合节点。读取失败按非聚合处理。 */
+    private static PomNode parsePomNode(Path pom) {
+        Path dir = pom.getParent();
+        String txt = readSmall(pom);
+        if (txt == null) return new PomNode(dir, false, List.of());
+        Matcher pm = POM_PACKAGING.matcher(txt);
+        boolean isPomPackaging = pm.find() && "pom".equals(pm.group(1).trim());
+        Matcher mm = POM_MODULES.matcher(txt);
+        List<String> mods = new ArrayList<>();
+        while (mm.find()) mods.add(mm.group(1).trim());
+        return new PomNode(dir, isPomPackaging && !mods.isEmpty(), mods);
     }
 
     /** 找 dir 的最近祖先目录中存在的聚合 pom（沿父目录链向上，跳过无关目录）。 */

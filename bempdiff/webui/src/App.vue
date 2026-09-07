@@ -96,6 +96,7 @@ function onPreviewClose() {
   <ReportPreview :visible="showReport || state.previewOpen" :md="state.previewOpen ? state.previewMd : null" @close="onPreviewClose" />
   <CostGateDialog />
   <CompareOverlay />
+  <DragDropOverlay />
 
   <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index:3000">
     <div class="toast align-items-center border-0 show" v-if="state.toast" :class="toastClass" role="alert">

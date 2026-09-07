@@ -178,22 +178,19 @@ public final class ProjectContextAnalyzer {
      */
     private static void collectFallbackModules(Path root, List<Path> files, Set<String> mods) {
         if (!mods.isEmpty()) return;
-        for (Path f : files) {
-            String s = f.toString().replace('\\', '/');
-            if (s.contains("/node_modules/") || s.contains("/.git/")
-                    || s.contains("/target/") || s.contains("/dist/")) {
-                continue;
-            }
-            String name = f.getFileName().toString();
-            if (!(name.equals(MVN_FILE) || name.equals(GRADLE_FILE)
-                    || name.equals(GRADLE_KTS_FILE) || name.equals(PKG_JSON))) {
-                continue;
-            }
-            Path parent = f.getParent();
-            if (parent == null || parent.equals(root)) continue;
-            String mod = root.relativize(parent).toString().replace('\\', '/');
-            if (!mod.isEmpty()) mods.add(mod);
-        }
+        for (Path f : files) collectFallbackModule(root, f, mods);
+    }
+
+    /** 判定单个文件是否可作为回退模块根并加入 mods（抽离循环体以降认知复杂度）。 */
+    private static void collectFallbackModule(Path root, Path f, Set<String> mods) {
+        String s = f.toString().replace('\\', '/');
+        if (s.contains("/node_modules/") || s.contains("/.git/") || s.contains("/target/") || s.contains("/dist/")) return;
+        String name = f.getFileName().toString();
+        if (!(name.equals(MVN_FILE) || name.equals(GRADLE_FILE) || name.equals(GRADLE_KTS_FILE) || name.equals(PKG_JSON))) return;
+        Path parent = f.getParent();
+        if (parent == null || parent.equals(root)) return;
+        String mod = root.relativize(parent).toString().replace('\\', '/');
+        if (!mod.isEmpty()) mods.add(mod);
     }
 
     // ---- 依赖抽取 ----
@@ -305,9 +302,9 @@ public final class ProjectContextAnalyzer {
                 String s = f.toString().replace('\\', '/');
                 String low = s.toLowerCase();
                 if (low.endsWith("/meta-inf/manifest.mf") || low.endsWith("/meta-inf/manifest.xml")
-                        || low.endsWith("/web-inf/web.xml") || low.endsWith("/deploy.xml")) {
-                    cf.add(rel(root, f));
-                } else if (low.contains("/web-inf/classes/") && low.endsWith(".properties")) {
+                        || low.endsWith("/web-inf/web.xml") || low.endsWith("/deploy.xml")
+                        // WEB-INF/classes 下的 .properties（如 version.properties）同样纳入
+                        || (low.contains("/web-inf/classes/") && low.endsWith(".properties"))) {
                     cf.add(rel(root, f));
                 }
             }
@@ -354,23 +351,31 @@ public final class ProjectContextAnalyzer {
         for (Path f : files) {
             String s = f.toString().replace('\\', '/');
             if (s.contains("/WEB-INF/lib/") && s.endsWith(".jar")) libJars++;
-            else if (manifest == null && (s.endsWith("/META-INF/MANIFEST.MF")
-                    || s.endsWith("/META-INF/MANIFEST.xml"))) {
+            else if (manifest == null && isManifestPath(s)) {
                 manifest = f;
             }
         }
         if (libJars > 0) conv.add("WEB-INF/lib 依赖库 " + libJars + " 个");
         if (manifest != null) {
-            String txt = readIfSmall(manifest);
-            if (txt != null) {
-                String title = pickManifest(txt, "Implementation-Title");
-                String version = pickManifest(txt, "Implementation-Version");
-                if (title != null || version != null) {
-                    conv.add("部署包标识：" + (title == null ? "" : title)
-                            + (version == null ? "" : " v" + version));
-                }
-            }
+            String desc = manifestDescription(manifest);
+            if (desc != null) conv.add(desc);
         }
+    }
+
+    /** MANIFEST 描述符地址判定（META-INF/MANIFEST.MF 或 .xml）。 */
+    private static boolean isManifestPath(String s) {
+        return s.endsWith("/META-INF/MANIFEST.MF") || s.endsWith("/META-INF/MANIFEST.xml");
+    }
+
+    /** 读取 manifest 并生成「部署包标识」叙述；无标识信息返回 null。 */
+    private static String manifestDescription(Path manifest) {
+        String txt = readIfSmall(manifest);
+        if (txt == null) return null;
+        String title = pickManifest(txt, "Implementation-Title");
+        String version = pickManifest(txt, "Implementation-Version");
+        if (title == null && version == null) return null;
+        return "部署包标识：" + (title == null ? "" : title)
+                + (version == null ? "" : " v" + version);
     }
 
     private static String pickManifest(String txt, String key) {

@@ -28,18 +28,14 @@ defect_rules:
 
 # 资源监控（由 scripts/monitor_sut.py 单独运行；只采样不杀进程）
 resource_monitor:
-  enabled: false
+  enabled: true
   match:
-    mode: "cmd_substr"
-    cmd_substr: "bempdiff.jar"
+    mode: "pid_file"
+    pid_file: "perf_bemp/sut.pid"
   sample_interval_sec: 2
   duration_samples: 0
   metrics: ["rss_mb", "private_mb", "cpu_percent"]
   output_csv: "output/results/sut_resource.csv"
-  alert:
-    enabled: true
-    max_rss_mb: 4096
-    on_exceed: warn
 
 report:
   formats: ["markdown"]
@@ -57,7 +53,7 @@ scenarios:
   fixtures:
     bolt:  "D:/code/otherProjects/18_comparePakage/tooling/verify_exe/demo_v1.war"
     bnew:  "D:/code/otherProjects/18_comparePakage/tooling/verify_exe/demo_v2.war"
-    jobs:  "job-196001,job-196002,job-196003,job-196004,job-196005,job-196006,job-196007,job-196008"
+    jobs:  "job-901902,job-901903,job-901904,job-901905,job-901906,job-901907,job-901908,job-901909"
     keyDec: "WEB-INF%2Fclasses%2Fcom%2Fexample%2FService.class"
     keyArc: "WEB-INF%2Flib%2Fdiff-lib.jar"
   thread_profiles:
@@ -97,6 +93,24 @@ scenarios:
         - { name: "ai-models-offline", path: "/api/ai/models", method: "POST",
             body: '{"baseUrl":"http://127.0.0.1:1"}' }
 
+# ---- 专项：纯读端点（剔除 compare-submit 写端点与 ai-context 大工程扫描，量化干净读延迟） ----
+    - name: "bemp_read_clean"
+      profile: "smoke"
+      samplers:
+        - { name: "job-status", path: "/api/job/{{jobs.0}}/status", method: "GET" }
+        - { name: "job-unpack-report", path: "/api/job/{{jobs.0}}/unpack-report", method: "GET" }
+        - { name: "config-get", path: "/api/config", method: "GET" }
+        - { name: "entry-children", path: "/api/entry/children", method: "GET",
+            params: { jobId: "{{jobs.6}}", key: "{{keyArc}}" } }
+        - { name: "entry-recursive", path: "/api/entry/recursive", method: "GET",
+            params: { jobId: "{{jobs.6}}", key: "{{keyArc}}" } }
+        - { name: "static-index", path: "/", method: "GET" }
+    # ---- 专项：ai-context 单独压测（量化大工程指纹扫描 P0） ----
+    - name: "bemp_ai_context"
+      profile: "smoke"
+      samplers:
+        - { name: "ai-context", path: "/api/ai/context", method: "GET" }
+
 # ---------------------------------------------------------------------------
 # 分阶段：基准(smoke) / 压力(load) / 稳定性(soak)
 # ---------------------------------------------------------------------------
@@ -107,6 +121,11 @@ phases:
   - { name: "smoke_heavy",   jmx: "jmeter/bemp_heavy.jmx", enabled: true, threads_override: 1,  duration_override: 90 }
   - { name: "load5_heavy",   jmx: "jmeter/bemp_heavy.jmx", enabled: true, threads_override: 5,  duration_override: 90 }
   - { name: "soak_heavy",    jmx: "jmeter/bemp_heavy.jmx", enabled: true, threads_override: 2,  duration_override: 120 }
+  - { name: "read_smoke",    jmx: "jmeter/bemp_read_clean.jmx", enabled: true, threads_override: 1,  duration_override: 40 }
+  - { name: "read_load",     jmx: "jmeter/bemp_read_clean.jmx", enabled: true, threads_override: 16, duration_override: 60 }
+  - { name: "read_soak",     jmx: "jmeter/bemp_read_clean.jmx", enabled: true, threads_override: 8,  duration_override: 120 }
+  - { name: "ai_ctx_smoke",  jmx: "jmeter/bemp_ai_context.jmx", enabled: true, threads_override: 1,  duration_override: 60 }
+  - { name: "ai_ctx_load",   jmx: "jmeter/bemp_ai_context.jmx", enabled: true, threads_override: 2,  duration_override: 60 }
 
 # 基线对比（可选，无历史基线暂关闭）
 comparison:

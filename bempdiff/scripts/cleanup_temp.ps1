@@ -83,7 +83,7 @@ function Remove-If([string]$path, [bool]$isDir = $false) {
 # ---------- 1) 系统临时目录：BempDiff 前缀文件（按天） ----------
 Write-Host "= [1/4] 系统临时文件 (dir=$OsTemp, older than $Days 天) =" -ForegroundColor Cyan
 if (Test-Path $OsTemp) {
-  $patterns = @('bempdiff-*.class', 'bempdiff-*.bin', 'bempdiff-*.jar', 'bempdiff-*.zip')
+  $patterns = @('bempdiff-*')
   foreach ($pat in $patterns) {
     Get-ChildItem -LiteralPath $OsTemp -Filter $pat -File -ErrorAction SilentlyContinue | ForEach-Object {
       if ($_.LastWriteTime -lt $cut) {
@@ -94,7 +94,7 @@ if (Test-Path $OsTemp) {
     }
   }
   # 残留解包目录（异常路径兜底产物）
-  Get-ChildItem -LiteralPath $OsTemp -Directory -Filter 'bempdiff-unpack-*' -ErrorAction SilentlyContinue | ForEach-Object {
+  Get-ChildItem -LiteralPath $OsTemp -Directory -Filter 'bempdiff-*' -ErrorAction SilentlyContinue | ForEach-Object {
     if ($_.LastWriteTime -lt $cut) {
       $sz = (Get-ChildItem -LiteralPath $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
       Add-Stat -bytes $sz -d 1

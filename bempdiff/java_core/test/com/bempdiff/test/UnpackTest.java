@@ -179,6 +179,68 @@ public final class UnpackTest {
         return outer;
     }
 
+    /** 回归：伪目录条目（0 字节 + 无尾斜杠 + 有子路径）不得被当作文件纳入解析/解包。
+     *  守护用户反馈「嵌套 jar 自动解包后，文件夹被识别成文件、显示未变更、错误纳入统计」。
+     *  ant 等打包器把目录写成 0 字节且不带尾斜杠，Java ZipEntry.isDirectory() 误判为文件，
+     *  PackageParser 顶层解析与 NestedUnpacker 扁平化两处都必须跳过这类条目。 */
+    public void testNestedFlattenFiltersFakeDirs() {
+        try {
+            java.nio.file.Path outer = makeNestedZipWithFakeDirs();
+            com.bempdiff.parse.PackageParser pp = new com.bempdiff.parse.PackageParser();
+            com.bempdiff.model.PackageSnapshot snap = pp.parse(outer, new com.bempdiff.config.ParseConfig(), false);
+
+            // ① 解析阶段：顶层伪目录 topdir（0 字节）不得进入快照条目，真实子文件保留
+            Asserts.assertNull("解析：顶层伪目录 topdir 不应作为文件条目",
+                    snap.getEntries().get("topdir"));
+            Asserts.assertNotNull("解析：顶层真实文件 topdir/child.txt 应保留",
+                    snap.getEntries().get("topdir/child.txt"));
+
+            // ② 自动解包阶段：b.jar 内部伪目录 dir1 不得进入扁平快照，其子文件与 class 保留
+            com.bempdiff.model.PackageSnapshot flat = new com.bempdiff.unpack.NestedUnpacker(
+                    new UnpackOptions(), java.nio.file.Files.createTempDirectory("bempdiff-utf"))
+                    .flatten(snap, new UnpackReport("zip"));
+            Asserts.assertNull("解包：嵌套 jar 内伪目录 dir1 不应作为文件条目",
+                    flat.getEntries().get("b.jar/dir1"));
+            Asserts.assertNotNull("解包：嵌套 jar 内 dir1/child.txt 应平面展开",
+                    flat.getEntries().get("b.jar/dir1/child.txt"));
+            Asserts.assertNotNull("解包：普通 class 不受影响",
+                    flat.getEntries().get("b.jar/com/hundsun/X.class"));
+        } catch (Exception ex) {
+            Asserts.fail("伪目录过滤失败: " + ex);
+        }
+    }
+
+    /** 构造含伪目录的 zip：顶层有 topdir(0B)+topdir/child.txt，嵌套 b.jar 内有 dir1(0B)+dir1/child.txt+class。 */
+    private static java.nio.file.Path makeNestedZipWithFakeDirs() throws Exception {
+        java.io.ByteArrayOutputStream jarBytes = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(jarBytes)) {
+            // 伪目录：0 字节、无尾斜杠；Java 视为文件，启发式应识别为目录（有子路径 dir1/）
+            zos.putNextEntry(new java.util.zip.ZipEntry("dir1"));
+            zos.write(new byte[0]);
+            zos.closeEntry();
+            zos.putNextEntry(new java.util.zip.ZipEntry("dir1/child.txt"));
+            zos.write("hello".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            zos.putNextEntry(new java.util.zip.ZipEntry("com/hundsun/X.class"));
+            zos.write("class biz content".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+        java.nio.file.Path outer = java.nio.file.Files.createTempFile("bempdiff-f", ".zip");
+        try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(
+                java.nio.file.Files.newOutputStream(outer))) {
+            zos.putNextEntry(new java.util.zip.ZipEntry("topdir"));
+            zos.write(new byte[0]);
+            zos.closeEntry();
+            zos.putNextEntry(new java.util.zip.ZipEntry("topdir/child.txt"));
+            zos.write("x".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            zos.putNextEntry(new java.util.zip.ZipEntry("b.jar"));
+            zos.write(jarBytes.toByteArray());
+            zos.closeEntry();
+        }
+        return outer;
+    }
+
     /** M-B：解包报告落盘（.json/.log）+ Job 绑定 + JSON 可解析断言。 */
     public void testUnpackOutputerAndJob() {
         try {

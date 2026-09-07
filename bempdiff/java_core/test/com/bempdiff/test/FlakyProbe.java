@@ -39,6 +39,10 @@ public final class FlakyProbe {
 
         CompareOptions opts = CompareOptions.fromRequest(Map.of("options", Map.of("unpackNested", true)));
         UnpackOptions uo = opts.toUnpackOptions(); // 与 E2eVerify 一致：共用同一份 UnpackOptions
+        // 并发二分：-Dbempdiff.threads=N 可覆盖线程池；=1 时完全串行，用于判定根因是否并发竞态。
+        int threads = Integer.getInteger("bempdiff.threads", uo.threadPoolSize);
+        uo.threadPoolSize = threads;
+        System.out.println("threadPoolSize=" + threads);
         PackageParser pp = new PackageParser();
         PackageSnapshot os = pp.parse(Paths.get(oldZ), opts.toParseConfig(), false);
         PackageSnapshot ns = pp.parse(Paths.get(newZ), opts.toParseConfig(), false);

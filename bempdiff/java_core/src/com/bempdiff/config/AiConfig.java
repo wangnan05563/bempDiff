@@ -20,6 +20,13 @@ public final class AiConfig {
      * 本护栏在发送前拦截「注定被模型拒收」的超大 prompt，避免必然的 HTTP 400 与无谓的超大请求体传输。
      */
     private int maxPromptTokens = 120_000;
+    /**
+     * 单次请求最大输出 token（模型输出护栏，默认 8192）。
+     * 对应请求体 max_tokens；0 表示不显式设置，交服务端默认。
+     * 此前请求体不携带 max_tokens，输出长度听任服务端默认值（部分兼容服务默认仅数百~2k），
+     * 长报告（尤其阶段B 逐文件测试要点位于字段末尾）会被硬切、尾部丢失——故新增此显式上限。
+     */
+    private int maxOutputTokens = 8192;
     private String httpProxy = "";            // 企业网访问 LLM 的 HTTP 代理（FR9.11）
     private String httpsProxy = "";           // HTTPS 代理（FR9.11）
     private boolean blockPrivateEndpoints = false; // 严格 SSRF：额外拒绝回环/私网（本地 Ollama 需关）
@@ -44,6 +51,8 @@ public final class AiConfig {
     public void setCostGateWarnTokens(double v) { this.costGateWarnTokens = v; }
     public int getMaxPromptTokens() { return maxPromptTokens; }
     public void setMaxPromptTokens(int v) { this.maxPromptTokens = v; }
+    public int getMaxOutputTokens() { return maxOutputTokens; }
+    public void setMaxOutputTokens(int v) { this.maxOutputTokens = v; }
     public String getHttpProxy() { return httpProxy; }
     public void setHttpProxy(String v) { this.httpProxy = v == null ? "" : v; }
     public String getHttpsProxy() { return httpsProxy; }

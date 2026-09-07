@@ -25,6 +25,21 @@ public final class MockAiAnalyzer implements AiAnalyzer {
 
     private static final String DEFAULT_RISK = "MEDIUM";
 
+    // ---- 回放文件名 / 兜底文案（多处重复，提取为常量规避 java:S1192） ----
+    private static final String STAGE_A_PROMPT = "stageA.prompt.txt";
+    private static final String STAGE_A_RESPONSE = "stageA.response.txt";
+    private static final String TEST_THEME_REGRESSION = "回归核心业务流程";
+    private static final String TEST_THEME_COMPAT = "校验对外接口兼容性";
+    private static final String TEST_THEME_NO_DEP = "验证删除类无外部依赖";
+    /** 聚焦类别键 IMPACT（switch case 与 pickObjectField 别名共用）。 */
+    private static final String IMPACT = "impact";
+    /** 兜底摘要「差异文件数」描述前缀。 */
+    private static final String DIFF_FILE_COUNT = "差异文件数=";
+    /** 离线兜底摘要正文（stageA 无真实响应时的说明文案；多个回放分支复用，规避 S1192）。 */
+    private static final String DEFAULT_SUMMARY_TEXT = "未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=";
+    /** 已结合项目上下文的判断后缀（多处回放文案复用，规避 S1192）。 */
+    private static final String BASE_JUDGMENT = "）做基础判断；";
+
     private final Path replayDir;   // 离线回放目录（prompt/response 同目录）
 
     public MockAiAnalyzer(Path replayDir) {
@@ -54,8 +69,8 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     @Override
     public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg) {
         String prompt = buildStageAPrompt(diff, decompiled, cfg);
-        writePrompt("stageA.prompt.txt", prompt);
-        String resp = readResponse("stageA.response.txt");
+        writePrompt(STAGE_A_PROMPT, prompt);
+        String resp = readResponse(STAGE_A_RESPONSE);
         if (resp != null) return parseStageA(resp, false);
         return buildFallbackSummary(diff, null, cfg);
     }
@@ -63,8 +78,8 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     @Override
     public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx) {
         String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx);
-        writePrompt("stageA.prompt.txt", prompt);
-        String resp = readResponse("stageA.response.txt");
+        writePrompt(STAGE_A_PROMPT, prompt);
+        String resp = readResponse(STAGE_A_RESPONSE);
         boolean withCtx = ctx != null && !ctx.isEmpty();
         if (resp != null) return parseStageA(resp, withCtx);
         return buildFallbackSummary(diff, ctx, cfg);
@@ -78,14 +93,14 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         String reason = offlineReason(cfg);
         if (ctx != null && !ctx.isEmpty()) {
             s.setImpactScope("离线回放模式（含项目上下文[" + ctx.getBuildSystem() + "]）：" + reason + "，"
-                    + "未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
+                    + DEFAULT_SUMMARY_TEXT + changed);
             s.setContextInfluence("已结合项目上下文（构建系统=" + ctx.getBuildSystem()
-                    + "）做基础判断；" + reason + "，影响评估限于结构层面。");
+                    + BASE_JUDGMENT + reason + "，影响评估限于结构层面。");
         } else {
             s.setImpactScope("离线回放模式（" + reason + "）："
-                    + "未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
+                    + DEFAULT_SUMMARY_TEXT + changed);
         }
-        s.setTestThemes(java.util.Arrays.asList("回归核心业务流程", "校验对外接口兼容性", "验证删除类无外部依赖"));
+        s.setTestThemes(java.util.Arrays.asList(TEST_THEME_REGRESSION, TEST_THEME_COMPAT, TEST_THEME_NO_DEP));
         s.setFileRisks(new ArrayList<>());
         return s;
     }
@@ -97,30 +112,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
 
     @Override
     public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx) {
-        List<FileAnalysis> out = new ArrayList<>();
-        int idx = 0;
-        boolean withCtx = ctx != null && !ctx.isEmpty();
-        String reason = offlineReason(cfg);
-        for (DecompileReq req : candidates) {
-            ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
-            boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
-            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx);
-            writePrompt("stageB." + idx + ".prompt.txt", prompt);
-            String resp = readResponse("stageB." + idx + ".response.txt");
-            if (resp != null) {
-                out.add(parseFileAnalysis(req.key, resp, effWithCtx));
-            } else {
-                String influence = effWithCtx
-                        ? "已结合项目上下文（" + effCtx.getBuildSystem() + "）做基础判断；" + reason + "。"
-                        : "";
-                out.add(new FileAnalysis(req.key,
-                        "离线回放模式：" + reason,
-                        DEFAULT_RISK,
-                        "需人工核对（离线演示结果）", java.util.Arrays.asList("回归该类的调用方"), influence));
-            }
-            idx++;
-        }
-        return out;
+        return stageBInternal(candidates, cfg, ctx, null);
     }
 
     @Override
@@ -141,8 +133,8 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     @Override
     public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
         String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus);
-        writePrompt("stageA.prompt.txt", prompt);
-        String resp = readResponse("stageA.response.txt");
+        writePrompt(STAGE_A_PROMPT, prompt);
+        String resp = readResponse(STAGE_A_RESPONSE);
         boolean withCtx = ctx != null && !ctx.isEmpty();
         if (resp != null) return parseStageA(resp, withCtx);
         // 修复：兜底摘要按聚焦维度差异化，离线/无 API Key 时不同分析项的报告内容可区分
@@ -152,8 +144,8 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     @Override
     public StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus, String category) {
         String prompt = PromptBuilders.buildStageA(diff, decompiled, cfg, ctx, focus, category);
-        writePrompt("stageA.prompt.txt", prompt);
-        String resp = readResponse("stageA.response.txt");
+        writePrompt(STAGE_A_PROMPT, prompt);
+        String resp = readResponse(STAGE_A_RESPONSE);
         boolean withCtx = ctx != null && !ctx.isEmpty();
         if (resp != null) {
             StageASummary s = parseStageA(resp, withCtx);
@@ -172,7 +164,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         if (category != null && !category.isEmpty()) {
             switch (category) {
                 case "breaking": return FocusKind.BREAKING;
-                case "impact": return FocusKind.IMPACT;
+                case IMPACT: return FocusKind.IMPACT;
                 case "testpoints": return FocusKind.TESTPOINTS;
                 case "risk": return FocusKind.RISK;
                 default: break;
@@ -197,7 +189,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         s.setOverallRisk(DEFAULT_RISK);
         switch (kind) {
             case BREAKING:
-                s.setImpactScope("离线兜底[破坏性变更专项]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                s.setImpactScope("离线兜底[破坏性变更专项]" + ctxTxt + "：" + reason + DIFF_FILE_COUNT + changed
                         + "（删除=" + deleted + "，签名/结构变更需人工核对对外契约）；"
                         + "重点排查删除类、方法签名变更与接口实现变更的调用方兼容性。");
                 s.setTestThemes(java.util.Arrays.asList(
@@ -206,7 +198,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
                         "回归序列化/反序列化契约（字段类型变更场景）"));
                 break;
             case IMPACT:
-                s.setImpactScope("离线兜底[影响范围分析]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                s.setImpactScope("离线兜底[影响范围分析]" + ctxTxt + "：" + reason + DIFF_FILE_COUNT + changed
                         + "（新增=" + added + "，修改=" + modified + "，删除=" + deleted + "）；"
                         + "按依赖方向评估波及模块：先查直接依赖变更文件的调用方，再向上游链路扩散。");
                 s.setTestThemes(java.util.Arrays.asList(
@@ -215,7 +207,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
                         "针对受影响模块做链路级回归"));
                 break;
             case TESTPOINTS:
-                s.setImpactScope("离线兜底[测试要点分析]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                s.setImpactScope("离线兜底[测试要点分析]" + ctxTxt + "：" + reason + DIFF_FILE_COUNT + changed
                         + "，聚焦给出可执行的回归测试场景、用例思路与验证重点。");
                 s.setTestThemes(java.util.Arrays.asList(
                         "核心业务流程主链路回归（含变更点前后对比）",
@@ -223,21 +215,21 @@ public final class MockAiAnalyzer implements AiAnalyzer {
                         "兼容性用例：旧数据/旧配置/跨版本序列化"));
                 break;
             case RISK:
-                s.setImpactScope("离线兜底[整体风险分析]" + ctxTxt + "：" + reason + "；差异文件数=" + changed
+                s.setImpactScope("离线兜底[整体风险分析]" + ctxTxt + "：" + reason + DIFF_FILE_COUNT + changed
                         + "（新增=" + added + "，修改=" + modified + "，删除=" + deleted + "），"
                         + "整体风险等级中，需结合降级与回滚预案综合评估。");
                 s.setTestThemes(java.util.Arrays.asList(
-                        "回归核心业务流程",
-                        "校验对外接口兼容性",
-                        "验证删除类无外部依赖"));
+                        TEST_THEME_REGRESSION,
+                        TEST_THEME_COMPAT,
+                        TEST_THEME_NO_DEP));
                 break;
             default:
-                s.setImpactScope("离线回放模式" + ctxTxt + "：" + reason + "；未提供 stageA.response.txt，使用内置兜底摘要。差异文件数=" + changed);
-                s.setTestThemes(java.util.Arrays.asList("回归核心业务流程", "校验对外接口兼容性", "验证删除类无外部依赖"));
+                s.setImpactScope("离线回放模式" + ctxTxt + "：" + reason + "；" + DEFAULT_SUMMARY_TEXT + changed);
+                s.setTestThemes(java.util.Arrays.asList(TEST_THEME_REGRESSION, TEST_THEME_COMPAT, TEST_THEME_NO_DEP));
         }
         if (ctx != null && !ctx.isEmpty()) {
             s.setContextInfluence("已结合项目上下文（构建系统=" + ctx.getBuildSystem()
-                    + "）做基础判断；" + reason + "，影响评估限于结构层面。");
+                    + BASE_JUDGMENT + reason + "，影响评估限于结构层面。");
         }
         s.setFileRisks(new ArrayList<>());
         return s;
@@ -266,23 +258,32 @@ public final class MockAiAnalyzer implements AiAnalyzer {
 
     @Override
     public List<FileAnalysis> stageB(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx, String focus) {
+        return stageBInternal(candidates, cfg, ctx, focus);
+    }
+
+    /**
+     * stageB 核心循环：统一无 focus 与有 focus 两个重载的处理骨架，避免循环体重复。
+     * focus 为 null 时走无 focus 版本语义：兜底测试要点取 RISK 默认分支（等价于原实现）。
+     */
+    private List<FileAnalysis> stageBInternal(List<DecompileReq> candidates, AiConfig cfg, ProjectContext ctx, String focus) {
         List<FileAnalysis> out = new ArrayList<>();
         int idx = 0;
-        boolean withCtx = ctx != null && !ctx.isEmpty();
-        // 修复：兜底文件结论按聚焦维度微调，离线模式下不同分析项的报告内容可区分
         List<String> fallbackPoints = fallbackTestPoints(focus);
         String reason = offlineReason(cfg);
         for (DecompileReq req : candidates) {
             ProjectContext effCtx = (req.perFileCtx != null) ? req.perFileCtx : ctx;
             boolean effWithCtx = effCtx != null && !effCtx.isEmpty();
-            String prompt = PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx, focus);
+            // focus 为 null 时调用无 focus 重载的 PromptBuilders.buildStageB，保持 prompt 生成语义不变
+            String prompt = (focus == null)
+                    ? PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx)
+                    : PromptBuilders.buildStageB(req.key, req.unit, req.fileClass, cfg, effCtx, focus);
             writePrompt("stageB." + idx + ".prompt.txt", prompt);
             String resp = readResponse("stageB." + idx + ".response.txt");
             if (resp != null) {
                 out.add(parseFileAnalysis(req.key, resp, effWithCtx));
             } else {
                 String influence = effWithCtx
-                        ? "已结合项目上下文（" + effCtx.getBuildSystem() + "）做基础判断；" + reason + "。"
+                        ? "已结合项目上下文（" + effCtx.getBuildSystem() + BASE_JUDGMENT + reason + "。"
                         : "";
                 out.add(new FileAnalysis(req.key,
                         "离线回放模式：" + reason,
@@ -374,7 +375,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
             b.setFile(pickObjectField(obj, "file", "fileName"));
             b.setChangeType(pickObjectField(obj, "changeType", "type"));
             b.setChange(pickObjectField(obj, "change", "detail"));
-            b.setCompatImpact(pickObjectField(obj, "compatImpact", "impact"));
+            b.setCompatImpact(pickObjectField(obj, "compatImpact", IMPACT));
             b.setSeverity(pickObjectField(obj, "severity", "risk"));
             b.setMigrationSuggestion(pickObjectField(obj, "migrationSuggestion", "suggestion"));
             out.add(b);
@@ -409,8 +410,8 @@ public final class MockAiAnalyzer implements AiAnalyzer {
      *  与 parseFileRiskObjects 同构但返回原始对象体，供 mapBreaking/mapTestPoints 复用 pickObjectField。 */
     private static List<String> parseRawObjectBodies(String inner) {
         List<String> out = new ArrayList<>();
-        int depth = 0;
-        int objStart = -1;
+        int[] depth = {0};
+        int[] objStart = {-1};
         boolean inStr = false;
         boolean escaped = false;
         for (int i = 0; i < inner.length(); i++) {
@@ -422,27 +423,26 @@ public final class MockAiAnalyzer implements AiAnalyzer {
             } else if (c == '"') {
                 inStr = !inStr;
             } else if (!inStr) {
-                if (c == '{') {
-                    if (depth == 0) {
-                        objStart = i;
-                    }
-                    depth++;
-                } else if (c == '}') {
-                    depth--;
-                    if (depth == 0 && objStart >= 0) {
-                        out.add(inner.substring(objStart + 1, i));
-                        objStart = -1;
-                    }
-                }
+                scanBrace(c, depth, objStart, out, inner, i);
             }
         }
         return out;
     }
 
-    /** 取响应中某字段的字符串值（宽容：JSON 标量或纯文本形态），未找到返回空串。
-     *  用于 category conclusion 的自由文本字段解析。 */
-    private static String pickText(String resp, String field) {
-        return pick(resp, field, "");
+    /** 更新花括号层与对象体起始/结束（仅在非字符串内调用，规避括号被字符串内容干扰）。 */
+    private static void scanBrace(char c, int[] depth, int[] objStart, List<String> out, String inner, int i) {
+        if (c == '{') {
+            if (depth[0] == 0) {
+                objStart[0] = i;
+            }
+            depth[0]++;
+        } else if (c == '}') {
+            depth[0]--;
+            if (depth[0] == 0 && objStart[0] >= 0) {
+                out.add(inner.substring(objStart[0] + 1, i));
+                objStart[0] = -1;
+            }
+        }
     }
 
     /** 分类结论自由文本字段的宽容提取：兼容「标量 / 字符串数组 / 对象 / 对象数组」四种形态。
@@ -468,7 +468,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
 
     /** 从响应中定位某字段名（完整 JSON 键 `"field":`）的起始下标；未找到返回 -1。
      *  前导必须是对象分隔符（`{`/`,`/空白），避免把 `subField` 这类复合键内部的
-     *  同名子串误当作顶层字段（如 "impact" 会误命中 "compatImpact"）。 */
+     *  同名子串误当作顶层字段（如 IMPACT 会误命中 "compatImpact"）。 */
     private static int indexOfFieldKey(String resp, String field) {
         String key = "\"" + field + "\"";
         int idx = resp.indexOf(key);
@@ -493,17 +493,14 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         while (p < resp.length() && (resp.charAt(p) == ' ' || resp.charAt(p) == '\t'
                 || resp.charAt(p) == '\r' || resp.charAt(p) == '\n')) p++;
         if (p >= resp.length()) return null;
+        return extractJsonValueSubstring(resp, p);
+    }
+
+    /** 按首字符类型提取一个完整 JSON 值子串（字符串/数组/对象/标量）；未闭合的数组/对象返回 null。 */
+    private static String extractJsonValueSubstring(String resp, int p) {
         char ch = resp.charAt(p);
         if (ch == '"') {
-            int end = p + 1;
-            boolean esc = false;
-            while (end < resp.length()) {
-                char c = resp.charAt(end);
-                if (esc) esc = false;
-                else if (c == '\\') esc = true;
-                else if (c == '"') break;
-                end++;
-            }
+            int end = scanStringEnd(resp, p + 1);
             return resp.substring(p, Math.min(end + 1, resp.length()));
         }
         if (ch == '[') {
@@ -552,25 +549,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
     private static String jsonValueToText(String raw) {
         if (raw == null) return "";
         String t = raw.trim();
-        if (t.startsWith("[")) {
-            String inner = t.length() >= 2 ? t.substring(1, t.length() - 1) : "";
-            int first = 0;
-            while (first < inner.length() && Character.isWhitespace(inner.charAt(first))) first++;
-            if (first < inner.length() && inner.charAt(first) == '{') {
-                // 对象数组 → 逐对象转文本
-                List<String> bodies = parseRawObjectBodies(inner);
-                StringBuilder sb = new StringBuilder();
-                for (String b : bodies) {
-                    String ot = objectToText(b);
-                    if (!ot.isEmpty()) {
-                        if (sb.length() > 0) sb.append("\n");
-                        sb.append(ot);
-                    }
-                }
-                return sb.toString();
-            }
-            return String.join("\n", parseStringArray(inner));
-        }
+        if (t.startsWith("[")) return jsonArrayToText(t);
         if (t.startsWith("{")) {
             String inner = t.length() >= 2 ? t.substring(1, t.length() - 1) : "";
             return objectToText(inner);
@@ -581,92 +560,131 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         return t;
     }
 
+    /** 将 JSON 数组值子串转多行文本：对象数组逐对象转文本，字符串数组以换行拼接。 */
+    private static String jsonArrayToText(String t) {
+        String inner = t.length() >= 2 ? t.substring(1, t.length() - 1) : "";
+        int first = 0;
+        while (first < inner.length() && Character.isWhitespace(inner.charAt(first))) first++;
+        if (first < inner.length() && inner.charAt(first) == '{') {
+            // 对象数组 → 逐对象转文本
+            List<String> bodies = parseRawObjectBodies(inner);
+            StringBuilder sb = new StringBuilder();
+            for (String b : bodies) {
+                String ot = objectToText(b);
+                if (!ot.isEmpty()) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(ot);
+                }
+            }
+            return sb.toString();
+        }
+        return String.join("\n", parseStringArray(inner));
+    }
+
     /** 将单个 JSON 对象体（不含外层花括号）拍平为「- 字段：值」多行文本；嵌套对象/数组递归转文本。 */
     private static String objectToText(String inner) {
         String s = inner == null ? "" : inner;
         StringBuilder sb = new StringBuilder();
         int i = 0;
         while (i < s.length()) {
-            int q = s.indexOf('"', i);
-            if (q < 0) break;
-            int qEnd = q + 1;
-            boolean esc = false;
-            while (qEnd < s.length()) {
-                char c = s.charAt(qEnd);
-                if (esc) esc = false;
-                else if (c == '\\') esc = true;
-                else if (c == '"') break;
-                qEnd++;
-            }
-            String key = s.substring(q + 1, qEnd);
-            int colon = s.indexOf(':', qEnd);
-            if (colon < 0) break;
-            int vs = colon + 1;
-            while (vs < s.length() && Character.isWhitespace(s.charAt(vs))) vs++;
-            String val;
-            if (vs < s.length()) {
-                char ch = s.charAt(vs);
-                if (ch == '{') {
-                    int end = findObjectEnd(s, vs);
-                    if (end > vs) {
-                        val = s.substring(vs, end + 1);
-                        i = end + 1;
-                    } else {
-                        // 对象括号未闭合（LLM 输出被截断）：置空并终止，避免游标回退造成死循环
-                        return collapseText(sb);
-                    }
-                } else if (ch == '[') {
-                    int end = findArrayEnd(s, vs);
-                    if (end > vs) {
-                        val = s.substring(vs, end + 1);
-                        i = end + 1;
-                    } else {
-                        // 数组未闭合（LLM 输出被截断）：置空并终止，避免游标回退造成死循环
-                        return collapseText(sb);
-                    }
-                } else if (ch == '"') {
-                    int end = vs + 1;
-                    boolean es = false;
-                    while (end < s.length()) {
-                        char c = s.charAt(end);
-                        if (es) es = false;
-                        else if (c == '\\') es = true;
-                        else if (c == '"') break;
-                        end++;
-                    }
-                    val = s.substring(vs, Math.min(end + 1, s.length()));
-                    // 右引号可能缺失（截断输出）：夹取到末尾即止，确保游标不越过 s 边界
-                    i = Math.min(end, s.length());
-                } else {
-                    int e = vs;
-                    while (e < s.length() && s.charAt(e) != ',' && s.charAt(e) != '}') e++;
-                    val = s.substring(vs, e);
-                    i = e;
-                }
-            } else {
-                val = "";
-            }
-            String vtxt = jsonValueToText(val).replaceAll("\n\\s*", "\n").trim();
-            boolean multi = vtxt.contains("\n");
-            if (sb.length() > 0) sb.append("\n");
-            if (multi) {
-                sb.append("- ").append(key).append("：\n");
-                for (String ln : vtxt.split("\n")) sb.append("  ").append(ln).append("\n");
-            } else {
-                sb.append("- ").append(key).append("：").append(vtxt);
-            }
-            while (i < s.length() && s.charAt(i) != ',') {
-                if (s.charAt(i) == '}') break;
-                i++;
-            }
-            if (i < s.length() && s.charAt(i) == ',') i++;
+            int next = appendField(sb, s, i);
+            if (next < 0) return collapseText(sb); // 值未闭合（截断输出）：提前终止，避免游标回退死循环
+            i = next;
         }
         return collapseText(sb);
+    }
+
+    /**
+     * 格式化单个「字段：值」并追加到 sb，返回下一字段起始下标；未找到字段或值未闭合返回 -1 由调用方终止。
+     * 提取自 objectToText 以降低其认知复杂度（原内层 while 全量逻辑移入）。
+     */
+    private static int appendField(StringBuilder sb, String s, int i) {
+        int q = s.indexOf('"', i);
+        if (q < 0) return -1;
+        int qEnd = scanStringEnd(s, q + 1);
+        String key = s.substring(q + 1, qEnd);
+        int colon = s.indexOf(':', qEnd);
+        if (colon < 0) return -1;
+        int vs = colon + 1;
+        while (vs < s.length() && Character.isWhitespace(s.charAt(vs))) vs++;
+        int[] next = {i};
+        String val = parseObjectValue(s, vs, next);
+        if (val == null) return -1; // 值体（对象/数组）未闭合（LLM 输出被截断）：交由调用方终止避免死循环
+        int i2 = next[0];
+        String vtxt = jsonValueToText(val).replaceAll("\n\\s*", "\n").trim();
+        boolean multi = vtxt.contains("\n");
+        if (sb.length() > 0) sb.append("\n");
+        appendFieldText(sb, key, vtxt, multi);
+        while (i2 < s.length() && s.charAt(i2) != ',') {
+            if (s.charAt(i2) == '}') break;
+            i2++;
+        }
+        if (i2 < s.length() && s.charAt(i2) == ',') i2++;
+        return i2;
+    }
+
+    /** 以"键：值"单行或多行形式追加字段文本；多行时逐行缩进两格。 */
+    private static void appendFieldText(StringBuilder sb, String key, String vtxt, boolean multi) {
+        if (multi) {
+            sb.append("- ").append(key).append("：\n");
+            for (String ln : vtxt.split("\n")) sb.append("  ").append(ln).append("\n");
+        } else {
+            sb.append("- ").append(key).append("：").append(vtxt);
+        }
+    }
+
+    /** 解析对象体内某字段的 JSON 值（vs 为冒号后首个非空白下标），返回值子串并把游标推进到其结尾。
+     *  值体（对象/数组）未闭合（截断输出）时返回 null，交由调用方终止以规避死循环。 */
+    private static String parseObjectValue(String s, int vs, int[] next) {
+        if (vs >= s.length()) {
+            next[0] = vs;
+            return "";
+        }
+        char ch = s.charAt(vs);
+        if (ch == '{') {
+            int end = findObjectEnd(s, vs);
+            if (end > vs) {
+                next[0] = end + 1;
+                return s.substring(vs, end + 1);
+            }
+            return null; // 对象括号未闭合（截断输出）
+        }
+        if (ch == '[') {
+            int end = findArrayEnd(s, vs);
+            if (end > vs) {
+                next[0] = end + 1;
+                return s.substring(vs, end + 1);
+            }
+            return null; // 数组未闭合（截断输出）
+        }
+        if (ch == '"') {
+            int end = scanStringEnd(s, vs + 1); // 右引号可能缺失（截断输出）：夹取到末尾即止，确保游标不越过边界
+            next[0] = Math.min(end, s.length());
+            return s.substring(vs, Math.min(end + 1, s.length()));
+        }
+        int e = vs;
+        while (e < s.length() && s.charAt(e) != ',' && s.charAt(e) != '}') e++;
+        next[0] = e;
+        return s.substring(vs, e);
     }
 
     /** 将临时对象文本累加器归一化：合并连续空行并去首尾空白，供 normal/未闭合提前返回两条路径复用。 */
     private static String collapseText(StringBuilder sb) {
         return sb.toString().replaceAll("\n{2,}", "\n").trim();
+    }
+
+    /** 从字符串字面量起始（from 为开引号后首字符）扫到结束引号，返回其下标（不含）；未闭合时返回 s.length()。 */
+    private static int scanStringEnd(String s, int from) {
+        int end = from;
+        boolean esc = false;
+        while (end < s.length()) {
+            char c = s.charAt(end);
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') return end;
+            end++;
+        }
+        return end;
     }
 
     public static FileAnalysis parseFileAnalysisStatic(String key, String resp) {
@@ -679,7 +697,7 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         List<String> testPoints = extractStringArray(resp, "testPoints", "test_points", "testingPoints", "测试要点");
         return new FileAnalysis(key, pickTextOrArray(resp, "intent", "意图"),
                 pick(resp, "risk", DEFAULT_RISK),
-                pickTextOrArray(resp, "impact", "影响"), testPoints, influence);
+                pickTextOrArray(resp, IMPACT, "影响"), testPoints, influence);
     }
 
     private static StageASummary parseStageA(String resp, boolean withContext) {
@@ -751,35 +769,12 @@ public final class MockAiAnalyzer implements AiAnalyzer {
         return parseFileRiskObjects(inner);
     }
 
-    /** 解析一个 JSON 对象数组内部文本（不含外层方括号）为 FileRisk 列表。 */
-    private static List<FileRisk> parseFileRiskObjects(String inner) { // NOSONAR(S3776) - 字符级状态机解析，复杂度源于必要分支
+    /** 解析一个 JSON 对象数组内部文本（不含外层方括号）为 FileRisk 列表。
+     *  对象体的字符级切分复用 parseRawObjectBodies 状态机，本方法只做对象体到 FileRisk 的映射。 */
+    private static List<FileRisk> parseFileRiskObjects(String inner) {
         List<FileRisk> out = new ArrayList<>();
-        int depth = 0;
-        int objStart = -1;
-        boolean inStr = false;
-        boolean escaped = false;
-        for (int i = 0; i < inner.length(); i++) {
-            char c = inner.charAt(i);
-            if (escaped) {
-                escaped = false;
-            } else if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                inStr = !inStr;
-            } else if (!inStr) {
-                if (c == '{') {
-                    if (depth == 0) {
-                        objStart = i;
-                    }
-                    depth++;
-                } else if (c == '}') {
-                    depth--;
-                    if (depth == 0 && objStart >= 0) {
-                        out.add(parseFileRiskObject(inner.substring(objStart + 1, i)));
-                        objStart = -1;
-                    }
-                }
-            }
+        for (String obj : parseRawObjectBodies(inner)) {
+            out.add(parseFileRiskObject(obj));
         }
         return out;
     }

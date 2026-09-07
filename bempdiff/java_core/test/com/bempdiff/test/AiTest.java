@@ -196,4 +196,61 @@ public final class AiTest {
         Asserts.assertEquals("risk", "LOW", fa.getRisk());
         Asserts.assertContains("intent", fa.getIntent(), "计费逻辑");
     }
+
+    /**
+     * 差异文件过多（超出 stageATopK）时：① 剥离逐文件初评（fileRisks）只出整体结论，
+     * 防模型输出 JSON 超长被 max_tokens 腰斩；② 输入按目录分组聚合，各组统计覆盖全部文件。
+     * 小场景（文件数 ≤ Top-K）保持旧行为：不分组、保留 fileRisks 指令（回归保护）。
+     */
+    public void testBuildStageA_tooManyFiles_groupAndDropFileRisks() {
+        // 大场景：5 目录 × 9 个修改 + 3 个新增 = 48 个文件 > Top-K=10
+        DiffResult r = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        Map<String, DecompiledUnit> dec = new LinkedHashMap<>();
+        for (int i = 0; i < 45; i++) {
+            String k = "WEB-INF/classes/com/mod" + (i % 5) + "/C" + i + ".class";
+            r.put(DiffStatus.MODIFIED, k);
+            dec.put(k, new DecompiledUnit("k" + i, null, null, "L1\nL2\nL3", "cfr", "", true));
+        }
+        for (int i = 0; i < 3; i++) {
+            String k = "static/js/b" + i + ".js";
+            r.put(DiffStatus.ADDED, k);
+            dec.put(k, new DecompiledUnit("j" + i, null, null, "A1\nA2", "js", "", true));
+        }
+        AiConfig cfg = new AiConfig();
+        cfg.setStageATopK(10);
+        String p = PromptBuilders.buildStageA(r, dec, cfg);
+        Asserts.assertContains("应触发分组路径", p, "按目录分组展示各组统计与代表文件");
+        Asserts.assertContains("应含目录组统计", p, "### [目录] WEB-INF/classes/com/mod0");
+        Asserts.assertContains("组统计覆盖全量文件", p, "共 9 个变更：新增0/修改9/删除0");
+        Asserts.assertContains("新增目录组统计", p, "### [目录] static/js");
+        Asserts.assertContains("应提示省略 fileRisks", p, "差异文件过多");
+        Asserts.assertNotContains("不应再要求逐文件初评", p, "每个改动文件的初评数组");
+
+        // 小场景：文件数 ≤ Top-K，保持原语义
+        DiffResult r2 = new DiffResult(new LinkedHashMap<>(), new LinkedHashMap<>());
+        r2.put(DiffStatus.MODIFIED, "a/B.class");
+        Map<String, DecompiledUnit> dec2 = new LinkedHashMap<>();
+        dec2.put("a/B.class", new DecompiledUnit("k", null, null, "L1\nL2", "cfr", "", true));
+        AiConfig cfg2 = new AiConfig();
+        cfg2.setStageATopK(30);
+        String p2 = PromptBuilders.buildStageA(r2, dec2, cfg2);
+        Asserts.assertNotContains("小场景不应分组", p2, "按目录分组");
+        Asserts.assertContains("小场景保留逐文件初评指令", p2, "每个改动文件的初评数组");
+    }
+
+    /** 输出上限自适应：max_tokens 按「模型窗口扣除输入后的剩余空间」放宽，且绝不超窗口真实剩余。 */
+    public void testEffectiveOutputTokens_adaptiveCap() throws Exception {
+        com.bempdiff.ai.HttpAiAnalyzer a = new com.bempdiff.ai.HttpAiAnalyzer(new AiConfig());
+        java.lang.reflect.Method m = com.bempdiff.ai.HttpAiAnalyzer.class.getDeclaredMethod(
+                "effectiveOutputTokens", String.class);
+        m.setAccessible(true);
+        AiConfig cfg = new AiConfig();
+        cfg.setMaxPromptTokens(120_000);
+        cfg.setMaxOutputTokens(8192);
+        int wide = (Integer) m.invoke(a, new String(new char[30_000]).replace('\0', 'x'));
+        Asserts.assertTrue("窗口允许时应放大输出上限（>8192）", wide > 8192);
+        Asserts.assertTrue("放大后不得超出窗口真实剩余", wide <= 120_000 - 30_000 / 2 - 1);
+        int tight = (Integer) m.invoke(a, new String(new char[200_000]).replace('\0', 'x'));
+        Asserts.assertTrue("输入接近窗口时输出上限收紧且保持下限", tight >= 1024);
+    }
 }

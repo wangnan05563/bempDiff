@@ -11,6 +11,7 @@ public final class StageASummary {
     private String contextInfluence;     // 项目级上下文如何影响整体结论（AI 增强）
     private String category;             // 分析类别（risk/breaking/impact/testpoints/custom），渲染端据此区分章节
     private CategoryConclusion conclusion = new CategoryConclusion(); // 分类化专题结论（方案B）
+    private boolean outputTruncated;     // 本次调用输出被 max_tokens 截断（部分结论不完整），渲染端提示
 
     public String getOverallRisk() { return overallRisk; }
     public void setOverallRisk(String v) { this.overallRisk = v; }
@@ -26,4 +27,6 @@ public final class StageASummary {
     public void setCategory(String v) { this.category = v; }
     public CategoryConclusion getConclusion() { return conclusion; }
     public void setConclusion(CategoryConclusion v) { this.conclusion = v == null ? new CategoryConclusion() : v; }
+    public boolean isOutputTruncated() { return outputTruncated; }
+    public void setOutputTruncated(boolean v) { this.outputTruncated = v; }
 }

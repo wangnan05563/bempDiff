@@ -195,7 +195,8 @@ public final class PackageVersion {
     }
 
     private static int compareToken(String x, String y) {
-        boolean xn = isNumeric(x), yn = isNumeric(y);
+        boolean xn = isNumeric(x);
+        boolean yn = isNumeric(y);
         if (xn && yn) {
             // 数字段：数值比较（忽略前导零长度差）
             return Long.compare(Long.parseLong(x), Long.parseLong(y));

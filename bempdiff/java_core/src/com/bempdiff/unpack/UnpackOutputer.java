@@ -2,6 +2,7 @@ package com.bempdiff.unpack;
 
 import com.bempdiff.server.Json;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,11 +33,11 @@ public final class UnpackOutputer {
             writeLog(jobId, reports, logsDir);
         } catch (Exception ex) {
             // 容错：落盘失败仅打印，绝不影响比对与后续 AI（对齐 openLog 容错约定）。
-            System.err.println("[UnpackOutputer] 解包报告落盘失败 jobId=" + jobId + " : " + ex);
+            System.err.println("[UnpackOutputer] 解包报告落盘失败 jobId=" + jobId + " : " + ex); // NOSONAR S106: 工程约定核心无日志框架，此处用 stderr 尽力打印，避免引入日志依赖
         }
     }
 
-    private static void writeJson(String jobId, UnpackReport[] reports, Path logsDir) throws Exception {
+    private static void writeJson(String jobId, UnpackReport[] reports, Path logsDir) throws IOException {
         List<Object> list = new ArrayList<>();
         for (UnpackReport r : reports) {
             list.add(r == null ? null : Json.parseObject(r.toJson()));
@@ -45,7 +46,7 @@ public final class UnpackOutputer {
         Files.write(f, Json.write(list).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static void writeLog(String jobId, UnpackReport[] reports, Path logsDir) throws Exception {
+    private static void writeLog(String jobId, UnpackReport[] reports, Path logsDir) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (UnpackReport r : reports) {
             if (r == null) continue;

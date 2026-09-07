@@ -1,4 +1,4 @@
-﻿# BempDiff 单测结果 (2026-08-17 12:14:28)
+﻿# BempDiff 单测结果 (2026-08-31 01:57:56)
 frontend (algo)  : PASS  (node test_p0_frontend.mjs)
 frontend (bridge) : PASS  (node test_desktop_picker.mjs)
 frontend (tabs)   : PASS  (node test_tab_mode.mjs)

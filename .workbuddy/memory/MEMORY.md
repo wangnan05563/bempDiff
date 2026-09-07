@@ -21,6 +21,8 @@
 - **幻影路径**：传原生 `javac/java` 目录须用显式 `C:/Users/...` 盘符，勿用 `/c/...` POSIX（被当当前盘 D: 根 → 写到 `D:\c\...`）。
 - **npm/vitest**：webui/ 与 dev-shell/ 放项目级 `.npmrc` 覆盖 `registry=https://registry.npmmirror.com/`（用户级 `always-auth=true` 致挂起）；**vitest 4.x 与 vite 5 不兼容**，须 `vitest@^2.1.9`。
 - **PowerShell 管道死锁**：`& script.ps1 2>&1 | ForEach{}` 长跑后外层挂住 → 用 `*> file`/`Tee-Object` 落盘读。
+- **PowerShell 5.1 读 JSON 必须显式 `-Encoding UTF8`（2026-08-31 实测）**：`Get-Content <无 BOM 的 UTF-8> -Raw | ConvertFrom-Json` 按 ANSI/GBK 解码，中文 `description` 乱码、引号被破坏 → `ConvertFrom-Json` 报「传入的对象无效，应为":"或"}"」→ 字段取到**空值**。**约定：脚本读 JSON 字段一律用 `node -p "require('./x.json').field"`**（node require 天然处理编码，输出纯 LF 无 CR，`set /p` 安全），勿再用 PS ConvertFrom-Json。
+- **electron-builder "output file is locked => waiting for unlock" 仍 exit 0**：旧 exe 被占用（杀软/Explorer/上次残留）时会跳过生成新文件却退 0，"文件存在"检查会把**旧产物**当本次结果（2026-08-31：误把 11:47 的旧包当本次产出）。**打包前须按版本号先删旧 `setup.exe`+`.blockmap`**，再以"存在且 >=50MB"作本次判据；校验用绝对路径（`%CD%\..\release`）且缺失时 `Write-Error` 打印真实路径，杜绝静默失败。
 
 ## 业务要点
 - 分层 L0/L1/L2；CFR 反编译+javap 降级；两阶段 AI+成本闸门+脱敏；API Key 默认不落盘。

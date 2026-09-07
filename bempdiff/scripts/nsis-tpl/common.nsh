@@ -17,7 +17,7 @@ Name "${PRODUCT_NAME}" "${DoubleAmpersand}"
 !define UNINSTALL_FILENAME "Uninstall ${PRODUCT_FILENAME}.exe"
 
 !macro setSpaceRequired SECTION_ID
-  # 【磁盘空间预检修复】NSIS 内置按 SectionGetSize（解压体积，单位 KiB）比对安装盘剩余空间，
+  # [磁盘空间预检禁用] NSIS 内置按 SectionGetSize（解压体积，单位 KiB）比对安装盘剩余空间，
   # 在 NTFS 配额/文件夹压缩/杀软过滤驱动/虚拟化重定向环境下，GetDiskFreeSpaceEx 可能返回剩余≈0，
   # 即便磁盘充足也误弹「磁盘空间不足」（本产品实测：解压后约 300MB，任意盘剩余均远大于此）。
   # 这里把「需要空间」压到极小（1 KiB），使预检恒通过；安装阶段真实解压仍由 NSIS 执行，不受影响。
