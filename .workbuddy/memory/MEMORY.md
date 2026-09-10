@@ -55,3 +55,15 @@
 - **exe 子命令白名单漂移**：`App.isBatchSubcommand()` 须随 `Main` 子命令同步加 case，否则走 usage exit2。
 - **离线 `report --ai`**：`--apikey ""` 强制 MockAiAnalyzer，确定性产出 AI 章节。
 - **前端构建/测试**：webui/ 下 `node node_modules/vite/bin/vite.js build`（45模块/2.4s）；测试 `./node_modules/.bin/vitest run`（jsdom 起得慢属正常，约 16s/90 用例）。
+
+## 工作空间清理（workspace-cleanup，第 3 轮 2026-09-10）
+- **skill 状态**：`workspace-cleanup` 被 `skillOverrides` 禁用（Skill 工具拒载）；`SkillManage` 本环境不可用。其 `SKILL.md` 正文**乱码**（UTF-8 被按 GBK 解），references 链接还指向别的项目（`19_Karpathy-AI+Obsidian知识库/.trae/skills/...`）→ 用前需直接 Read 该文件、按六阶段手工执行。
+- **双桶处置约定**：可再生且未入库 → 直删；一次性质疑证据 → **隔离移动**。隔离区放**工作空间外**（`D:\code\otherProjects\.cleanup-quarantine\<项目>-<ts>\`，同盘秒级还原）；放工作空间内会让「释放空间」报表失真。
+- **哈希策略（实测）**：全量 SHA-256 在 AV 节流下 1.62 GB 需 >7min 未完；改「隔离桶全量 + 删除桶 ≤1MB 全量 / >1MB 首 64KiB 采样」+8 线程 → 7.6s。可再生缓存无需全量哈希。
+- **去重坑**：混用 `os.walk` 绝对路径与 `os.path.join(ROOT, rel)` 会生成 `D:\a/b` 与 `D:\a\b` 两种串 → 按 abs 字符串去重失效（本次虚高 163），且 `.class` 会被删除桶先命中而非按预期走隔离。必须用 `normcase(normpath(abs))` 作键；`kind` 也须按条目后缀归一化，否则同一 `.class` 因多规则命中导致报表口径分裂。
+- **占用探测**：`CreateFileW(path, GENERIC_READ, share=0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS)` 返回 INVALID 且 `GetLastError()==32` 即锁定（目录同此）。
+- **服务甄别**：`tasklist` 只见通用 `java.exe`，须 `wmic process get ProcessId,Name,ExecutablePath,CommandLine` 看命令行——本机 java.exe 全是 Trae LS/Jenkins/spring-boot LS，**与 BempDiff 无关**；端口 8000/8080/5000/18765/5180 无监听即放行。
+- **tracked-but-ignored 检测**：`git ls-files | git check-ignore --stdin --no-index` 精确列出「已入库但被忽略」历史垃圾（本次 26 个），是 `.gitattributes export-ignore` 的输入。
+- **只提交指定文件**：index 里可能已有他人暂存改动，用 `git commit -- <pathspec>` 避免夹带。
+- **本轮结果**：2.85 GB → 782.44 MB（−2.09 GB / −73.23%），删 4,377 + 隔离 550 文件，26 批 0 错误，commit `f99171a`。用户确认保留：`node_modules ×3`（526 MB）、`bempdiff/dist_input`（86.7 MB）、`release/*.exe` 交付包。
+- **禁用清理项**：`bempdiff/toolchain`（JDK21 必需）、`bempdiff/java_core_ai_replay`（约定保留不改）、`bempdiff/verify_exe`+`tooling/verify_exe`（受 git 跟踪）。
