@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.0",
+    "@vue/compiler-sfc": "^3.5.0",
     "@vue/test-utils": "^2.4.11",
     "jsdom": "^30.0.1",
     "vite": "^5.4.0",

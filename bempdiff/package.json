@@ -7,11 +7,9 @@
     "dev": "cd webui && npm run dev",
     "build": "cd webui && npm run build",
     "dist": "electron-builder",
-    "dist:dir": "electron-builder --dir",
-    "tauri": "tauri"
+    "dist:dir": "electron-builder --dir"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4",
     "electron-builder": "^24.13.3"
   },
   "build": {
