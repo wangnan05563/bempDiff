@@ -55,9 +55,23 @@ garbage_patterns:
   # SonarQube 缓存目录
   cache_dirs:
     - ".scannerwork/"
+  # bempdiff/ 下递归所有 .class（编译中间产物，与 .java 同源可重生）
+  compiled_class_patterns:
+    - "/bempdiff/**/*.class"
+  # 运行时/结果日志（全删，可重跑测试/扫描重生）
+  runtime_logs:
+    - "/tooling/jmeter.log"
+    - "/scan-output.log"
+    - "/logs/*"            # 仅删 logs/ 内文件，保留目录与本次清理备份日志
+    - "/tooling/jmeter/*.log"
+    - "/tooling/jmeter/*.jtl"
+    - "/bempdiff/*.log"
 
 # ---------- 绝对保留路径（优先级最高，先于一切规则） ----------
 # 命中即无条件 KEEP，任何 garbage_patterns / 推断都不得覆盖。
+# 设计动机（2026-09-10 误删事故）：`build/` 曾作为编译目录模式命中
+# bempdiff/build/，而那是 electron-builder 的 buildResources 目录（源码），
+# 内含被 package.json → nsis.include 引用的 installer.nsh。此类目录必须显式豁免。
 preserve_paths:
   # electron-builder buildResources 目录：nsis.include 指向的手写 NSIS 脚本源
   - "bempdiff/build/"
@@ -74,19 +88,7 @@ preserve_paths:
   - "docs/"
   - "tooling/scripts/"
   - "perf_bemp/"
-  - "release/"                        # 交付安装包所在的产物根，整体不纳入自动清理
-
-  # bempdiff/ 下递归所有 .class（编译中间产物，与 .java 同源可重生）
-  compiled_class_patterns:
-    - "/bempdiff/**/*.class"
-  # 运行时/结果日志（全删，可重跑测试/扫描重生）
-  runtime_logs:
-    - "/tooling/jmeter.log"
-    - "/scan-output.log"
-    - "/logs/*"            # 仅删 logs/ 内文件，保留目录与本次清理备份日志
-    - "/tooling/jmeter/*.log"
-    - "/tooling/jmeter/*.jtl"
-    - "/bempdiff/*.log"
+  - "release/"        # 交付安装包所在的产物根，整体不纳入自动清理（含 *.exe / *.blockmap）
 
 # ---------- 二义性文件确认门（依赖 / 资产类） ----------
 # 本项目含大量 jar/war/exe：部分属必要依赖(反编译器/JavaFX/发布包)或测试夹具，

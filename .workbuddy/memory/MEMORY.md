@@ -67,3 +67,13 @@
 - **只提交指定文件**：index 里可能已有他人暂存改动，用 `git commit -- <pathspec>` 避免夹带。
 - **本轮结果**：2.85 GB → 782.44 MB（−2.09 GB / −73.23%），删 4,377 + 隔离 550 文件，26 批 0 错误，commit `f99171a`。用户确认保留：`node_modules ×3`（526 MB）、`bempdiff/dist_input`（86.7 MB）、`release/*.exe` 交付包。
 - **禁用清理项**：`bempdiff/toolchain`（JDK21 必需）、`bempdiff/java_core_ai_replay`（约定保留不改）、`bempdiff/verify_exe`+`tooling/verify_exe`（受 git 跟踪）。
+
+## 清理误删事故与封堵（2026-09-10，提交 82266eb）
+- **事故**：`bempdiff/build/installer.nsh`（2700B）被 `compiled_dirs` 的**裸 `build/`** 规则当编译产物删除。它是 `package.json → build.nsis.include` 引用的**手写 NSIS 脚本**，缺失会让下次 `npm run dist` 直接失败。根因：`bempdiff/build/` 是 electron-builder 的 **buildResources 源码目录**，不是编译产物。
+- **铁律（血的教训）**：**不受版本控制的目标一律走隔离桶，绝不直接删除**。该文件从未入库 + ctypes `DeleteFileW` 绕过回收站 → 删除即不可恢复。
+- **不可恢复三要素**：未入库 + 无卷影副本 + 绕回收站。搜救清单（均无效）：`git rev-list --all --objects` / `stash` / `reflog` / `vssadmin list shadows` / 隔离区 / 构建临时目录 / 全盘 find。
+- **已修复**：按 `scripts/patch_nsis_spacecheck.ps1` 的权威描述重建（`preInit → Call ensureDiskSpace`；`Function ensureDiskSpace → Return`；标记 `[磁盘空间预检禁用]`；UTF-8 无 BOM+LF），文件头标注「重建件非原版」。**待用户复核**：原版可能还含「安装前关闭运行实例」的 `customInit`。
+- **配置已修正**：`cleanup-config.yaml` 移除裸 `build/`；新增最高优先级 `preserve_paths` 白名单；裸 `target/` 改显式 `bempdiff/src-tauri/target/`。`.gitignore` 加 `!bempdiff/build/` 例外段，`installer.nsh` **首次入库**。
+- **makensis 定点验证法**：`<electron-builder Cache>\nsis\nsis-3.0.4.1\Bin\makensis.exe -V3 harness.nsi`，用最小 harness 复刻 `Unicode true` + `!addincludedir` + `!include` + `.onInit` 内 `!ifmacrodef preInit` 的形态即可验证 NSIS 语法/宏/函数，无需跑完整打包。
+- **沙箱限制**：本会话内 electron-builder **无法端到端打包**——打包阶段删 `locales/*.pak` 时触发 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`，走不到 NSIS 步。端到端验证须在普通命令行跑 `tooling/scripts/构建打包.bat`。
+- **ctypes 排错要点**：`ctypes.windll.kernel32` 下 `get_last_error()` 恒为 0（会误导）；必须 `ctypes.WinDLL('kernel32', use_last_error=True)`。文件被锁无法删除时用 `MoveFileExW(path, None, MOVEFILE_DELAY_UNTIL_REBOOT=0x4)` 登记重启删除；目录也可登记，但要排在文件之后、自底向上。
