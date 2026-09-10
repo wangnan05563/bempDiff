@@ -44,14 +44,38 @@ script_exclude_dirs:
 # ---------- 垃圾文件模式（仅本项目确认可安全删除者） ----------
 garbage_patterns:
   # 编译中间产物目录（全删，不入归档，可 javac 重生）
+  # ⚠️ 2026-09-10 修正：`build/` 已从此处移除。它曾命中 bempdiff/build/，
+  #    而该目录是 electron-builder 的 buildResources 目录（内含手写 NSIS 脚本
+  #    build/installer.nsh，被 package.json 的 nsis.include 引用），并非编译产物。
+  #    误删导致下次打包必然失败。buildResources 类目录一律走 preserve_paths。
   compiled_dirs:
-    - "build/"
     - "out_test/"
     - "out_test_ui/"
-    - "target/"
+    - "bempdiff/src-tauri/target/"     # 显式限定，避免裸 `target/` 命中其它同名目录
   # SonarQube 缓存目录
   cache_dirs:
     - ".scannerwork/"
+
+# ---------- 绝对保留路径（优先级最高，先于一切规则） ----------
+# 命中即无条件 KEEP，任何 garbage_patterns / 推断都不得覆盖。
+preserve_paths:
+  # electron-builder buildResources 目录：nsis.include 指向的手写 NSIS 脚本源
+  - "bempdiff/build/"
+  - "bempdiff/build/installer.nsh"
+  # 工具链与打包输入（体积大但必需）
+  - "bempdiff/toolchain/"
+  - "bempdiff/dist_input/"
+  # 源码 / 配置 / 文档 / 测试夹具
+  - "bempdiff/java_core/src/"
+  - "bempdiff/webui/src/"
+  - "bempdiff/dev-shell/"
+  - "bempdiff/scripts/"
+  - "config/"
+  - "docs/"
+  - "tooling/scripts/"
+  - "perf_bemp/"
+  - "release/"                        # 交付安装包所在的产物根，整体不纳入自动清理
+
   # bempdiff/ 下递归所有 .class（编译中间产物，与 .java 同源可重生）
   compiled_class_patterns:
     - "/bempdiff/**/*.class"

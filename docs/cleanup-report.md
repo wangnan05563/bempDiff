@@ -218,3 +218,103 @@
 ---
 *第 3 轮清理完成 · 释放 2.09 GB（−73.23%）· 4,927 文件处置 · 0 错误 · 0 误删*
 
+---
+
+# 勘误与修复（2026-09-10 16:30，第 3 轮清理的后续）
+
+## 一、误删项
+
+| 项 | 值 |
+|---|---|
+| 路径 | `bempdiff/build/installer.nsh` |
+| 大小 | 2,700 字节 |
+| SHA-256（前 16） | `b072b6efd6ff24c8` |
+| 处置方式 | **直接删除**（非隔离），已不可从隔离区还原 |
+| 删除时间 | 2026-09-10 11:59:42（审计日志第 2795 行） |
+
+**它为什么是重要文件**：`bempdiff/package.json` → `build.nsis.include = "build/installer.nsh"`，是 electron-builder 注入的**手写 NSIS 安装脚本**，含磁盘空间预检短路逻辑。缺失将导致下次 `npm run dist` 因 NSIS `!include` 找不到文件而**直接失败**。
+
+## 二、根因
+
+`cleanup-config.yaml` 的 `garbage_patterns.compiled_dirs` 里有**裸模式 `build/`**，它同时命中了 `bempdiff/build/`——而该目录是 electron-builder 的 **buildResources 目录（源码）**，不是编译产物。Phase 2 分类把它当成了「javac 可重生的编译中间产物」。
+
+叠加放大因素：该文件**未被 git 跟踪**（`.gitignore` 的 `build/` 规则先于它存在），因此没有版本库兜底。
+
+## 三、影响评估
+
+- ✅ **已构建的交付包不受影响**：`release/BempDiff-0.1.2026091001-setup.exe`（今日 10:43 构建）内含的 NSIS 逻辑完整。
+- ❌ **后续打包会失败**：`nsis.include` 指向的路径不存在 → NSIS 编译报错。
+- ✅ 无数据损失：该文件是文本脚本，非用户数据。
+
+## 四、恢复尝试（逐条失败，记录以备复核）
+
+| 途径 | 结果 |
+|---|---|
+| `git rev-list --all --objects \| grep installer.nsh` | 无（该文件从未被提交） |
+| `git stash list` / `git branch -a` / `git reflog --all` | 无副本 |
+| `vssadmin list shadows`（卷影副本） | 「找不到满足查询的项目」——未启用 |
+| 隔离区 `.cleanup-quarantine/**` 搜 `*.nsh` / `*.nsi` | 无（它在删除桶，非隔离桶） |
+| `release/.buildtmp`、`release/win-unpacked` | 均无（NSIS 临时目录由 electron-builder 自行清理） |
+| 全盘 `/d/code` 搜 `installer.nsh`（排除 node_modules） | 仅 `27_Evaluation/build/installer.nsh`，用途不同（关闭运行实例） |
+| 回收站 | ctypes `DeleteFileW` 绕过回收站，无副本 |
+
+> **教训**：把「疑似可再生」的文件直接删除（而非隔离）会丧失唯一的兜底手段。后续凡**未受版本控制**的目标，一律走隔离桶。
+
+## 五、重建依据与内容
+
+无原版可考，据两处权威旁证重建（文件头已完整标注）：
+
+1. `bempdiff/scripts/patch_nsis_spacecheck.ps1`（第 16-21 / 32 / 92-96 行）——明确本文件
+   含标记 `[磁盘空间预检禁用]`、`ensureDiskSpace` 被「立即 Return」完全禁用、
+   `preInit` 是早于 `SectionSetSize` 的那道闸门；
+2. `bempdiff/scripts/nsis-tpl/common.nsh`——同一修复的另一半（`setSpaceRequired → SectionSetSize 1`）。
+
+重建后的结构（3,402 字节，UTF-8 无 BOM + LF，与 `nsis-tpl/common.nsh` 编码一致）：
+
+```nsis
+!macro preInit
+  Call ensureDiskSpace
+!macroend
+
+Function ensureDiskSpace
+  # [磁盘空间预检禁用] 立即返回：完全跳过磁盘空间预检
+  Return
+FunctionEnd
+```
+
+⚠️ **重建件不等于原版**。若你手头有原版副本（或其他机器/同事处），请直接覆盖。
+已知可能缺失的部分：**无法排除原版还含有 `customInit` / `customUnInstall` 的「安装前关闭运行中实例」逻辑**（同机 `27_Evaluation` 项目就有这类写法），而 ps1 只描述了磁盘空间这一件事。
+
+## 六、验证
+
+| 验证项 | 结果 |
+|---|---|
+| 标记 `[磁盘空间预检禁用]` 存在 | ✅ |
+| `!macro preInit` / `Function ensureDiskSpace` / 立即 `Return` 齐备 | ✅ |
+| `nsis.include` 路径可达（`bempdiff/build/installer.nsh`） | ✅ exists = True |
+| `git check-ignore -q` → 是否仍被忽略 | ✅ exit=1（**未被忽略**，可入库） |
+| **makensis 3.0.4.1 定点编译**（`Unicode true` + `!addincludedir` + `!include` + `.onInit` 内 `!ifmacrodef preInit`，与 electron-builder 同形态） | ✅ **exit=0**，产物 53,580 B |
+| 端到端 `electron-builder --win nsis` | ⚠️ **未完成**——在打包阶段被本会话沙箱 `safe-delete` 钩子拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，删 `locales/*.pak` 时触发），**尚未走到 NSIS 步骤** |
+
+> **待办**：请在**普通命令行**（非本沙箱）跑一次 `tooling/scripts/构建打包.bat` 做端到端确认。
+
+## 七、防复发（已落地）
+
+1. **`cleanup-config.yaml`**：从 `compiled_dirs` 移除裸 `build/`；新增**优先级最高**的 `preserve_paths` 白名单（`bempdiff/build/`、`toolchain/`、`dist_input/`、`src/`、`release/` 等）；裸 `target/` 改为显式 `bempdiff/src-tauri/target/`。
+2. **`.gitignore`**：新增例外段，把 `bempdiff/build/` 从忽略中放开、仅放行 `installer.nsh`：
+   ```gitignore
+   !bempdiff/build/
+   bempdiff/build/*
+   !bempdiff/build/installer.nsh
+   ```
+3. **入库**：`bempdiff/build/installer.nsh` 已 `git add`，从此受版本控制保护（这正是本次无法从 git 恢复的原因）。
+4. **操作纪律**：不受版本控制的目标一律走隔离桶，不做直接删除。
+
+## 八、本次修复的残留
+
+`release_verify/`（我在验证过程中创建）中 `win-unpacked/resources/app.asar`（28,561 B，未压缩）删除时返回 `ERROR_SHARING_VIOLATION (32)`，被某进程/过滤器占用。已用 `MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)` 登记**下次重启自动删除**（含其三级空目录），届时工作空间根目录即完全干净。
+
+---
+*勘误完成 · 1 个误删文件已重建并编译验证 · 根因（配置口径）已修正*
+
+

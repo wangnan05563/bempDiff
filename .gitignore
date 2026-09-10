@@ -117,9 +117,10 @@ bempdiff/verify_exe/
 # 本轮品类：退役工具链构建缓存 / npm 缓存 / javac 中间产物 / 运行时日志 /
 # 一次性验证产物。均已实删或移入工作空间外隔离区（详见 docs/cleanup-report.md）。
 # 已由既有规则覆盖、无需重复声明的（仅备注）：bempdiff/src-tauri/target/（2026-08-14 段）、
-# release/（=electron-builder 全部产物，含 win-unpacked/.buildtmp）、bempdiff/build/（build/）、
+# release/（=electron-builder 全部产物，含 win-unpacked/.buildtmp）、
 # bempdiff/java_core/out/、bempdiff/java_core/test_out/、.scannerwork/、*.class、*.log、
 # bempdiff/webui/.npmcache*（含 .npmcache2 变体）。
+# ⚠️ 已剔除 `bempdiff/build/`：它不是编译产物而是 buildResources 源码目录，见文末例外段。
 
 # 测试期临时 class 目录（javac 直出，可重生）
 bempdiff/scripts/_testcls/
@@ -129,3 +130,16 @@ bempdiff/scripts/_testcls/
 /.cleanup-quarantine/
 /cleanup_targets.txt
 /cleanup_targets.resume.txt
+
+# ---------- bempdiff/build/ 例外：这是源码，不是编译产物 (2026-09-10) ----------
+# 教训：上面的 `build/` 全局规则会把这个目录连同 electron-builder 的 nsis.include 脚本
+# 一起吞掉。build/installer.nsh 已被误判为「编译中间产物」删除，下次打包会因 include
+# 路径缺失而直接失败。bempdiff/build/ 实为 electron-builder 的 buildResources 目录
+# （手写 NSIS 脚本源），必须入库。忽略顺序：先放开目录，再忽略目录内其它内容，最后放行该文件。
+!bempdiff/build/
+bempdiff/build/*
+!bempdiff/build/installer.nsh
+
+# 打包验证临时输出目录（本轮排障遗留，已登记重启删除；防误入库）
+/release_verify/
+
