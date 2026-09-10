@@ -89,6 +89,16 @@ preserve_paths:
   - "tooling/scripts/"
   - "perf_bemp/"
   - "release/"        # 交付安装包所在的产物根，整体不纳入自动清理（含 *.exe / *.blockmap）
+  # 证据 / 夹具类产物（2026-09-10 逐项审查确认：均被文档或脚本具名引用，且部分不可再生）
+  #   java_core_ai_replay/ : java_core/run_demo.sh 第 6 步 `ai --replay` 的离线回放夹具；
+  #                          README「已验证能力」表 core.ai 行的证据。重建需真实 API 调用。
+  #   java_core_export/    : 2026-08-07 真实双版本验证的导出产物（412 class + 15 源码）；
+  #                          夹具 lib_v1.jar / lib_v2.jar 已不在项目内 → 不可再生。
+  #   verify_exe/          : docs/SECURITY-权限隔离评审.md 引用的 P0/P1 实跑证据 + VERIFICATION.md。
+  # 若未来确认要清理此三项，须先补录证据或改文档，勿走自动清理。
+  - "bempdiff/java_core_ai_replay/"
+  - "bempdiff/java_core_export/"
+  - "bempdiff/verify_exe/"
 
 # ---------- 二义性文件确认门（依赖 / 资产类） ----------
 # 本项目含大量 jar/war/exe：部分属必要依赖(反编译器/JavaFX/发布包)或测试夹具，

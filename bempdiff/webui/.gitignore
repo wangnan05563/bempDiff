@@ -3,3 +3,9 @@ dist/
 .npmcache/
 *.log
 .DS_Store
+
+# Vite/Vitest 加载配置时产出的临时 bundle（形如 vite.config.js.timestamp-<ms>-<hash>.mjs）。
+# 内含被重写的 file:// 绝对导入路径，属机器相关的一次性产物，不得入库。
+# 背景：2026-09-10 清理时发现有 9 个已被 `git add -A` 误收（来自初始提交 ba449e0）。
+*.config.js.timestamp-*.mjs
+*.config.ts.timestamp-*.mjs

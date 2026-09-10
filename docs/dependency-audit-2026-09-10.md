@@ -113,7 +113,17 @@ add @types/plist 3.0.5
 
 ### 4.1 变更前快照（用于回滚）
 
-`logs/_nsis_verify/dep-snapshot/`（4 个 package*.json 副本 + SHA-256 + `node_modules` 顶层 195 个包清单）
+变更前状态由 git 历史承载（快照目录已随临时工作区清理，不再保留）：
+
+```bash
+# 变更前的 4 个 package*.json（等价于当时的 logs/_nsis_verify/dep-snapshot/）
+git show 92e98c8:bempdiff/package.json
+git show 92e98c8:bempdiff/package-lock.json
+git show 92e98c8:bempdiff/webui/package.json
+git show 92e98c8:bempdiff/webui/package-lock.json
+```
+
+已核验：上述 git 版本与当时的快照副本**逐字节一致**（仅行尾差异）。
 
 ### 4.2 `@tauri-apps/cli` 卸载
 

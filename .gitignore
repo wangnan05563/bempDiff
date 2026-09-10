@@ -143,3 +143,16 @@ bempdiff/build/*
 # 打包验证临时输出目录（本轮排障遗留，已登记重启删除；防误入库）
 /release_verify/
 
+# ---------- Python 工具链缓存（tooling/scripts 下的诊断/质量脚本） ----------
+__pycache__/
+*.py[cod]
+
+# ---------- 证据目录例外：verify_exe 内的实跑日志必须入库 (2026-09-10) ----------
+# 教训：根规则 `*.log`（本文件第 6 行）会把「实跑证据」当运行时日志一并静默吞掉。
+# 具体事故：docs/SECURITY-权限隔离评审.md 曾声称 verify_exe/sec/ 内有
+# evil_compare.log / evil_export2.log / ssrf.log / ssrf_local.log 四份证据，
+# 但这四个文件从初始提交起就未被纳入版本控制（`.log` 被忽略），现存副本已不可考。
+# 结论：该目录下一切内容都是可追溯的验证证据，整体放行，永不按日志处置。
+!bempdiff/verify_exe/
+!bempdiff/verify_exe/**
+
