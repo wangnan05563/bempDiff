@@ -262,41 +262,75 @@
 
 ## 五、重建依据与内容
 
-无原版可考，据两处权威旁证重建（文件头已完整标注）：
+### 5.1 关键突破：找到原版的创建会话记录（2026-09-10 16:36）
 
-1. `bempdiff/scripts/patch_nsis_spacecheck.ps1`（第 16-21 / 32 / 92-96 行）——明确本文件
-   含标记 `[磁盘空间预检禁用]`、`ensureDiskSpace` 被「立即 Return」完全禁用、
-   `preInit` 是早于 `SectionSetSize` 的那道闸门；
-2. `bempdiff/scripts/nsis-tpl/common.nsh`——同一修复的另一半（`setSpaceRequired → SectionSetSize 1`）。
+在 D 盘全盘搜索 `ensureDiskSpace` 时，命中 **Trae IDE 的项目会话记忆库**：
+`D:\code\Data_Trae\.trae-cn\memory\projects\-d-code-otherProjects-18-comparePakage--p2-f4df43e8d6a464e821e4\`
+（正是 2026-08-30 创建该文件的会话）。其 `project_memory.md` / `topics.md` 给出了**权威事实**，推翻了我第一版重建的三处假设：
 
-重建后的结构（3,402 字节，UTF-8 无 BOM + LF，与 `nsis-tpl/common.nsh` 编码一致）：
+| 来源 | 事实 |
+|---|---|
+| `project_memory.md` L35 | electron-builder 24.13.3 **不支持 `nsis.killRunningApp`**；须经 `nsis.include` 把 `taskkill /f /t /im BempDiff.exe` 注入 **`customInit` 与 `customUnInstall`** 宏，强制关闭运行实例 |
+| `project_memory.md` L37 | `ensureDiskSpace` 改为**立即 return** 以跳过磁盘空间预检 |
+| `project_memory.md` L38 | `preInit` 宏与 `ensureDiskSpace` 函数须包在 **`!ifndef BUILD_UNINSTALLER`** 内——否则 `BUILD_UNINSTALLER` 过渡编译因函数未被引用触发 **warning 6010**，而该阶段以 `-WX`（警告即错误）编译 → 构建失败 |
+| `project_memory.md` L39 | 含中文的安装脚本须 **UTF-8 BOM** |
+| `topics.md` 20260830 17:08 | 初版 `preInit` 会检查 `$INSTDIR` 所在盘与系统盘剩余空间，**<512MB 则中止**并给出准确提示，查询失败则跳过；后因 6010 加 `!ifndef` 包裹 |
+| `topics.md` 20260830 21:56 | 最终把 `ensureDiskSpace` 改为**立即 return**，彻底绕开预检（配合 `common.nsh` 的 `SectionSetSize 1`） |
+| `topics.md` 20260830 10:05 | 补充印证：`installer.nsh` 带 taskkill 命令，用于安装时强制关闭运行中的实例 |
+
+> 会话 `jsonl` 只保存**摘要**（intent/actions/outcome/learned），不含文件原文，故仍无法逐字节还原；但功能规格已完整。
+
+### 5.2 第一版重建的缺陷（已修正）
+
+第一版（3,402 B，UTF-8 **无** BOM + LF）依据 `patch_nsis_spacecheck.ps1` + `nsis-tpl/common.nsh` 推断，**遗漏了三项**：
+
+1. ❌ 缺 `customInit` / `customUnInstall` 的 `taskkill`（安装前关闭运行实例）；
+2. ❌ 缺 `!ifndef BUILD_UNINSTALLER` 包裹（会触发 warning 6010 使打包失败）；
+3. ❌ 编码用了 UTF-8 无 BOM，与项目约定（含中文脚本须带 BOM）不符。
+
+### 5.3 最终重建版结构（4,298 B，UTF-8 **带 BOM** + CRLF）
 
 ```nsis
-!macro preInit
-  Call ensureDiskSpace
+; 一、安装/卸载前强制关闭运行实例
+!macro customInit
+  DetailPrint "正在关闭已运行的 BempDiff 实例 ..."
+  nsExec::ExecToLog 'taskkill /f /t /im BempDiff.exe'
 !macroend
 
-Function ensureDiskSpace
-  # [磁盘空间预检禁用] 立即返回：完全跳过磁盘空间预检
-  Return
-FunctionEnd
+!macro customUnInstall
+  DetailPrint "正在关闭 BempDiff 进程 ..."
+  nsExec::ExecToLog 'taskkill /f /t /im BempDiff.exe'
+!macroend
+
+; 二、[磁盘空间预检禁用]（必须包在 !ifndef 内以规避 warning 6010）
+!ifndef BUILD_UNINSTALLER
+  !macro preInit
+    Call ensureDiskSpace
+  !macroend
+
+  Function ensureDiskSpace
+    # [磁盘空间预检禁用] 立即返回：完全跳过磁盘空间预检
+    Return
+  FunctionEnd
+!endif
 ```
 
-⚠️ **重建件不等于原版**。若你手头有原版副本（或其他机器/同事处），请直接覆盖。
-已知可能缺失的部分：**无法排除原版还含有 `customInit` / `customUnInstall` 的「安装前关闭运行中实例」逻辑**（同机 `27_Evaluation` 项目就有这类写法），而 ps1 只描述了磁盘空间这一件事。
+⚠️ **仍是重建件，不等于原版**（注释文案与 `DetailPrint` 措辞为自撰）。若你手头有原版副本，请直接覆盖。
 
 ## 六、验证
 
 | 验证项 | 结果 |
 |---|---|
-| 标记 `[磁盘空间预检禁用]` 存在 | ✅ |
-| `!macro preInit` / `Function ensureDiskSpace` / 立即 `Return` 齐备 | ✅ |
-| `nsis.include` 路径可达（`bempdiff/build/installer.nsh`） | ✅ exists = True |
-| `git check-ignore -q` → 是否仍被忽略 | ✅ exit=1（**未被忽略**，可入库） |
-| **makensis 3.0.4.1 定点编译**（`Unicode true` + `!addincludedir` + `!include` + `.onInit` 内 `!ifmacrodef preInit`，与 electron-builder 同形态） | ✅ **exit=0**，产物 53,580 B |
-| 端到端 `electron-builder --win nsis` | ⚠️ **未完成**——在打包阶段被本会话沙箱 `safe-delete` 钩子拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，删 `locales/*.pak` 时触发），**尚未走到 NSIS 步骤** |
+| **A. 结构检查（9 项）** | ✅ 9/9：UTF-8 BOM、标记 `[磁盘空间预检禁用]`、`customInit`、`customUnInstall`、`taskkill BempDiff.exe`×2、`preInit`、`ensureDiskSpace`、立即 `Return`、`!ifndef` 包裹 |
+| **B. makensis 正常安装模式 `-WX`** | ✅ **exit=0**，产物 53,580 B |
+| **C. makensis `-DBUILD_UNINSTALLER` 模式 `-WX`** | ✅ **exit=0**（即当初触发 warning 6010 的工况，现已通过） |
+| D. 反向验证：去掉 `!ifndef` 包裹后能否复现 6010 | ⚠️ **未能复现**——自制 harness 无法等价复刻 electron-builder 卸载器那份不插入 `preInit` 的 `.onInit`，故 6010 未触发，**不能作为已证实项**。包裹因有项目记忆为我方依据且对两种编译模式均无害而保留 |
+| E. `nsis.include` 路径可达 | ✅ `bempdiff/build/installer.nsh` exists = True |
+| F. `git check-ignore -q` | ✅ exit=1（**未被忽略**，已入库） |
+| G. 端到端 `electron-builder --win nsis` | ⚠️ **未完成**——被本会话沙箱 `safe-delete` 钩子拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，删 `locales/*.pak` 时触发），**尚未走到 NSIS 步骤** |
 
-> **待办**：请在**普通命令行**（非本沙箱）跑一次 `tooling/scripts/构建打包.bat` 做端到端确认。
+> **待办**：请在**普通命令行**（非本沙箱）跑一次 `tooling/scripts/构建打包.bat` 做端到端确认。这是本轮唯一未能闭环的验证项。
+
 
 ## 七、防复发（已落地）
 
@@ -315,6 +349,7 @@ FunctionEnd
 `release_verify/`（我在验证过程中创建）中 `win-unpacked/resources/app.asar`（28,561 B，未压缩）删除时返回 `ERROR_SHARING_VIOLATION (32)`，被某进程/过滤器占用。已用 `MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)` 登记**下次重启自动删除**（含其三级空目录），届时工作空间根目录即完全干净。
 
 ---
-*勘误完成 · 1 个误删文件已重建并编译验证 · 根因（配置口径）已修正*
+*勘误完成 · 误删文件已按原版创建会话（Trae 项目记忆）的权威事实重建 · 结构 9/9 + 双模式 `-WX` 编译全绿*
+*唯一未闭环项：端到端 electron-builder 打包（本会话被沙箱 safe-delete 钩子拦截），待普通命令行复核*
 
 
