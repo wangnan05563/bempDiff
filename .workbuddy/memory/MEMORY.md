@@ -77,3 +77,22 @@
 - **makensis 定点验证法**：`<electron-builder Cache>\nsis\nsis-3.0.4.1\Bin\makensis.exe -V3 harness.nsi`，用最小 harness 复刻 `Unicode true` + `!addincludedir` + `!include` + `.onInit` 内 `!ifmacrodef preInit` 的形态即可验证 NSIS 语法/宏/函数，无需跑完整打包。
 - **沙箱限制**：本会话内 electron-builder **无法端到端打包**——打包阶段删 `locales/*.pak` 时触发 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`，走不到 NSIS 步。端到端验证须在普通命令行跑 `tooling/scripts/构建打包.bat`。
 - **ctypes 排错要点**：`ctypes.windll.kernel32` 下 `get_last_error()` 恒为 0（会误导）；必须 `ctypes.WinDLL('kernel32', use_last_error=True)`。文件被锁无法删除时用 `MoveFileExW(path, None, MOVEFILE_DELAY_UNTIL_REBOOT=0x4)` 登记重启删除；目录也可登记，但要排在文件之后、自底向上。
+
+## ⭐ Trae 记忆库 = 本项目代码考古一手源（2026-09-10 发现）
+- 路径：`D:\code\Data_Trae\.trae-cn\memory\projects\-d-code-otherProjects-18-comparePakage--p2-f4df43e8d6a464e821e4\`
+  - `project_memory.md`：**跨会话沉淀的项目级事实条目**（最权威，逐条 learned/actions）
+  - `YYYYMMDD/topics.md`：按时间的会话主题摘要；`session_memory_*.jsonl`：单会话摘要（**只存摘要，不含文件原文**）
+- 用途：追问「某段代码/配置为何这么写」「某符号从哪来」时，**优先查此库而非自行推断**。本轮即靠它复原了被误删的 `installer.nsh` 全部功能规格。
+
+## bempdiff/build/installer.nsh（NSIS，已入库）
+- 原版事实（据 Trae 记忆 2026-08-30 会话）：① `customInit`/`customUnInstall` 内 `nsExec::ExecToLog 'taskkill /f /t /im BempDiff.exe'`——electron-builder 24.13.3 **无 `nsis.killRunningApp`**，不关运行实例会 `Access is denied` 并把旧 jar 打进包造成 STALE；② `preInit`+`ensureDiskSpace` 必须包在 **`!ifndef BUILD_UNINSTALLER`** 内——该阶段以 **`-WX`** 编译，未引用函数触发 **warning 6010** 即失败；③ 磁盘预检演变：初版查 `$INSTDIR`/系统盘 <512MB 则中止 → 最终 `ensureDiskSpace` **立即 Return** 彻底绕开（另一半在 `scripts/nsis-tpl/common.nsh`：`SectionSetSize 1`）。
+- **含中文的 NSIS 脚本须 UTF-8 带 BOM + CRLF**（`nsis-tpl/common.nsh` 是无 BOM 的历史例外）。
+- 验证法：`makensis -WX` + `makensis -WX -DBUILD_UNINSTALLER` 双模式编译 harness。**端到端 electron-builder 打包在本沙箱无法完成**（删 `locales/*.pak` 触发 safe-delete 拦截），须在普通命令行跑 `tooling/scripts/构建打包.bat`。
+
+## 依赖与构建配置
+- **依赖现状**（2026-09-10 审计后）：`bempdiff` devDeps 仅 `electron-builder`（`@tauri-apps/cli` 与死脚本 `scripts.tauri` 已移除，Tauri 2 退役）；`webui` deps `vue`，devDeps `@vitejs/plugin-vue`/`@vue/compiler-sfc`/`@vue/test-utils`/`jsdom`/`vite`/`vitest`；`dev-shell` devDeps `electron`。
+- `@vue/compiler-sfc` 曾被 2 个 webui 测试脚本 import 却未声明（靠依赖提升才能跑），已补声明，**版本范围取 `^3.5.0` 与 `vue` 保持一致**。
+- **只改 package.json 不同步 lockfile 会使 `npm ci` 直接失败** → 必须 `npm install --package-lock-only` 同步。
+- ⭐ **`npm --offline --dry-run` 的 reify 计划不等于真实计划**：曾预告要补装 13 个 electron-builder 可选依赖，联网实跑为 0 新增（外科手术级）。勿以其为决策依据。
+- **bempdiff/webui/public/vendor/**（bootstrap css/js/fonts、splash*）是 vendored 静态资源，非 npm 依赖，构建时复制进 `dist/`；隔离 `webui/dist` 不影响构建。
+- 前端回归命令（webui/）：`node scripts/test_report_button.mjs`（9 用例，直接消费 `@vue/compiler-sfc`）、`vitest run`（22 文件/210 用例）、`vite build`（59 模块 ~3s）。
