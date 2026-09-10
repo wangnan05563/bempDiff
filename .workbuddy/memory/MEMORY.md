@@ -95,3 +95,33 @@
 - `logs-review` 的 `config.yaml` / `config.example.yaml` 曾遭**双重编码损坏**（UTF-8 字节被按 CP936 误读）。已修复：键名与全部功能性取值自原文逐字恢复，中文注释/文案依 `config.example.yaml` 同名字段说明重建，文件头留重建说明。
 - **原件已归档到工作空间外**：`~/.workbuddy/skill-backups/mojibake-20260910/`（含 `*.orig` 原版、`*.corrupted-20260910` 损坏件、`logs-review-mojibake-finding.md` 报告）。
 - **备份目录不应留在 `skills/` 内**——曾因含 `SKILL.md.orig` 被加载器注册成幽灵技能 `workspace-cleanup:.backup-20260910-mojibake`。
+
+## 清理工具与证据链（2026-09-10，提交 22a8112）
+- **新增 3 个可复用脚本**（已入库，参数化零硬编码）：
+  - `tooling/scripts/_safe_relocate.py` —— 安全搬迁：只 rename 不删、文件 sha256 前后比对、目标存在即拒覆盖、`--dry-run`；整目录走单次 `os.rename`（同盘原子）。`--entry` 用 `action="extend", nargs="+"`（`append` 遇 glob 多参会报 unrecognized arguments）。
+  - `tooling/scripts/quality/mojibake_scan.py` —— 双重编码扫描（比较法 3 判据 + 已知样本自检），**发现即 exit 1** 可作 CI 门禁。
+  - `tooling/scripts/quality/sqlite_grep.py` —— sqlite **只读**全文检索（`mode=ro`），`--db path[@表,表]` 自动枚举表、`--show N` 打片段；定位「某段配置最初谁写进去的」。
+- **`.gitignore` 两个反例段（都是血泪）**：
+  1. `!bempdiff/build/` + `!bempdiff/build/installer.nsh` —— 裸 `build/` 规则会把 buildResources 源码目录当产物吞掉。
+  2. `!bempdiff/verify_exe/` + `!bempdiff/verify_exe/**` —— 根 `.gitignore:6` 的全局 `*.log` 会把**实跑证据**当运行时日志静默吞掉。
+- **`bempdiff/webui/.gitignore`** 新增 `*.config.js.timestamp-*.mjs` / `*.config.ts.timestamp-*.mjs`（vite 临时 bundle，含机器相关的 `file://` 绝对导入），杜绝再被 `git add -A` 误收。
+- **`cleanup-config.yaml → preserve_paths` 现 16 条**：新增 `bempdiff/java_core_ai_replay/`（run_demo.sh 离线 AI 回放夹具）、`bempdiff/java_core_export/`（真实验证产物，夹具 `lib_v1/2.jar` 已不在项目内 → 不可再生）、`bempdiff/verify_exe/`（安全评审实跑证据）。
+
+## 承重目录清单（清理前必查，2026-09-10 逐项核验）
+| 目录 | 体积 | 为何动不得 |
+|---|---|---|
+| `bempdiff/dist_input` | 79 M | sidecar 运行时载荷：`dev-shell/main.js:280` webroot **首选** `dist_input/webui`；启动/打包脚本全依赖 |
+| `bempdiff/java_core_ai_replay` | 307 K | `java_core/run_demo.sh:21,46` 第 6 步 `ai --replay` 的离线夹具；重建需真实 API 调用 |
+| `bempdiff/java_core_export` | 28 K | 唯一真实验证产物；夹具已失 → 不可再生 |
+| `bempdiff/verify_exe` | 1.5 M | 安全评审实跑证据 + `sec/EVIDENCE.md` 台账 |
+| `bempdiff/webui/dist` | 1.1 M | **可删**（构建中间产物，与 `dist_input/webui` 逐字节一致，`构建打包.bat` STEP 3/4 自愈；main.js 里只是 webroot 回退位） |
+
+## 安全证据链断点结论（勿重复调查）
+- `docs/SECURITY-权限隔离评审.md` 声称 `bempdiff/verify_exe/sec/` 有 `evil_compare.log` / `evil_export2.log` / `ssrf.log` / `ssrf_local.log`，**实际全部不存在**。
+- **根因**：根 `.gitignore:6` 全局 `*.log` → 这 4 个文件**从初始提交 `4983e12` 起就未入库**，非清理误删；全盘 `D:\code` + 历次隔离区检索无副本 → 不可恢复。
+- **已处理**：文档该行改为准确证据清单 + 根因说明；新建 `bempdiff/verify_exe/sec/EVIDENCE.md` 台账。结论由 `sec/report.md` + `make_evil.py`（可重放）+ `sec/evil_export2/` 支撑，**不依赖这 4 个 log**。
+- **未执行**：`verify_exe` 内 8 个精确重复文件（`exe_c3/c4.txt` 与 `ide_beauty_full/mock_light.png`）去重（~134 KB）——与「把该目录纳入 preserve_paths」自相矛盾，且证据目录不宜减料，暂缓。
+
+## 提交纪律（本轮确立）
+- 工作区常驻前序未提交批次（`bempdiff/docs/* → docs/*` 迁移 19 条 + `perf_bemp/` 删除等）。清理轮收尾**必须范围化提交**：`git add -A -- <精确清单>` → `git diff --cached --stat` 核对 → `git commit -F - -- <同一清单>` → 提交后用 `git status --porcelain | wc -l` 对账（本轮 78 → 提交 19 → 剩 59，迁移批次未动）。
+- `docs/SECURITY-权限隔离评审.md` 等迁移文件仍是 **untracked**，故该文档的修正随用户提交迁移批次时一并入库。
