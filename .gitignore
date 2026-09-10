@@ -112,3 +112,20 @@ bempdiff/e2e_work/
 bempdiff/java_core/.e2e-tmp/
 bempdiff/java_core/.probe-tmp/
 bempdiff/verify_exe/
+
+# ---------- 工作空间清理规则 (2026-09-10, workspace-cleanup 第 3 轮) ----------
+# 本轮品类：退役工具链构建缓存 / npm 缓存 / javac 中间产物 / 运行时日志 /
+# 一次性验证产物。均已实删或移入工作空间外隔离区（详见 docs/cleanup-report.md）。
+# 已由既有规则覆盖、无需重复声明的（仅备注）：bempdiff/src-tauri/target/（2026-08-14 段）、
+# release/（=electron-builder 全部产物，含 win-unpacked/.buildtmp）、bempdiff/build/（build/）、
+# bempdiff/java_core/out/、bempdiff/java_core/test_out/、.scannerwork/、*.class、*.log、
+# bempdiff/webui/.npmcache*（含 .npmcache2 变体）。
+
+# 测试期临时 class 目录（javac 直出，可重生）
+bempdiff/scripts/_testcls/
+
+# 清理技能运行期工作目录与审计清单（非源码）
+/.cleanup-work/
+/.cleanup-quarantine/
+/cleanup_targets.txt
+/cleanup_targets.resume.txt

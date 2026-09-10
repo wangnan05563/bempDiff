@@ -1,0 +1,22 @@
+# ============================================================
+# BempDiff — git 归档导出规则（export-ignore）
+# 目的：下列路径已被 .gitignore 命中，但历史上已纳入版本控制（tracked-but-ignored）。
+#       保留 tracking 以避免改动历史/影响同事本地，但**不进入 git archive / 发行包导出**。
+# 生成：workspace-cleanup 第 3 轮（2026-09-10）
+# 依据：git ls-files | git check-ignore --stdin --no-index  → 26 个命中文件
+# 更强方案（需团队确认，本轮未执行）：git rm -r --cached <path> 彻底停止跟踪。
+# ============================================================
+
+# 一次性 exe 端到端验证产物（报告 / 反编译压缩包 / 恶意包构造脚本）
+bempdiff/verify_exe/** export-ignore
+
+# vite 启动时生成的临时配置副本（一次性，非源码）
+bempdiff/webui/vite.config.js.timestamp-*.mjs export-ignore
+bempdiff/webui/vitest.config.js.timestamp-*.mjs export-ignore
+
+# 清理/评审运行期的临时结果文本
+bempdiff/scripts/_p0_result.txt export-ignore
+
+# 清理技能审计清单与工作目录（若被误入库，亦不导出）
+cleanup_targets.txt export-ignore
+cleanup_targets.resume.txt export-ignore
