@@ -155,4 +155,4 @@ __pycache__/
 # 结论：该目录下一切内容都是可追溯的验证证据，整体放行，永不按日志处置。
 !bempdiff/verify_exe/
 !bempdiff/verify_exe/**
-
+.workbuddy/
