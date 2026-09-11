@@ -46,4 +46,22 @@
 
 BempDiff 工具原"权限隔离逻辑"存在 **1 个 P0（任意文件写）** 与 **2 个 P1（SSRF 不全、解压炸弹）** 实质缺陷，已在评审中修复并经恶意样本实跑验证；密钥与子进程隔离同步加固。续9 进一步覆盖**运维脚本层**的进程隔离（PID 复用误杀、跨实例盲杀）与**网络入向**的 HTTP 响应体 OOM 防护，补全"资源边界"闭环。修复后回归无变化，隔离边界现已闭合。唯一保留项为严格模式刻意 fail-closed 的 DNS 行为（非缺陷）。
 
-> 证据：`verify_exe/sec/`（evil_compare.log / evil_export2.log / ssrf.log / ssrf_local.log / report.md / export）+ 本文件 + `scripts/`（start-app.ps1 / stop-app.ps1 已加固）。exe 内 `app.jar` 已用修复后字节覆盖（`cp` 换入，绕开沙箱安全删除限制）。
+> 证据：`bempdiff/verify_exe/sec/` + `bempdiff/verify_exe/VERIFICATION.md` + 本文件 + `bempdiff/scripts/`（start-app.ps1 / stop-app.ps1 已加固）。exe 内 `app.jar` 已用修复后字节覆盖（`cp` 换入，绕开沙箱安全删除限制）。
+>
+> **证据清单现状（2026-09-10 核账）**
+>
+> | 证据 | 状态 |
+> |---|---|
+> | `sec/report.md`（260 KB，评审报告快照） | ✅ 在库 |
+> | `sec/make_evil.py`（恶意包构造脚本，可重建攻击样本） | ✅ 在库 |
+> | `sec/evil_export2/decompiled-sources.zip`（越界写被拦截后的实际产物，207 B） | ✅ 在库 |
+> | `sec/export/decompiled-sources.zip` | ✅ 在库 |
+> | `sec/evil_compare.log`、`sec/evil_export2.log`、`sec/ssrf.log`、`sec/ssrf_local.log` | ⚠️ **不在库，且不可恢复**（见下） |
+>
+> **四个 `.log` 缺失的根因**：仓库根 `.gitignore:6` 有全局规则 `*.log`，而当时的实跑证据是以 `.log` 形式留在工作区的 →
+> **从初始提交 `4983e12` 起就未被纳入版本控制**（`git log --all` 对 `verify_exe/**/*.log` 的入库记录为**空**；初始提交里 `prototype/verify_exe/` 已只有 16 个非 log 文件）。
+> 后续工作区副本在清理轮次中按「运行时日志」处置，且绕过回收站 → 不可恢复；已全盘检索 `D:\code` 与历次隔离区，确认无副本。
+> 因此该行原先声称的 4 个 log 属于**从未入库的工作区产物**，非本轮或前轮清理误删。
+>
+> **教训（已封堵）**：实跑证据不要用 `.log` 扩展名留存，否则会被全局 `*.log` 静默吞掉。`bempdiff/verify_exe/**` 已加入 `.gitignore` 例外并登记进 `cleanup-config.yaml → preserve_paths`。
+> 评审结论本身由 `sec/report.md` + `make_evil.py`（可重放攻击）+ `sec/evil_export2/`（拦截后产物）共同支撑，**不依赖这 4 个 log**；如需重放，用 `make_evil.py` 重新生成恶意包跑一次即可。
