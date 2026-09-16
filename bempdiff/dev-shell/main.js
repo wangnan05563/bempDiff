@@ -115,11 +115,25 @@ async function waitPort(port, timeoutMs) {
   return false
 }
 
+// 端口占用强杀（T00407）：不再经 PowerShell（Get-NetTCPConnection + Stop-Process -Force）。
+// 背景：BempDiff.exe 直接 spawn powershell 执行「强杀进程」命令，会触发杀软
+// 「bempdiff 正在允许 powershell」启发式告警（启动 2 次 + 关闭时 before-quit/will-quit
+// 双注册共 4 次，反复弹窗）。改为 netstat -ano 解析 LISTENING PID + taskkill /F /T，
+// 全部走系统标准工具，无 PowerShell 参与；语义不变（仅杀监听该端口的进程）。
 function killPort(port) {
   try {
-    spawnSync('powershell', ['-NoProfile', '-Command',
-      `$p=${port};try{$id=(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue|Select-Object -First 1).OwningProcess;if($id -ne $null){Stop-Process -Id $id -Force -ErrorAction SilentlyContinue;Write-Host ('[STOP] port '+$p+' PID='+$id)}}catch{}`],
-      { stdio: 'ignore' })
+    const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' })
+    if (!out || !out.stdout) return
+    const pids = new Set()
+    for (const line of String(out.stdout).split(/\r?\n/)) {
+      // 形如：TCP    127.0.0.1:18765    0.0.0.0:0    LISTENING    1234
+      const m = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i)
+      if (m && Number(m[1]) === Number(port)) pids.add(m[2])
+    }
+    for (const pid of pids) {
+      if (Number(pid) === process.pid) continue // 绝不误杀自己
+      try { spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }) } catch (_) {}
+    }
   } catch (_) {}
 }
 
@@ -479,9 +493,16 @@ function stopSidecar() {
 }
 
 // 渲染进程文件/文件夹选择对话框桥
+// opts.auto = true：文件与目录同弹（macOS 支持；Windows/Linux 下 Electron 会把
+// openFile+openDirectory 同给降级为**仅目录选择器**——T00638 回归即由此而来：
+// 用户点「选择老包」只能选到文件夹、选不到 war/jar 单文件）。
+// 故 Windows/Linux 的 auto 显式回退为 openFile（保证单文件可选）；目录选择由渲染层显式 directory: true 发起。
 ipcMain.handle('bempdiff:pick-path', async (event, opts = {}) => {
   const properties = []
-  if (opts.directory) properties.push('openDirectory')
+  if (opts.auto) {
+    if (process.platform === 'win32' || process.platform === 'linux') properties.push('openFile')
+    else properties.push('openFile', 'openDirectory')
+  } else if (opts.directory) properties.push('openDirectory')
   else properties.push('openFile')
   if (opts.multiple) properties.push('multiSelections')
   const win = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
