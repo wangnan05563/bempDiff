@@ -11,28 +11,15 @@ const props = defineProps({
 })
 
 const showExport = ref(false)
-// T00638：浏览拆分按钮的下拉菜单状态：'old' | 'new' | null（选文件为主入口，目录走下拉）
-const browseMenu = ref(null)
 // 拖拽高亮状态：'old' | 'new' | null
 const dragOver = ref(null)
 
-// 点击下拉框外部自动收缩：监听 document click，若点击目标不在导出/浏览按钮容器内则关闭。
+// 点击下拉框外部自动收缩：监听 document click，若点击目标不在导出按钮容器内则关闭。
 const exportWrap = ref(null)
-const browseWrapOld = ref(null)
-const browseWrapNew = ref(null)
 function onDocClick(e) {
   if (showExport.value && exportWrap.value && !exportWrap.value.contains(e.target)) {
     showExport.value = false
   }
-  // 浏览下拉：点击发生在任一浏览按钮组之外时才收起（否则会被自身点击立即关闭）
-  if (browseMenu.value) {
-    const insideOld = browseWrapOld.value && browseWrapOld.value.contains(e.target)
-    const insideNew = browseWrapNew.value && browseWrapNew.value.contains(e.target)
-    if (!insideOld && !insideNew) browseMenu.value = null
-  }
-}
-function toggleBrowse(which) {
-  browseMenu.value = browseMenu.value === which ? null : which
 }
 onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
@@ -156,21 +143,15 @@ const aiBusy = computed(() => aiAnyRunning())
 const unpacking = computed(() => isUnpacking())
 
 // 桌面壳（Electron / Tauri）：原生对话框直接拿绝对路径（免上传）；浏览器模式：提示手动输入服务器本机绝对路径。
-// T00638 回归修复：Electron 在 Windows/Linux 上「openFile + openDirectory 同给」会被降级为**仅目录选择器**
-// （官方文档明确行为），导致上一版 auto 模式下只能选到文件夹、选不到单文件。
-// 方案：保留「一个入口」——主按钮选择文件（war/jar/zip 主场景），右侧拆分下拉提供「选择目录」；
-// 无论哪条路径，选中后仍由 assignPath → inferType 自动识别类型（T00406 的自动识别能力保留）。
-async function browse(which, mode) {
-  const sel = await pickPath({ directory: mode === 'folder' })
+async function browse(which) {
+  const sel = await pickPath({ directory: state.leftType === 'folder' })
   if (sel) {
     pushHist() // 记入历史：后退可回到浏览前的路径
-    browseMenu.value = null
     assignPath(which, Array.isArray(sel) ? sel[0] : sel)
     return
   }
-  browseMenu.value = null
   if (!isTauri() && !isElectron()) {
-    toast('info', '浏览器模式下请直接输入服务器本机绝对路径，或把文件/目录拖入输入框；打包桌面壳（Electron）后可用原生对话框选择')
+    toast('info', '浏览器模式下请直接输入服务器本机绝对路径；打包桌面壳（Electron）后可点击此按钮用原生对话框选择')
   }
 }
 
@@ -208,7 +189,17 @@ function doCompare() { triggerCompare() }
 
 <template>
   <div class="bg-body-tertiary border-bottom px-2 py-1 d-flex flex-wrap align-items-center gap-2">
-    <!-- T00406：原「对比文件 / 对比目录」类型切换分段控件已移除——类型由所选路径自动识别（store.triggerCompare / assignPath / inferType） -->
+    <!-- 输入类型切换：图标 btn-group 分段控件 -->
+    <div class="btn-group btn-group-sm" role="group" aria-label="输入类型">
+      <button type="button" class="btn" :class="state.leftType === 'package' ? 'btn-primary' : 'btn-outline-secondary'"
+              @click="state.leftType = 'package'" :disabled="aiBusy" title="以单个 war/jar 包作为输入（默认）">
+        <i class="bi bi-file-earmark-zip"></i>
+      </button>
+      <button type="button" class="btn" :class="state.leftType === 'folder' ? 'btn-primary' : 'btn-outline-secondary'"
+              @click="state.leftType = 'folder'" :disabled="aiBusy" title="以解压后的目录作为输入，对比目录结构的差异">
+        <i class="bi bi-folder"></i>
+      </button>
+    </div>
 
     <!-- 老包/老目录：可拖入文件/目录（桌面壳）；面包屑点击层级即导航到该级目录 -->
     <div class="d-flex align-items-center gap-1 drop-zone" :class="{ 'drop-active': dragOver === 'old' }"
@@ -217,17 +208,7 @@ function doCompare() { triggerCompare() }
          @dragleave="onDragLeave('old')" @drop="onDrop('old', $event)">
       <span class="tb-label" :title="state.leftType === 'folder' ? '老目录：作为对比基准的目录' : '老包(生产)：当前生产环境运行的版本，作为对比基准'">{{ state.leftType === 'folder' ? '老目录' : '老' }}</span>
       <PathBreadcrumb v-model="state.oldPath" class="tb-crumb" :label="state.leftType === 'folder' ? '老目录' : '老包'" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('old', v)" />
-      <!-- T00638：单一入口 + 拆分下拉。主按钮=选择文件（war/jar/zip 主场景）；箭头=选择目录。
-           Windows/Linux 的原生对话框无法「文件+目录同弹」（同给会被降级为仅目录选择器），故拆成两项。 -->
-      <div class="btn-group btn-group-sm position-relative" role="group" ref="browseWrapOld">
-        <button class="btn btn-outline-secondary" @click="browse('old', 'file')" :disabled="aiBusy"
-                title="浏览选择老包（war/jar/zip 等文件，主场景）；需要选目录请点右侧箭头 →「选择目录」，也可直接把文件拖入此框"><i class="bi bi-folder2-open"></i></button>
-        <button class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" @click.stop="toggleBrowse('old')" :disabled="aiBusy" title="更多选择：文件 / 目录"></button>
-        <ul class="dropdown-menu show py-1" v-if="browseMenu === 'old'" style="position:absolute;right:0;top:100%;z-index:1000">
-          <li><a class="dropdown-item" href="#" @click.prevent="browse('old', 'file')" title="选择 war/jar/zip 等单文件"><i class="bi bi-file-earmark-zip"></i> 选择文件</a></li>
-          <li><a class="dropdown-item" href="#" @click.prevent="browse('old', 'folder')" title="选择解压后的目录"><i class="bi bi-folder"></i> 选择目录</a></li>
-        </ul>
-      </div>
+      <button class="btn btn-outline-secondary btn-sm" @click="browse('old')" :disabled="aiBusy" :title="state.leftType === 'folder' ? '浏览选择老目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择老包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
       <button class="btn btn-outline-secondary btn-sm" @click="goUp('old')" :disabled="aiBusy" title="向上一层：老路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
     </div>
     <!-- 新包/新目录：可拖入文件/目录（桌面壳）；面包屑点击层级即导航到该级目录 -->
@@ -237,15 +218,7 @@ function doCompare() { triggerCompare() }
          @dragleave="onDragLeave('new')" @drop="onDrop('new', $event)">
       <span class="tb-label" :title="state.leftType === 'folder' ? '新目录：本次要对比的目标目录' : '新包(下发)：本次要下发的版本，作为对比目标'">{{ state.leftType === 'folder' ? '新目录' : '新' }}</span>
       <PathBreadcrumb v-model="state.newPath" class="tb-crumb" :label="state.leftType === 'folder' ? '新目录' : '新包'" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('new', v)" />
-      <div class="btn-group btn-group-sm position-relative" role="group" ref="browseWrapNew">
-        <button class="btn btn-outline-secondary" @click="browse('new', 'file')" :disabled="aiBusy"
-                title="浏览选择新包（war/jar/zip 等文件，主场景）；需要选目录请点右侧箭头 →「选择目录」，也可直接把文件拖入此框"><i class="bi bi-folder2-open"></i></button>
-        <button class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" @click.stop="toggleBrowse('new')" :disabled="aiBusy" title="更多选择：文件 / 目录"></button>
-        <ul class="dropdown-menu show py-1" v-if="browseMenu === 'new'" style="position:absolute;right:0;top:100%;z-index:1000">
-          <li><a class="dropdown-item" href="#" @click.prevent="browse('new', 'file')" title="选择 war/jar/zip 等单文件"><i class="bi bi-file-earmark-zip"></i> 选择文件</a></li>
-          <li><a class="dropdown-item" href="#" @click.prevent="browse('new', 'folder')" title="选择解压后的目录"><i class="bi bi-folder"></i> 选择目录</a></li>
-        </ul>
-      </div>
+      <button class="btn btn-outline-secondary btn-sm" @click="browse('new')" :disabled="aiBusy" :title="state.leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
       <button class="btn btn-outline-secondary btn-sm" @click="goUp('new')" :disabled="aiBusy" title="向上一层：新路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
     </div>
 

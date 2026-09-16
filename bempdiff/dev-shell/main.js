@@ -493,17 +493,12 @@ function stopSidecar() {
 }
 
 // 渲染进程文件/文件夹选择对话框桥
-// opts.auto = true：文件与目录同弹（macOS 支持；Windows/Linux 下 Electron 会把
-// openFile+openDirectory 同给降级为**仅目录选择器**——T00638 回归即由此而来：
-// 用户点「选择老包」只能选到文件夹、选不到 war/jar 单文件）。
-// 故 Windows/Linux 的 auto 显式回退为 openFile（保证单文件可选）；目录选择由渲染层显式 directory: true 发起。
+// 渲染进程文件/文件夹选择对话框桥
 ipcMain.handle('bempdiff:pick-path', async (event, opts = {}) => {
   const properties = []
-  if (opts.auto) {
-    if (process.platform === 'win32' || process.platform === 'linux') properties.push('openFile')
-    else properties.push('openFile', 'openDirectory')
-  } else if (opts.directory) properties.push('openDirectory')
+  if (opts.directory) properties.push('openDirectory')
   else properties.push('openFile')
+  if (opts.multiple) properties.push('multiSelections')
   if (opts.multiple) properties.push('multiSelections')
   const win = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   const result = await dialog.showOpenDialog(win, { properties })

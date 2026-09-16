@@ -1,6 +1,8 @@
-// T00638 回归：浏览按钮必须能选出**单文件**（war/jar/zip）。
-// 背景：上一版「auto 同弹文件+目录」在 Windows/Linux 上被 Electron 降级为仅目录选择器，
-// 导致点击浏览只能选到文件夹、选不到包文件。现改为「主按钮=文件 / 下拉=目录」两条显式模式。
+// T00638（验证失败反馈）回归：恢复「文件/目录两个按钮并列切换」的输入类型模式。
+// 语义：工具栏分段控件显式切换 state.leftType；浏览按钮按当前模式决定原生对话框类型
+// （package → 文件选择器 directory:false；folder → 目录选择器 directory:true）。
+// 防线：不得再出现「文件+目录同弹（auto）」——Windows/Linux 下会被 Electron 降级为仅目录选择器，
+// 导致点浏览只能选到文件夹（T00638 原始现象）。
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
@@ -39,6 +41,19 @@ function mountToolBar() {
     global: { stubs: { PathBreadcrumb: true, Downloads: true } }
   })
 }
+// 浏览按钮的 title 随模式变化（老包/老目录），故按两种文案任一匹配
+function browseBtn(w, which) {
+  const key = which === 'old' ? '老' : '新'
+  return w.findAll('button').find((b) => {
+    const t = b.attributes('title') || ''
+    return t.includes(`浏览选择${key}包`) || t.includes(`浏览选择${key}目录`)
+  })
+}
+// 类型分段按钮：按 title 定位（图标是按钮内的 <i>，不能按按钮 class 找图标名）
+const typeBtn = (w, kind) => w.findAll('button').find((b) => {
+  const t = b.attributes('title') || ''
+  return kind === 'package' ? t.includes('war/jar 包作为输入') : t.includes('解压后的目录作为输入')
+})
 
 beforeEach(() => {
   pickPath.mockReset()
@@ -47,57 +62,61 @@ beforeEach(() => {
   state.leftType = 'package'
 })
 
-describe('ToolBar 浏览按钮（T00638 回归）', () => {
-  it('主按钮走文件选择：pickPath 收到 directory:false，且单文件路径被填入老包', async () => {
-    pickPath.mockResolvedValue('C:/pkg/app.war')
+describe('ToolBar 输入类型两按钮模式 + 浏览对话框路由（T00638 反馈修复）', () => {
+  it('分段控件存在「文件包 / 目录」两个并列按钮，可切换 state.leftType', async () => {
     const w = mountToolBar()
-    const btn = w.findAll('button').find((b) => (b.attributes('title') || '').includes('浏览选择老包'))
-    expect(btn, '应存在老包浏览主按钮').toBeTruthy()
-    await btn.trigger('click')
-    await nextTick()
-    expect(pickPath.mock.calls[0][0]).toEqual({ directory: false })
-    expect(state.oldPath).toBe('C:/pkg/app.war')
+    const zip = typeBtn(w, 'package')
+    const folder = typeBtn(w, 'folder')
+    expect(zip, '应有包类型按钮').toBeTruthy()
+    expect(folder, '应有目录类型按钮').toBeTruthy()
+    expect(zip.attributes('title')).toContain('war/jar')
+    await folder.trigger('click')
+    expect(state.leftType).toBe('folder')
+    await zip.trigger('click')
     expect(state.leftType).toBe('package')
     w.unmount()
   })
 
-  it('下拉「选择目录」走目录选择：pickPath 收到 directory:true，目录路径按 folder 识别', async () => {
+  it('package 模式点浏览 → directory:false（文件选择器），可选中 war/jar 单文件', async () => {
+    pickPath.mockResolvedValue('C:/pkg/app.war')
+    const w = mountToolBar()
+    await browseBtn(w, 'old').trigger('click')
+    await nextTick()
+    expect(pickPath.mock.calls[0][0]).toEqual({ directory: false })
+    expect(state.oldPath).toBe('C:/pkg/app.war')
+    w.unmount()
+  })
+
+  it('folder 模式点浏览 → directory:true（目录选择器）', async () => {
+    state.leftType = 'folder'
     pickPath.mockResolvedValue('C:/extracted/app')
     const w = mountToolBar()
-    const caret = w.findAll('button').find((b) => (b.attributes('title') || '') === '更多选择：文件 / 目录')
-    await caret.trigger('click')
-    await nextTick()
-    const dirItem = w.findAll('a.dropdown-item').find((a) => a.text().includes('选择目录'))
-    expect(dirItem, '下拉应含「选择目录」项').toBeTruthy()
-    await dirItem.trigger('click')
+    await browseBtn(w, 'old').trigger('click')
     await nextTick()
     expect(pickPath.mock.calls[0][0]).toEqual({ directory: true })
     expect(state.oldPath).toBe('C:/extracted/app')
-    expect(state.leftType).toBe('folder')
     w.unmount()
   })
 
-  it('新侧主按钮同样走文件选择（双侧对称）', async () => {
-    pickPath.mockResolvedValue('D:/pkg/new.jar')
+  it('新侧同样按当前模式路由', async () => {
+    state.leftType = 'folder'
+    pickPath.mockResolvedValue('D:/extracted/new')
     const w = mountToolBar()
-    const btn = w.findAll('button').find((b) => (b.attributes('title') || '').includes('浏览选择新包'))
-    await btn.trigger('click')
+    await browseBtn(w, 'new').trigger('click')
     await nextTick()
-    expect(pickPath.mock.calls[0][0]).toEqual({ directory: false })
-    expect(state.newPath).toBe('D:/pkg/new.jar')
+    expect(pickPath.mock.calls[0][0]).toEqual({ directory: true })
+    expect(state.newPath).toBe('D:/extracted/new')
     w.unmount()
   })
 
-  it('回归防线：不得再把 directory 与 auto 混用（老 auto 同弹在 Windows 只出目录）', async () => {
-    pickPath.mockResolvedValue('C:/pkg/a.war')
+  it('回归防线：参数键固定为 directory（不得再混用 auto 同弹）', async () => {
+    pickPath.mockResolvedValue('C:/x/a.war')
     const w = mountToolBar()
-    for (const b of w.findAll('button')) {
-      const t = b.attributes('title') || ''
-      if (t.includes('浏览选择老包') || t.includes('浏览选择新包')) await b.trigger('click')
-    }
+    await browseBtn(w, 'old').trigger('click')
+    await browseBtn(w, 'new').trigger('click')
     await nextTick()
     for (const call of pickPath.mock.calls) {
-      expect(Object.keys(call[0]).sort()).toEqual(['directory'])
+      expect(Object.keys(call[0])).toEqual(['directory'])
       expect(typeof call[0].directory).toBe('boolean')
     }
     w.unmount()
