@@ -58,6 +58,62 @@ public final class DiffTest {
         Asserts.assertContains("内容确不同→修改", r2.get(DiffStatus.MODIFIED).toString(), "script/run.sh");
     }
 
+    /** folder 模式下 .java 源文件归类 OTHER，仅行尾 CRLF/LF 差异应视为无差异（回归 T00834 同源实报：内容一致的 Java 文件被误判有差异）。 */
+    public void testCompute_lineEndingOnlyJavaSrcIsUnchanged() throws Exception {
+        java.nio.file.Path oldF = java.nio.file.Files.createTempFile("bempdiff-old-", ".java");
+        java.nio.file.Path newF = java.nio.file.Files.createTempFile("bempdiff-new-", ".java");
+        String body = "package com.x;\npublic class A {\n    private int n;\n}\n";
+        java.nio.file.Files.write(oldF, body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.nio.file.Files.write(newF, body.replace("\n", "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        // folder 模式：.java → FileClass.OTHER（Classifier 兜底），EntrySource.outerEntry 指向磁盘真实文件
+        old.put("src/A.java", new LogicalEntry("src/A.java", Layer.L0, FileClass.OTHER,
+                java.nio.file.Files.size(oldF), "sha_old_crlf", new EntrySource(oldF.toString(), null)));
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        now.put("src/A.java", new LogicalEntry("src/A.java", Layer.L0, FileClass.OTHER,
+                java.nio.file.Files.size(newF), "sha_new_lf", new EntrySource(newF.toString(), null)));
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertContains("Java 源仅行尾差异→未变(不误判修改)", r.get(DiffStatus.UNCHANGED).toString(), "src/A.java");
+        Asserts.assertFalse("Java 源仅行尾差异不应判为修改", r.get(DiffStatus.MODIFIED).contains("src/A.java"));
+
+        // 内容确不同（新增一行）→ 应判修改
+        java.nio.file.Files.write(newF, (body + "    private String s;\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Map<String, LogicalEntry> now2 = new LinkedHashMap<>();
+        now2.put("src/A.java", new LogicalEntry("src/A.java", Layer.L0, FileClass.OTHER,
+                java.nio.file.Files.size(newF), "sha_new2", new EntrySource(newF.toString(), null)));
+        DiffResult r2 = new DiffEngine().compute(snap(old), snap(now2));
+        Asserts.assertContains("Java 源内容确不同→修改", r2.get(DiffStatus.MODIFIED).toString(), "src/A.java");
+    }
+
+    /** 通用化回归：folder 模式下归入 OTHER 的其他纯文本类型（.sql/.md/.log）仅行尾差异也应判未变，而不只限于 .java。 */
+    public void testCompute_lineEndingOnlyOtherTextIsUnchanged() throws Exception {
+        String[] bases = { "db/update.sql" };
+        for (String pathBase : bases) {
+            java.nio.file.Path oF = java.nio.file.Files.createTempFile("bempdiff-old-", ".bin");
+            java.nio.file.Path nF = java.nio.file.Files.createTempFile("bempdiff-new-", ".bin");
+            String body = "CREATE TABLE t(a int);\nINSERT INTO t VALUES(1);\n";
+            java.nio.file.Files.write(oF, body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            java.nio.file.Files.write(nF, body.replace("\n", "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            Map<String, LogicalEntry> old = new LinkedHashMap<>();
+            old.put(pathBase, new LogicalEntry(pathBase, Layer.L0, FileClass.OTHER,
+                    java.nio.file.Files.size(oF), "sha_old_crlf", new EntrySource(oF.toString(), null)));
+            Map<String, LogicalEntry> now = new LinkedHashMap<>();
+            now.put(pathBase, new LogicalEntry(pathBase, Layer.L0, FileClass.OTHER,
+                    java.nio.file.Files.size(nF), "sha_new_lf", new EntrySource(nF.toString(), null)));
+            DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+            Asserts.assertContains(pathBase + " 仅行尾差异→未变", r.get(DiffStatus.UNCHANGED).toString(), pathBase);
+            Asserts.assertFalse(pathBase + " 不应误判为修改", r.get(DiffStatus.MODIFIED).contains(pathBase));
+
+            // 内容确不同 → 修改
+            java.nio.file.Files.write(nF, (body + "COMMIT;\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            Map<String, LogicalEntry> now2 = new LinkedHashMap<>();
+            now2.put(pathBase, new LogicalEntry(pathBase, Layer.L0, FileClass.OTHER,
+                    java.nio.file.Files.size(nF), "sha_new2", new EntrySource(nF.toString(), null)));
+            DiffResult r2 = new DiffEngine().compute(snap(old), snap(now2));
+            Asserts.assertContains(pathBase + " 内容确不同→修改", r2.get(DiffStatus.MODIFIED).toString(), pathBase);
+        }
+    }
+
     public void testCompute_versionedNestedWarPairs() {
         // 外层 zip 内嵌套 "同基名不同版本" 的 war（bemp-web-5....M.15.war ↔ M.17.war），
         // 应为「一个容器（旧侧条目标记处理）」，而不是被各自误识别为删除/新增。
@@ -428,5 +484,80 @@ public final class DiffTest {
         Asserts.assertEquals("仅日期注释/构建号差异应归一化一致", na, nb);
         // 关键：不得残留 "5." 前缀碎片拼接成的伪版本 "5.V"
         Asserts.assertNotContains("不得残留 value 伪碎片（5.V）", na, "5.V");
+    }
+
+    /**
+     * 回归（T00875 验证失败）：版本化外层交付 zip（M059/M061）配对后的嵌套内部纯文本文件
+     * （如 …/scripts/install.sh）内容一致但仅行尾 CRLF/LF 差异时，应判「未变」而非「修改」。
+     * 此前 alignSubFiles 只按原始 sha 硬比较，未做行尾归一化，导致整个嵌套 zip 内的文本文件被误判成片修改。
+     */
+    public void testCompute_lineEndingOnlyNestedSubFileIsUnchanged() throws Exception {
+        // 嵌套 zip 内部脚本：内容一致（同一 body），旧侧 CRLF、新侧 LF → sha 不同但规范化文本相同
+        java.nio.file.Path oF = java.nio.file.Files.createTempFile("bempdiff-ozip-", ".sh.txt");
+        java.nio.file.Path nF = java.nio.file.Files.createTempFile("bempdiff-nzip-", ".sh.txt");
+        String body = "#!/bin/sh\nset -e\necho install done\n";
+        // createTempFile 会真实写盘；此处把系统临时文件名当作「物理解包后的磁盘路径」供 tryReadFlatDisk 读取，
+        // 与 testCompute_lineEndingOnlyShIsUnchanged 同模式。
+        java.nio.file.Files.write(oF, body.getBytes(StandardCharsets.UTF_8));
+        java.nio.file.Files.write(nF, body.replace("\n", "\r\n").getBytes(StandardCharsets.UTF_8));
+        // sha 必须不同才能触发 alignSubFiles 的归一化兜底（真实场景下 CRLF/LF 的 sha 本就不同）
+        java.util.Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        java.util.Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        final String oz = "BEMP5.0V202301-02-036M059(20260703-1104).zip";
+        final String nz = "BEMP5.0V202301-02-036M061(20260707-1135).zip";
+        final String os = oz + "!/scripts/install.sh";
+        final String ns = nz + "!/scripts/install.sh";
+        // 外层版本化 zip 容器（作为 ARCHIVE 条目），sha 不同确保跨版本配对路径被走到
+        old.put(oz, new LogicalEntry(oz, Layer.L0, FileClass.ARCHIVE, 0, "sha_o_zip", new EntrySource("x", null)));
+        old.put(os, new LogicalEntry(os, Layer.L0, FileClass.CONFIG, java.nio.file.Files.size(oF),
+                "sha_o_crlf", new EntrySource(oF.toString(), null)));
+        now.put(nz, new LogicalEntry(nz, Layer.L0, FileClass.ARCHIVE, 0, "sha_n_zip", new EntrySource("x", null)));
+        now.put(ns, new LogicalEntry(ns, Layer.L0, FileClass.CONFIG, java.nio.file.Files.size(nF),
+                "sha_n_lf", new EntrySource(nF.toString(), null)));
+
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+
+        // 嵌套内部 install.sh：仅行尾差异 → 未变，不得进修改/删除/新增
+        Asserts.assertContains("嵌套内部仅行尾差异应判未变", r.get(DiffStatus.UNCHANGED).toString(), os);
+        Asserts.assertFalse("嵌套内部仅行尾差异不应判修改", r.get(DiffStatus.MODIFIED).contains(os));
+        Asserts.assertFalse("嵌套内部仅行尾差异不应残留删除", r.get(DiffStatus.DELETED).contains(os));
+        Asserts.assertFalse("嵌套内部仅行尾差异不应残留新增", r.get(DiffStatus.ADDED).contains(ns));
+
+        // 反向对照：嵌套内部文件内容确不同（多一行）→ 应判修改（归一化兜底不得误伤真实差异）
+        java.nio.file.Files.write(nF, (body + "echo extra\n").getBytes(StandardCharsets.UTF_8));
+        java.util.Map<String, LogicalEntry> now2 = new LinkedHashMap<>();
+        now2.put(nz, new LogicalEntry(nz, Layer.L0, FileClass.ARCHIVE, 0, "sha_n_zip", new EntrySource("x", null)));
+        now2.put(ns, new LogicalEntry(ns, Layer.L0, FileClass.CONFIG, java.nio.file.Files.size(nF),
+                "sha_n_diff", new EntrySource(nF.toString(), null)));
+        DiffResult r2 = new DiffEngine().compute(snap(old), snap(now2));
+        Asserts.assertFalse("嵌套内部内容确不同不应误判未变", r2.get(DiffStatus.UNCHANGED).contains(os));
+        Asserts.assertContains("嵌套内部内容确不同应判修改", r2.get(DiffStatus.MODIFIED).toString(), os);
+    }
+
+    /**
+     * 回归（T00875 二次验证失败真实根因）：BEMP 交付件中 web 组件为「zip + 同名解压目录」双形态并存，
+     * 四个 install.sh 内容字节全同（sha 相同）。内容键候选桶内同时出现 zip 版与目录版两个版本等价候选，
+     * 唯一性守卫放弃折叠，随后被按路径配对为 MODIFIED——内容一致的文件成片误报。
+     * 修复后应按「同版本骨架」优先配对（zip 配 zip、目录配目录），各自折叠为未变。
+     */
+    public void testCompute_dualFormSameContentFoldsToUnchanged() {
+        java.util.Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        java.util.Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        final String ozZip = "BEMP5.0-webV202301-02-036M059(20260703-1104).zip/scripts/install.sh";
+        final String ozDir = "BEMP5.0-webV202301-02-036M059(20260703-1104)/scripts/install.sh";
+        final String nzZip = "BEMP5.0-webV202301-02-036M061(20260707-1135).zip/scripts/install.sh";
+        final String nzDir = "BEMP5.0-webV202301-02-036M061(20260707-1135)/scripts/install.sh";
+        // 四条同 sha（内容字节全同）——真实场景 E:\testC 实测两侧 install.sh sha 相同仍被判修改
+        old.put(ozZip, le(ozZip, Layer.L0, FileClass.CONFIG, "shaSame"));
+        old.put(ozDir, le(ozDir, Layer.L0, FileClass.CONFIG, "shaSame"));
+        now.put(nzZip, le(nzZip, Layer.L0, FileClass.CONFIG, "shaSame"));
+        now.put(nzDir, le(nzDir, Layer.L0, FileClass.CONFIG, "shaSame"));
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertFalse("双形态 zip 版内容一致不应判修改", r.get(DiffStatus.MODIFIED).contains(ozZip));
+        Asserts.assertFalse("双形态目录版内容一致不应判修改", r.get(DiffStatus.MODIFIED).contains(ozDir));
+        Asserts.assertFalse("双形态 zip 版不应残留删除", r.get(DiffStatus.DELETED).contains(ozZip));
+        Asserts.assertFalse("双形态目录版不应残留删除", r.get(DiffStatus.DELETED).contains(ozDir));
+        Asserts.assertFalse("双形态 zip 新版不应残留新增", r.get(DiffStatus.ADDED).contains(nzZip));
+        Asserts.assertFalse("双形态目录新版不应残留新增", r.get(DiffStatus.ADDED).contains(nzDir));
     }
 }

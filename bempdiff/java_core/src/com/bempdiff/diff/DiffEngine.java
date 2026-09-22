@@ -54,7 +54,7 @@ public final class DiffEngine {
         }
         // 同名不同版本/整包版本化（根目录改名→全量键不相等）：归档做版本配对，其余按内容级跨版本对齐。
         // 使统计/AI/导出/报告与树上口径一致，消除「版本化改名导致大量无差异内容被当作新增/删除」的假阳。
-        alignVersionRenamedArchives(r, old, now);
+        alignVersionRenamedArchives(r, oldSnap, newSnap);
         // 内容一致的版本等价路径 → 折叠为未变（构建噪声归一等）
         alignIdenticalContentAcrossRename(r, oldSnap, newSnap);
         // 内容不同的版本等价路径（webpack 哈希改名等同一逻辑文件）→ 配对为修改，而非拆成删除+新增
@@ -79,13 +79,42 @@ public final class DiffEngine {
      */
     private static boolean textuallySameEntries(PackageSnapshot os, PackageSnapshot ns, LogicalEntry o, LogicalEntry n) {
         if (o == null || n == null) return false;
+        // 仅当条目是"纯文本、可读、可控大小"时才做行尾归一化比较：
+        //  - 常规文本类（CONFIG/JSP/JS/HTML/CSS）直接参与；
+        //  - 还有一类会落入 OTHER 兜底（非 isTextDiffable）：folder/解包模式下，.java/.sql/.md/.log/
+        //    多种源码/脚本/配置扩展名由于 classify 未逐一收录而被归到 OTHER。它们仍是纯文本，若不归一化，
+        //    仅 CRLF/LF 换行符差异会被原始 sha 误判为 MODIFIED（用户实报：CONFIG/JS/.java 等大量内容一致文件显示有差异）。
+        //    故按"已知纯文本扩展名"集合把这类也纳入行尾中性判定，口径与其他文本文件一致。
+        //  - 其余真二进制（图片/字体/压缩包等）维持原 sha 判定，不做归一化，避免把二进制当文本解码。
         FileClass fc = o.getFileClass();
-        if (fc == null || !fc.isTextDiffable()) return false;
+        boolean textOther = fc == FileClass.OTHER && o.getKey() != null && isKnownTextSource(o.getKey());
+        if (fc == null || (!fc.isTextDiffable() && !textOther)) return false;
         if (o.getSize() > NORM_MAX_BYTES || n.getSize() > NORM_MAX_BYTES) return false;
         Optional<byte[]> a = readEntryBytesSafe(os, o);
         Optional<byte[]> b = readEntryBytesSafe(ns, n);
         if (a.isEmpty() || b.isEmpty()) return false;
         return normalizeText(a.get()).equals(normalizeText(b.get()));
+    }
+
+    /** 已知纯文本源码/脚本/文档扩展名（大小写不敏感）：classify 可能落到 OTHER，但确定是文本，
+     *  归入后仅在行尾/行尾空白/BOM 等格式噪声差异时判未变，避免误判进导出/统计（与 isTextDiffable 口径一致）。 */
+    private static final Set<String> KNOWN_TEXT_SRC = Set.of(
+            "java", "kt", "groovy", "scala", "sql", "md", "markdown", "log",
+            "bat", "cmd", "ps1", "py", "rb", "php", "go", "rs", "c", "cpp", "cc", "h", "hpp",
+            "sh", "bash", "zsh", "vue", "ts", "tsx", "jsx", "scss", "less", "sass",
+            "gitignore", "dockerignore", "editorconfig", "env", "lock", "yarn", "makefile", "dockerfile");
+
+    /** 按扩展名判断是否「已知纯文本源码/脚本/文档」：忽略大小写、去目录只比末段。 */
+    private static boolean isKnownTextSource(String key) {
+        int slash = key.lastIndexOf('/');
+        String name = slash >= 0 ? key.substring(slash + 1) : key;
+        int dot = name.lastIndexOf('.');
+        if (dot <= 0 || dot == name.length() - 1) {
+            // 无扩展名但为常见清单名（.gitignore/.dockerignore/.editorconfig/.env 等首字符即点）
+            return KNOWN_TEXT_SRC.contains(name.toLowerCase());
+        }
+        String ext = name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        return KNOWN_TEXT_SRC.contains(ext);
     }
 
     private static Optional<byte[]> readEntryBytesSafe(PackageSnapshot snap, LogicalEntry e) {
@@ -123,7 +152,9 @@ public final class DiffEngine {
      * 逐个从 List 上 remove（O(N)），整体退化为 O(N²)。故这里用 Set 跟踪剩余、归档候选先预过滤，
      * 内部子文件按归档前缀一次收集，最终一次性重建 DELETED/ADDED 列表。</p>
      */
-    private static void alignVersionRenamedArchives(DiffResult r, Map<String, LogicalEntry> old, Map<String, LogicalEntry> now) {
+    private static void alignVersionRenamedArchives(DiffResult r, PackageSnapshot os, PackageSnapshot ns) {
+        Map<String, LogicalEntry> old = os.getEntries();
+        Map<String, LogicalEntry> now = ns.getEntries();
         LinkedHashSet<String> deleted = new LinkedHashSet<>(r.get(DiffStatus.DELETED));
         LinkedHashSet<String> added = new LinkedHashSet<>(r.get(DiffStatus.ADDED));
         if (deleted.isEmpty() || added.isEmpty()) return;
@@ -134,14 +165,15 @@ public final class DiffEngine {
             if (ae != null && isArchive(ae)) archiveAdded.add(a);
         }
         for (String dKey : new ArrayList<>(deleted)) {
-            tryAlignArchive(r, old, now, archiveAdded, added, deleted, dKey);
+            tryAlignArchive(r, os, ns, old, now, archiveAdded, added, deleted, dKey);
         }
         r.replaceList(DiffStatus.DELETED, deleted);
         r.replaceList(DiffStatus.ADDED, added);
     }
 
     /** 对齐单个被删归档到其改名后的等价新归档，并把配对从两侧集合移出（子文件对齐见 {@link #alignSubFiles}）。 */
-    private static void tryAlignArchive(DiffResult r, Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
+    private static void tryAlignArchive(DiffResult r, PackageSnapshot os, PackageSnapshot ns,
+                                        Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
                                         List<String> archiveAdded, Set<String> added, Set<String> deleted, String dKey) {
         LogicalEntry de = old.get(dKey);
         if (de == null || !isArchive(de)) return;
@@ -156,7 +188,7 @@ public final class DiffEngine {
         r.put(sameContainer ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, dKey);
         // 扁平化内部子文件对齐（同版本键对齐后逐一比对 sha）。子文件跨层多，先按归档前缀一次收集，
         // 避免为每个 DELETED 归档重复全量遍历整个 deleted 集合。
-        alignSubFiles(r, deleted, added, old, now, dKey + "!/", aKey + "!/");
+        alignSubFiles(r, os, ns, deleted, added, old, now, dKey + "!/", aKey + "!/");
     }
 
     private static boolean isArchive(LogicalEntry e) {
@@ -164,8 +196,12 @@ public final class DiffEngine {
         return fc == FileClass.ARCHIVE || fc == FileClass.JAR;
     }
 
-    /** 按归档前缀逐一对齐扁平化内部子文件（preO → preN 映射），内容一致为一未变、否则修改，并记录改名配对。 */
-    private static void alignSubFiles(DiffResult r, Set<String> deleted, Set<String> added,
+    /** 按归档前缀逐一对齐扁平化内部子文件（preO → preN 映射），内容一致为一未变、否则修改，并记录改名配对。
+     *  内容一致性判定与主循环 {@link #textuallySameEntries} 同口径：嵌套 zip 内纯文本仅行尾 CRLF/LF（或 BOM/行尾空白）
+     *  差异时原始sha不等，但规范化文本相同应判未变——否则整个版本化嵌套交付件内的文本文件会被误判成片修改
+     *  （T00875 验证失败：…M059/M061.zip/scripts/install.sh 内容一致却标修改）。 */
+    private static void alignSubFiles(DiffResult r, PackageSnapshot os, PackageSnapshot ns,
+                                      Set<String> deleted, Set<String> added,
                                       Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
                                       String preO, String preN) {
         List<String> subUnderO = new ArrayList<>();
@@ -176,7 +212,9 @@ public final class DiffEngine {
             if (added.contains(nKey)) {
                 LogicalEntry oe2 = old.get(dSub);
                 LogicalEntry ne2 = now.get(nKey);
-                boolean same = oe2 != null && ne2 != null && oe2.getSha256().equals(ne2.getSha256());
+                boolean same = oe2 != null && ne2 != null
+                        && (oe2.getSha256().equals(ne2.getSha256())
+                        || textuallySameEntries(os, ns, oe2, ne2));
                 deleted.remove(dSub);
                 added.remove(nKey);
                 // 记录内部子文件改名配对，供内容层按旧 key 反查新侧条目做内容 diff
@@ -186,11 +224,29 @@ public final class DiffEngine {
         }
     }
 
-    /** 在候选桶内找 d 的「唯一」版本等价配对（匹配必须恰为 1 个才返回，避免误配）。 */
+    /** 在候选桶内找 d 的「唯一」版本等价配对（匹配必须恰为 1 个才返回，避免误配）。
+     *  优先取「同版本骨架」候选（逐段抹平版本号/哈希尾后完全一致，如 …M059(t).zip ↔ …M061(t).zip）：
+     *  BEMP 交付件常同时含「组件 zip + 同名解压目录」双形态，同内容键桶内 zip 版与目录版均宽松版本等价，
+     *  1:1 唯一性守卫会整体放弃折叠，内容一致的文件反被后续按路径配成修改（T00875 实测 install.sh 字节
+     *  全同仍判 MODIFIED）。同骨架优先让 zip 配 zip、目录配目录各自 1:1；无同骨架候选时回退原宽松等价
+     *  （兼容 foo-rc1 ↔ foo-rc2 等无 M 构建号的纯版本尾段形态）。 */
     private static String findUniqueCompat(String d, List<String> candidates, Set<String> added,
                                            Map<String, LogicalEntry> now) {
+        String skel = versionNormalizedPath(d);
         String pick = null;
         int matches = 0;
+        for (String a : candidates) {
+            if (!added.contains(a)) continue;
+            LogicalEntry ae = now.get(a);
+            if (ae == null || !versionEquivalentPath(d, a)) continue;
+            if (!skel.equals(versionNormalizedPath(a))) continue;
+            pick = a;
+            matches++;
+        }
+        if (matches == 1) return pick;
+        if (matches > 1) return null; // 同骨架候选仍不唯一：保持保守放弃
+        pick = null;
+        matches = 0;
         for (String a : candidates) {
             if (added.contains(a)) {
                 LogicalEntry ae = now.get(a);
