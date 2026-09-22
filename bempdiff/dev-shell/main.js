@@ -11,6 +11,7 @@ const path = require('node:path')
 const fs = require('node:fs')
 const net = require('node:net')
 const { spawn, spawnSync } = require('node:child_process')
+const http = require('node:http')
 
 // ---------- 配置 ----------
 const PORT = 18765
@@ -470,7 +471,75 @@ function createWindow(url) {
     return { action: 'deny' }
   })
 
+  // 关闭前运行任务确认：比对进行中时不允许静默直接关窗（避免用户误关中断长任务）。
+  // 点击窗口关闭按钮 → close 事件：异步查后端运行任务；有任务弹原生确认框，
+  // 「强制关闭」destroy 窗口放行，否则 preventDefault 取消关闭。
+  let closeGuardArmed = true
+  win.on('close', (e) => {
+    // 应用真正退出（app.quit / before-quit 路径）也会触发 close，此时后端已被告知终止，
+    // 走 queryRunningTasks 只会查到无可恢复任务，不必再拦这一道，避免「强制关闭后退出」二次弹窗。
+    if (!closeGuardArmed) return
+    e.preventDefault()
+    queryRunningTasks().then((tasks) => {
+      if (!tasks.length) {
+        // 无进行中任务：放行（destroy 后 by window-all-closed 正常退出）。
+        closeGuardArmed = false
+        win.destroy()
+        return
+      }
+      const names = tasks.map((t) => `  · ${t.label || t.id || '未知任务'}`).join('\n')
+      dialog.showMessageBox(win, {
+        type: 'warning',
+        title: '比对仍在进行',
+        message: `检测到 ${tasks.length} 个任务正在进行中：\n${names}\n\n立即关闭将中断这些任务，确定要强制关闭吗？`,
+        buttons: ['取消关闭', '强制关闭'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      }).then(({ response }) => {
+        if (response === 1) {
+          closeGuardArmed = false
+          win.destroy()
+        }
+        // response===0 不动作 → 窗口保持打开，进行中任务不受影响
+      }).catch(() => {
+        // 对话框异常（罕见）时保守放行，避免窗口永远关不掉
+        closeGuardArmed = false
+        win.destroy()
+      })
+    })
+  })
+
   return win // 返回主窗口句柄，供调用方可靠地赋给 mainWindow（避免 getAllWindows()[0] 误取 splash）
+}
+
+// ---------- 关闭前运行任务检测 ----------
+// 查询后端是否有「进行中」比对任务（QUEUED/RUNNING），供关闭窗口前确认。
+// GET /api/tasks/running -> { running: [{type,id,label,phase,message}] }。
+// 后端不可达（尚未启动/已退出）时视为无任务，返回空数组——避免关闭流程被查询失败卡住。
+function queryRunningTasks() {
+  return new Promise((resolve) => {
+    const req = http.get({
+      host: '127.0.0.1',
+      port: PORT,
+      path: '/api/tasks/running',
+      timeout: 2000
+    }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (c) => { body += c })
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(body)
+          resolve(Array.isArray(j && j.running) ? j.running : [])
+        } catch (_) {
+          resolve([])
+        }
+      })
+    })
+    req.on('error', () => resolve([]))
+    req.on('timeout', () => { req.destroy(); resolve([]) })
+  })
 }
 
 // ---------- 进程回收 ----------
@@ -525,6 +594,43 @@ ipcMain.handle('bempdiff:show-in-folder', async (_event, p) => {
     return ''
   } catch (e) {
     return String(e && e.message ? e.message : e)
+  }
+})
+
+// ---------- 版本更新：一键下载更新包并触发安装（来自 About「立即更新」） ----------
+// 前端只传 GitHub Release 的 .exe 资产下载 URL；主进程下载到系统下载目录（Downloads），
+// 完成后 shell.openPath 启动安装器。仅接受 https formpage 的 URL（防注入任意协议/路径）。
+const https = require('node:https')
+const os = require('node:os')
+ipcMain.handle('bempdiff:download-install', async (_event, url) => {
+  let file = ''      // 最终安装包路径（供 catch 清理半包引用）
+  let tmp = ''       // 下载临时路径
+  try {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) return '只支持 HTTPS 下载链接'
+    const u = new URL(url)
+    if (!/\.(exe)$/i.test(u.pathname)) return '不是 Windows 安装包（.exe）地址'
+    // 落盘到系统「下载」目录；文件名取 URL 末段，异常则回退安装包名。
+    const dlDir = path.join(os.homedir(), 'Downloads')
+    if (!fs.existsSync(dlDir)) fs.mkdirSync(dlDir, { recursive: true })
+    file = path.join(dlDir, path.basename(u.pathname) || 'BempDiff-update-setup.exe')
+    tmp = file + '.download'
+    await new Promise((resolve, reject) => {
+      https.get(url, { headers: { 'User-Agent': 'BempDiff-Updater' } }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return reject(new Error('下载失败 HTTP ' + res.statusCode)) }
+        // 跟随 GitHub 资产下载可能的跳转由 https.get 自动处理（默认跟随有限次重定向）
+        const ws = fs.createWriteStream(tmp)
+        res.pipe(ws)
+        ws.on('finish', () => { ws.close(); resolve() })
+        ws.on('error', reject)
+      }).on('error', reject)
+    })
+    // 原子落位：先写 .download 再改名，避免残留半包被误当安装包。
+    fs.renameSync(tmp, file)
+    shell.openPath(file)
+    return { ok: true, file }
+  } catch (e) {
+    try { if (tmp) fs.unlinkSync(tmp) } catch (_) { /* ignore */ }
+    return { ok: false, message: String(e && e.message ? e.message : e) }
   }
 })
 

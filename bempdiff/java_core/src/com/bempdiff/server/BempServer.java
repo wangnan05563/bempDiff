@@ -198,6 +198,7 @@ public final class BempServer {
     public void start(int port) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/api/session/compare", this::handleCompare);
+        server.createContext("/api/tasks/running", this::handleRunningTasks); // 桌面壳关闭前查询进行中任务，防误关直接中断长比对
         server.createContext("/api/job", this::handleJob);
         server.createContext("/api/export", this::handleExportApi);
         server.createContext("/api/entry", this::handleEntry);
@@ -555,6 +556,36 @@ public final class BempServer {
     }
 
     // ---------------- Job：状态 / 报告 / 导出 ----------------
+
+    /** 汇总「进行中」比对任务（QUEUED/RUNNING），供桌面壳在关闭窗口前查询：
+     *  避免用户误关直接中断长比对/解包任务。返回 [{type,id,label,phase,message}]；
+     *  无进行中任务时返回空数组。AI 分析与导出是同步 HTTP 请求内完成，随进程关闭自动中断，
+     *  不产生独立 running 状态，故仅汇总比对任务本身。 */
+    private void handleRunningTasks(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals(M_OPTIONS)) { sendJson(ex, 204, new LinkedHashMap<>()); return; }
+        if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "仅支持 GET"); return; }
+        List<Map<String, Object>> running = new ArrayList<>();
+        for (Job j : store.all().values()) {
+            String st = j.getStatus();
+            if (!"QUEUED".equals(st) && !"RUNNING".equals(st)) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", "compare");
+            item.put("id", j.id);
+            item.put("label", jobLabel(j));
+            item.put("phase", j.getPhase());
+            item.put("message", j.getMessage() == null ? "" : j.getMessage());
+            running.add(item);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("running", running);
+        sendJson(ex, 200, resp);
+    }
+
+    /** 生成任务的可读标题（供弹窗列出）。Job 不落左右文件路径，用 id + 模式表达即可。 */
+    private String jobLabel(Job j) {
+        String mode = (j.mode == null || j.mode.isEmpty()) ? "compare" : j.mode;
+        return "比对任务 " + j.id + "（" + mode + "）";
+    }
 
     private void handleJob(HttpExchange ex) throws IOException {
         // 请求路径：/api/job/ 后接 jobId 与动作（如 status / cancel / report / export）。
