@@ -85,4 +85,12 @@ describe('R5 会话恢复与删除', () => {
     pushCompareHistory('', 'D:/b.war', 'package')
     expect(loadCompareHistory().length).toBe(0)
   })
+
+  it('脱敏白名单：持久化内容仅含路径元数据四键，无任何差异/AI 内容（T01464）', () => {
+    pushCompareHistory('D:/a-v1.war', 'D:/a-v2.war', 'package')
+    const raw = JSON.parse(localStorage.getItem(KEY))
+    expect(raw.length).toBe(1)
+    expect(Object.keys(raw[0]).sort()).toEqual(['at', 'leftType', 'newPath', 'oldPath'])
+    expect(JSON.stringify(raw)).not.toMatch(/answer|diff|thinking|report/i)
+  })
 })
