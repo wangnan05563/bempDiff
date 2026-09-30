@@ -5,6 +5,8 @@ import { toast } from '../store'
 import { inlineDiff } from '../lib/diff_inline'
 import { alignLines } from '../lib/diff_align'
 import { foldContext } from '../lib/diff_fold'
+import { rangeSelection, buildCopyText, allRowIndexes } from '../lib/diff_select'
+import { searchRows } from '../lib/diff_search'
 import { tokenInfoAt, TOKEN_META } from '../lib/token_classify'
 import { langOf, tokenizeLine } from '../lib/syntax_highlight'
 import PathBar from './PathBar.vue'
@@ -407,7 +409,7 @@ const uniVisible = computed(() => {
   const res = []
   for (let i = uniStart.value; i < uniEnd.value; i++) {
     const x = ur[i]
-    res.push({ type: x.type, abs: i, oldLn: x.oldLn, newLn: x.newLn, text: x.text, count: x.count, segs: us[i], kind: x.kind, ri: uniAbsToRi(i) })
+    res.push({ type: x.type, abs: i, oldLn: x.oldLn, newLn: x.newLn, text: x.text, count: x.count, segs: us[i], kind: x.kind, ri: uniAbsToRi(i), src: x.src })
   }
   return res
 })
@@ -607,12 +609,33 @@ function onToggleFocus() { toggleFocusMode() }
 
 // 专注模式下按 ESC 退出；Ctrl/Alt + ↑/↓ 在差异行间跳转；组件卸载时移除监听。
 // 弹窗（.modal-backdrop）打开时不拦截任何快捷键，避免穿透到下层 diff 视图或与「关弹窗」冲突。
+// R2（T01453）扩展：Ctrl+F 查找 / Ctrl+A 全选行（无原生文本选区时才接管）/ Ctrl+C 复制选中行；
+//   输入框/可编辑元素内不拦截任何按键，Find 输入框的 Esc 由其自身 keydown 处理。
 function onKey(e) {
   if (document.querySelector('.modal-backdrop')) return
   if (e.key === 'Escape' && state.focusMode) { setFocusMode(false); return }
+  if (e.key === 'Escape' && findOpen.value) { closeFind(); return }
+  if (e.key === 'Escape' && selRows.value.size) { clearSelection(); return }
+  const tag = (e.target && e.target.tagName) || ''
+  const inEditor = tag === 'INPUT' || tag === 'TEXTAREA' || !!(e.target && e.target.isContentEditable)
+  if (inEditor) return
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    openFind()
+    return
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+    // 无原生文本选区时才接管（原生选区存在=用户在划选文本，不破坏其 Ctrl+A 语义）
+    let nativeSel = ''
+    try { nativeSel = window.getSelection ? String(window.getSelection()) : '' } catch (_) {}
+    if (!nativeSel) { e.preventDefault(); selectAllRows(); return }
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && selRows.value.size) {
+    let nativeSel = ''
+    try { nativeSel = window.getSelection ? String(window.getSelection()) : '' } catch (_) {}
+    if (!nativeSel) { e.preventDefault(); copySelRows(); return }
+  }
   if ((e.ctrlKey || e.altKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-    const tag = (e.target && e.target.tagName) || ''
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return // 输入框内不拦截，避免影响输入
     if (!diffRows.value.length) return // 无差异可跳时不拦截原按键
     e.preventDefault()
     if (e.key === 'ArrowUp') gotoPrev()
@@ -753,6 +776,8 @@ watch(() => (at.value && at.value.key), () => {
   flashRi.value = -1
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null }
   rowEls.clear()
+  clearSelection()
+  closeFind()
 })
 
 function locate(idx) {
@@ -901,6 +926,113 @@ const statusInfo = computed(() => {
   }
 })
 
+// ======================================================================
+// 行级选中与复制 + 差异内容内查找（二期 R2 / T01453）
+//  - 选择集以原始行下标 _i（ri）为键，split/unified/wrap 三视图同源共享；
+//  - 行号列（.ln / .u-ln-*）点击选中（Shift=范围），复制按侧取文本（del 行无右侧自动跳过）；
+//  - Ctrl+A：无原生文本选区时才接管为「全选差异行」，规避 GitHub Desktop #20049 同类
+//    「Ctrl+A 破坏原生选择」的语义错乱；Ctrl+C：有行选且无原生选区时复制选中行；
+//  - Find（Ctrl+F）：行级命中高亮 + 上一个/下一个跳转，范围=当前视图（全量/仅差异），
+//    纯函数 searchRows 单 pass 扫描，万行 ≤300ms。
+// ======================================================================
+const selRows = ref(new Set())
+const selAnchor = ref(-1)
+const selSide = ref('right')
+const COPY_LINENO_KEY = 'bempdiff.diffCopyWithLineNo'
+const copyWithLineNo = ref((() => {
+  try { const v = localStorage.getItem(COPY_LINENO_KEY); if (v !== null) return v === 'true' } catch (_) {}
+  return false
+})())
+function toggleCopyLineNo() {
+  copyWithLineNo.value = !copyWithLineNo.value
+  try { localStorage.setItem(COPY_LINENO_KEY, String(copyWithLineNo.value)) } catch (_) {}
+}
+function clearSelection() { selRows.value = new Set(); selAnchor.value = -1 }
+/** 行号列点击：Shift+点击=从锚点范围选择；普通点击=单行切换（同行再点取消）。 */
+function onLnClick(e, foldedIdx, side) {
+  const r = foldedRows.value[foldedIdx]
+  const ri = (r && typeof r._i === 'number') ? r._i : -1
+  if (ri < 0) return
+  selSide.value = side
+  if (e.shiftKey && selAnchor.value >= 0) {
+    for (const k of rangeSelection(selAnchor.value, ri)) selRows.value.add(k)
+  } else if (selRows.value.has(ri)) {
+    selRows.value.delete(ri)
+    selAnchor.value = ri
+  } else {
+    selRows.value.add(ri)
+    selAnchor.value = ri
+  }
+  selRows.value = new Set(selRows.value) // 换新 Set 触发响应式
+}
+function selectAllRows() {
+  const n = rows.value.length
+  if (!n) return
+  if (selSide.value !== 'left' && selSide.value !== 'right') selSide.value = 'right'
+  selRows.value = new Set(allRowIndexes(n))
+}
+async function copySelRows() {
+  const n = selRows.value.size
+  if (!n) return
+  const text = buildCopyText(rows.value, selRows.value, selSide.value, { withLineNo: copyWithLineNo.value })
+  if (!text) { toast('warning', '选中行在该侧无内容可复制'); return }
+  await copyTabText(text, '已复制 ' + n + ' 行（' + (selSide.value === 'left' ? '旧侧' : '新侧') + '）')
+}
+
+// ---------- Find：差异内容内查找 ----------
+const findOpen = ref(false)
+const findQuery = ref('')
+const findCaseSensitive = ref(false)
+const findMatches = ref([])   // [{ di(foldedRows 下标), sides:['left','right'] }]
+const findCurrent = ref(-1)
+const findInputRef = ref(null)
+const findHitAbsSet = computed(() => {
+  const s = new Set()
+  for (const m of findMatches.value) s.add(m.di)
+  return s
+})
+const findCurrentAbs = computed(() =>
+  (findCurrent.value >= 0 && findCurrent.value < findMatches.value.length) ? findMatches.value[findCurrent.value].di : -1)
+function runFind() {
+  findMatches.value = searchRows(foldedRows.value, findQuery.value, { caseSensitive: findCaseSensitive.value })
+  findCurrent.value = findMatches.value.length ? 0 : -1
+  if (findMatches.value.length) scrollToFolded(findMatches.value[0].di)
+}
+watch([findQuery, findCaseSensitive], () => runFind())
+function openFind() {
+  findOpen.value = true
+  nextTick(() => { if (findInputRef.value) findInputRef.value.focus() })
+}
+function closeFind() {
+  findOpen.value = false
+  findQuery.value = ''
+  findMatches.value = []
+  findCurrent.value = -1
+}
+/** 折叠行下标 → 滚动定位（unified 走等差偏移；split/wrap 复用 locate 的滚动目标选择）。 */
+function scrollToFolded(di) {
+  if (di < 0 || di >= foldedRows.value.length) return
+  if (gitMode.value) {
+    const uAbs = uniRows.value.findIndex(u => u.src === di)
+    if (uAbs >= 0) scrollToUni(uAbs)
+    return
+  }
+  const target = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+  if (!target) return
+  const top = offsets.value[di] || 0
+  const h = heights.value[di] || EST_ROW_H
+  target.scrollTo({ top: Math.max(0, top - viewportH.value / 2 + h / 2), behavior: 'smooth' })
+  if (!wrap.value && leftPaneRef.value && rightPaneRef.value) rightPaneRef.value.scrollTop = leftPaneRef.value.scrollTop
+}
+function jumpToMatch(idx) {
+  if (!findMatches.value.length) return
+  const m = findMatches.value[(idx + findMatches.value.length) % findMatches.value.length]
+  findCurrent.value = findMatches.value.indexOf(m)
+  scrollToFolded(m.di)
+}
+function findNext() { if (findMatches.value.length) jumpToMatch(findCurrent.value + 1) }
+function findPrev() { if (findMatches.value.length) jumpToMatch(findCurrent.value - 1) }
+
 // 进入新文件：重置滚动位置 + 重新解析 + 清空导航与光标状态
 watch([rawOld, rawNew], () => {
   scrollTop.value = 0
@@ -908,6 +1040,8 @@ watch([rawOld, rawNew], () => {
   flashRi.value = -1
   caretPos.value = null
   hoverPos.value = null
+  clearSelection()
+  closeFind()
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null }
   startParse()
 })
@@ -1028,6 +1162,28 @@ onUpdated(() => measureVisible())
         <span class="text-warning"><i class="bi bi-pencil-square"></i> {{ totalStats.modified.toLocaleString() }}</span>
         <span class="text-secondary"><i class="bi bi-equals"></i> {{ totalStats.unchanged.toLocaleString() }}</span>
       </span>
+      <!-- R2 行级选中操作条：复制选中行（可含行号前缀）/ 清除选择；Ctrl+C / Esc 同效 -->
+      <div class="btn-group btn-group-sm me-1" v-if="selRows.size" role="group" aria-label="选中行操作">
+        <span class="btn btn-outline-primary py-0 px-2 disabled d-flex align-items-center sel-chip-count" style="font-size:.72rem;pointer-events:none">
+          {{ selRows.size }} 行
+        </span>
+        <button class="btn btn-outline-primary py-0 px-2" @click="copySelRows"
+                :title="'复制选中 ' + selRows.size + ' 行（' + (selSide === 'left' ? '旧侧' : '新侧') + '，点击行号列可切换侧）· Ctrl+C 同效'">
+          <i class="bi bi-clipboard"></i>
+        </button>
+        <button class="btn py-0 px-2" :class="copyWithLineNo ? 'btn-primary' : 'btn-outline-primary'"
+                @click="toggleCopyLineNo"
+                title="复制时附带行号前缀（如 12: 内容），该偏好会被记忆">
+          <i class="bi bi-list-ol"></i>
+        </button>
+        <button class="btn btn-outline-secondary py-0 px-2" @click="clearSelection" title="清除选择（Esc）">
+          <i class="bi bi-x"></i>
+        </button>
+      </div>
+      <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
+              @click="openFind" title="在差异内容中查找（Ctrl+F）">
+        <i class="bi bi-search"></i>
+      </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
               @click="toggleAiPanel" :title="state.aiPanelCollapsed ? '展开智能分析栏，查看单文件/全局分析' : '收起智能分析栏，扩大比对视野'">
         <i class="bi" :class="state.aiPanelCollapsed ? 'bi-layout-sidebar' : 'bi-layout-sidebar-inset-reverse'"></i>
@@ -1094,12 +1250,27 @@ onUpdated(() => measureVisible())
         <button class="btn btn-sm btn-outline-primary py-0 px-2 ms-2" @click="forceFull = true; collapse = false">展开完整差异（可能卡顿）</button>
       </div>
 
+      <!-- R2 差异内容内查找（Ctrl+F）：行级命中高亮 + 上一个/下一个跳转；范围=当前视图（全量/仅差异） -->
+      <div class="find-bar" v-if="findOpen">
+        <i class="bi bi-search"></i>
+        <input ref="findInputRef" v-model="findQuery" type="text" class="form-control form-control-sm find-input"
+               placeholder="在差异内容中查找（当前视图范围）…"
+               @keydown.esc.stop="closeFind"
+               @keydown.enter="findQuery && ($event.shiftKey ? findPrev() : findNext())" />
+        <span class="find-count" :class="{ 'text-secondary': !findMatches.length }">{{ findMatches.length ? (findCurrent + 1) + ' / ' + findMatches.length : '无匹配' }}</span>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findPrev" :disabled="!findMatches.length" title="上一个（Shift+Enter）"><i class="bi bi-chevron-up"></i></button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findNext" :disabled="!findMatches.length" title="下一个（Enter）"><i class="bi bi-chevron-down"></i></button>
+        <button class="btn btn-sm py-0 px-1" :class="findCaseSensitive ? 'btn-primary' : 'btn-outline-secondary'"
+                @click="findCaseSensitive = !findCaseSensitive" title="区分大小写">Aa</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="closeFind" title="关闭（Esc）"><i class="bi bi-x-lg"></i></button>
+      </div>
+
       <!-- Git 风格 unified 视图：左「旧行号|新行号」列固定 + 后统一内容列（删/改/增段按 -/+ 区分），右侧热力差异地图 -->
       <div class="diff-unified" v-if="gitMode">
         <div class="uni-body" ref="uniAreaRef" @scroll="onUniScroll">
           <div class="uni-grid" :style="{ height: uniTotal + 'px' }">
             <div v-for="(v, k) in uniVisible" :key="'u' + v.abs"
-                 class="urow" :class="[v.type === 'fold' ? 'fold' : v.type, { heat: v.abs === centerUniAbs, current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+                 class="urow" :class="[v.type === 'fold' ? 'fold' : v.type, { heat: v.abs === centerUniAbs, current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs }]"
                  @mousemove="onUniMove($event, v)" @click="onUniClick($event, v)"
                  :style="{ top: (v.abs * EST_ROW_H) + 'px' }">
               <template v-if="v.type === 'fold'">
@@ -1107,8 +1278,8 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="u-sign" :class="'u-sign-' + v.kind">{{ v.kind === 'd' ? '−' : (v.kind === 'a' ? '+' : ' ') }}</span>
-                <span class="u-ln-old" :class="{ 'u-ln-d': v.oldLn && v.kind === 'd' }">{{ v.oldLn }}</span>
-                <span class="u-ln-new" :class="{ 'u-ln-a': v.newLn && v.kind === 'a' }">{{ v.newLn }}</span>
+                <span class="u-ln-old ln-pick" :class="{ 'u-ln-d': v.oldLn && v.kind === 'd' }" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.src, 'left')">{{ v.oldLn }}</span>
+                <span class="u-ln-new ln-pick" :class="{ 'u-ln-a': v.newLn && v.kind === 'a' }" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.src, 'right')">{{ v.newLn }}</span>
                 <span class="u-code" data-side="uni"><span v-for="(s, si) in v.segs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span></span>
               </template>
             </div>
@@ -1129,7 +1300,7 @@ onUpdated(() => measureVisible())
         <div class="diff-scroll" ref="diffAreaRef" @scroll="onDiffScroll">
           <div class="diff-grid" :style="{ height: totalHeight + 'px' }">
           <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
-               class="row" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+               class="row" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs }]"
                :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'wrap')"
                @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
                :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0' }">
@@ -1140,10 +1311,10 @@ onUpdated(() => measureVisible())
             </template>
             <template v-else>
               <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
-              <span class="ln">{{ v.left }}</span>
+              <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
               <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'right')" class="bi" :class="gtIcon(v, 'right')"></i></span>
-              <span class="ln">{{ v.right }}</span>
+              <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
               <span class="code flex-1" data-side="right"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'right')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
             </template>
           </div>
@@ -1165,7 +1336,7 @@ onUpdated(() => measureVisible())
         <div class="diff-pane" ref="leftPaneRef" @scroll="onPaneScroll('left')">
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
             <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
-                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs }]"
                  :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'left')"
                  @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
                  :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0', minHeight: (heights[v.abs] || EST_ROW_H) + 'px' }">
@@ -1176,7 +1347,7 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
-                <span class="ln">{{ v.left }}</span>
+                <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
                 <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -1188,7 +1359,7 @@ onUpdated(() => measureVisible())
         <div class="diff-pane right" ref="rightPaneRef" @scroll="onPaneScroll('right')">
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
             <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
-                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi }]"
+                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs }]"
                  :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'right')"
                  @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
                  :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0', minHeight: (heights[v.abs] || EST_ROW_H) + 'px' }">
@@ -1199,7 +1370,7 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'right')" class="bi" :class="gtIcon(v, 'right')"></i></span>
-                <span class="ln">{{ v.right }}</span>
+                <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
                 <span class="code flex-1" data-side="right"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'right')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -1258,7 +1429,7 @@ onUpdated(() => measureVisible())
 </template>
 
 <style scoped>
-.diff-area { overflow: hidden; flex: 1 1 auto; min-height: 0; background: var(--bs-body-bg); display: flex; flex-direction: column; }
+.diff-area { overflow: hidden; flex: 1 1 auto; min-height: 0; background: var(--bs-body-bg); display: flex; flex-direction: column; position: relative; }
 .oversized-banner {
   flex: 0 0 auto; font-size: .76rem; padding: .35rem .6rem;
   background: var(--bs-warning-bg-subtle); border-bottom: 1px solid var(--bs-border-color);
@@ -1667,4 +1838,34 @@ onUpdated(() => measureVisible())
   0% { opacity: 0; transform: rotate(-90deg) scale(.6); }
   100% { opacity: 1; transform: rotate(0) scale(1); }
 }
+
+/* ===== R2 行级选中与查找（T01453） ===== */
+/* 行号列可点选中：悬浮浮现选择光标，提示可交互 */
+.ln-pick { cursor: pointer; user-select: none; border-radius: .2rem; }
+.ln-pick:hover { background: color-mix(in srgb, var(--bs-primary) 18%, transparent); color: var(--bs-body-color); }
+/* 选中行：主色淡底（不覆盖差异行红/绿语义底色——用 outline 式内阴影叠加，主题中性可见） */
+.row.selected, .prow.selected, .urow.selected {
+  box-shadow: inset 3px 0 0 var(--bs-primary);
+  background-image: linear-gradient(color-mix(in srgb, var(--bs-primary) 10%, transparent), color-mix(in srgb, var(--bs-primary) 10%, transparent));
+}
+/* Find 命中行级高亮：全部命中淡黄底，当前命中强化描边 */
+.row.findhit, .prow.findhit, .urow.findhit {
+  background-image: linear-gradient(color-mix(in srgb, #f5c542 16%, transparent), color-mix(in srgb, #f5c542 16%, transparent));
+}
+.row.findcur, .prow.findcur, .urow.findcur {
+  box-shadow: inset 3px 0 0 #e0a800;
+  background-image: linear-gradient(color-mix(in srgb, #f5c542 30%, transparent), color-mix(in srgb, #f5c542 30%, transparent));
+}
+/* 查找条：悬浮于 diff 区顶部，不挤占内容布局 */
+.find-bar {
+  position: absolute; top: .5rem; right: 2.5rem; z-index: 30;
+  display: flex; align-items: center; gap: .35rem;
+  padding: .3rem .5rem; border-radius: .4rem;
+  background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
+  box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .12);
+}
+.find-input { width: 16rem; font-size: .8rem; }
+.find-count { font-size: .72rem; min-width: 3.2rem; text-align: center; font-variant-numeric: tabular-nums; }
+.sel-chip-count { font-variant-numeric: tabular-nums; }
+
 </style>
