@@ -548,12 +548,20 @@ public final class BempServer {
     private static Map<String, Object> buildNode(String k, PackageSnapshot oldSnap, PackageSnapshot newSnap, DiffStatus st) {
         LogicalEntry e = oldSnap.getEntries().get(k);
         if (e == null) e = newSnap.getEntries().get(k);
+        LogicalEntry oe = oldSnap.getEntries().get(k);
+        LogicalEntry ne = newSnap.getEntries().get(k);
         Map<String, Object> node = new LinkedHashMap<>();
         node.put("key", k);
         node.put(KEY_STATUS, st.name());
         node.put("layer", (e != null && e.getLayer() != null) ? e.getLayer().name() : "?");
         node.put("fileClass", (e != null && e.getFileClass() != null) ? e.getFileClass().name() : "OTHER");
         node.put("size", e != null ? e.getSize() : 0);
+        // R2 二进制摘要卡（二期 T01454）：双端大小 + 双端 SHA-256。
+        // SHA-256 在 parse 期已随 LogicalEntry 计算，此处仅透传，零额外 IO。
+        if (oe != null) node.put("oldSize", oe.getSize());
+        if (ne != null) node.put("newSize", ne.getSize());
+        if (oe != null && oe.getSha256() != null) node.put("oldSha256", oe.getSha256());
+        if (ne != null && ne.getSha256() != null) node.put("newSha256", ne.getSha256());
         return node;
     }
 

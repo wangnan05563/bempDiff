@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, shallowRef, nextTick, onMounted, onUnmounted, onUpdated, watch } from 'vue'
-import { state, activeTab, closeTab, pinTab, closeOtherTabs, closeAllTabs, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL } from '../store'
+import { state, activeTab, closeTab, pinTab, closeOtherTabs, closeAllTabs, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL, fmtBytes } from '../store'
 import { toast } from '../store'
 import { inlineDiff } from '../lib/diff_inline'
 import { alignLines } from '../lib/diff_align'
@@ -1033,6 +1033,28 @@ function jumpToMatch(idx) {
 function findNext() { if (findMatches.value.length) jumpToMatch(findCurrent.value + 1) }
 function findPrev() { if (findMatches.value.length) jumpToMatch(findCurrent.value - 1) }
 
+// ======================================================================
+// 二进制条目摘要卡（二期 R2 / T01454）：内容级 diff 不支持的条目（图片/字体/二进制资源等）
+// 不再只有一行报错——展示 类型 / 双端大小 / 内容等价判定（顶层 SHA-256，嵌套 CRC32）。
+// ======================================================================
+const BINARY_ERR = /二进制|不支持内容/
+const isBinaryFail = computed(() => !!(dec.value && !dec.value.ok && BINARY_ERR.test(dec.value.error || '')))
+const binaryInfo = computed(() => {
+  if (!isBinaryFail.value) return null
+  // 数据源优先级：树节点（顶层有 oldSize/newSize/oldSha256/newSha256；嵌套有 oldCrc/newCrc/sameContent）
+  const n = (at.value && at.value.node) || node.value || {}
+  let content = null // true=一致 / false=已变化 / null=无法判定（单侧存在或哈希缺失）
+  if (typeof n.sameContent === 'boolean') content = n.sameContent
+  else if (n.oldSha256 && n.newSha256) content = n.oldSha256 === n.newSha256
+  return {
+    fcLabel: fclassMeta(n.fileClass || currentFc.value).label,
+    oldSize: (typeof n.oldSize === 'number') ? n.oldSize : (typeof n.size === 'number' ? n.size : null),
+    newSize: (typeof n.newSize === 'number') ? n.newSize : (typeof n.size === 'number' ? n.size : null),
+    hasOld: n.oldSize !== undefined || n.oldSha256 !== undefined || n.oldCrc !== undefined || !!n.size,
+    content
+  }
+})
+
 // 进入新文件：重置滚动位置 + 重新解析 + 清空导航与光标状态
 watch([rawOld, rawNew], () => {
   scrollTop.value = 0
@@ -1414,6 +1436,25 @@ onUpdated(() => measureVisible())
       <div v-if="dec.engine" class="text-secondary mb-1" style="font-size:.85rem">反编译引擎：{{ dec.engine }}</div>
       <div>{{ dec.error || '该文件无法反编译' }}</div>
       <div v-if="dec.diffText" class="text-start mt-2" style="white-space:pre-wrap;font-size:.8rem">{{ dec.diffText }}</div>
+      <!-- R2 二进制条目摘要卡：类型 / 双端大小 / 内容等价判定（T01454） -->
+      <div class="bin-card text-start mt-3" v-if="binaryInfo" :data-fc="currentFc">
+        <div class="bin-title"><i class="bi bi-file-earmark-binary"></i> 二进制条目摘要（不支持内容级对比）</div>
+        <div class="bin-row"><span class="bin-k">文件类型</span><span>{{ binaryInfo.fcLabel }}</span></div>
+        <div class="bin-row">
+          <span class="bin-k">旧侧大小</span>
+          <span>{{ binaryInfo.hasOld ? fmtBytes(binaryInfo.oldSize || 0) : '不存在' }}</span>
+        </div>
+        <div class="bin-row">
+          <span class="bin-k">新侧大小</span>
+          <span>{{ binaryInfo.newSize != null ? fmtBytes(binaryInfo.newSize) : '不存在' }}</span>
+        </div>
+        <div class="bin-row">
+          <span class="bin-k">内容判定</span>
+          <span v-if="binaryInfo.content === true" class="text-success"><i class="bi bi-check2-circle"></i> 内容一致（哈希相同）</span>
+          <span v-else-if="binaryInfo.content === false" class="text-warning"><i class="bi bi-arrow-repeat"></i> 内容已变化</span>
+          <span v-else class="text-secondary">无法判定（单侧存在或哈希缺失）</span>
+        </div>
+      </div>
     </div>
 
     <div class="diff-area center-empty" v-else-if="(node || dec) && tabErr">
@@ -1867,5 +1908,22 @@ onUpdated(() => measureVisible())
 .find-input { width: 16rem; font-size: .8rem; }
 .find-count { font-size: .72rem; min-width: 3.2rem; text-align: center; font-variant-numeric: tabular-nums; }
 .sel-chip-count { font-variant-numeric: tabular-nums; }
+
+/* ===== R2 二进制条目摘要卡（T01454） ===== */
+.bin-card {
+  min-width: 18rem; max-width: 24rem;
+  border: 1px solid var(--bs-border-color); border-radius: .5rem;
+  padding: .6rem .9rem;
+  background: color-mix(in srgb, var(--bs-body-color) 4%, transparent);
+  font-size: .8rem;
+}
+.bin-title {
+  font-weight: 600; font-size: .78rem; margin-bottom: .4rem;
+  display: flex; align-items: center; gap: .35rem;
+  color: var(--bs-secondary-color);
+}
+.bin-row { display: flex; justify-content: space-between; gap: 1rem; padding: .12rem 0; }
+.bin-k { color: var(--bs-secondary-color); flex: 0 0 auto; }
+
 
 </style>

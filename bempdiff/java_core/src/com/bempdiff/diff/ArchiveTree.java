@@ -113,6 +113,16 @@ public final class ArchiveTree {
         if (isDir) size = 0L;
         else size = inNew ? newMap.get(name)[0] : oldMap.get(name)[0];
         node.put("size", size);
+        // R2 二进制摘要卡（二期 T01454）：双端大小 + CRC32 + 同内容判定。
+        // CRC32 来自 zip 条目元数据（listArchive 既有采集，零额外 IO；非加密哈希，
+        // 与顶层节点透传的 SHA-256 定位不同——嵌套条目无 LogicalEntry，用 CRC 做内容等价判定足够）。
+        if (!isDir) {
+            long[] a = oldMap.get(name);
+            long[] b = newMap.get(name);
+            if (a != null) { node.put("oldSize", a[0]); node.put("oldCrc", Long.toHexString(a[1])); }
+            if (b != null) { node.put("newSize", b[0]); node.put("newCrc", Long.toHexString(b[1])); }
+            if (a != null && b != null) node.put("sameContent", a[0] == b[0] && a[1] == b[1]);
+        }
         node.put("name", name);
         node.put("isDir", isDir);
         // 目录/普通文件不可展开；嵌套归档（zip/jar/war 等）可继续递归展开
