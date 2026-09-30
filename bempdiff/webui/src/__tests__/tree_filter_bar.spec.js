@@ -114,3 +114,61 @@ describe('R1 过滤栏收起与记忆', () => {
     w2.unmount()
   })
 })
+
+describe('R1 性能与清空还原（T01452）', () => {
+  beforeEach(freshState)
+  afterEach(() => {
+    try { localStorage.removeItem('bempdiff.treeFilterBarVisible') } catch (_) {}
+  })
+
+  it('1 万节点搜索过滤响应 ≤200ms（PRD R1 验收口径）', async () => {
+    // 1 万节点混合状态/层级，覆盖 rows 全量重建路径（过滤谓词 + 目录树构建 + 虚拟切片）
+    const big = Array.from({ length: 10000 }, (_, i) => ({
+      key: `com/pkg${i % 97}/Cls${i}.class`,
+      status: ['MODIFIED', 'ADDED', 'UNCHANGED'][i % 3],
+      fileClass: 'CLASS',
+      layer: i % 2 ? 'L1' : 'L2'
+    }))
+    state.job = { jobId: 'j-big', tree: big, stats: null, mode: 'package' }
+    const w = await mountTree()
+    const t0 = performance.now()
+    state.config.filterSearch = 'pkg3'
+    await w.vm.$nextTick()
+    const elapsed = performance.now() - t0
+    console.info(`[perf] 1 万节点搜索过滤实测 ${elapsed.toFixed(1)}ms（验收线 200ms）`)
+    expect(w.text()).toContain('命中')
+    expect(elapsed, `1 万节点过滤实测 ${elapsed.toFixed(1)}ms`).toBeLessThan(200)
+    w.unmount()
+  })
+
+  it('清空还原：过滤清空按钮恢复全部过滤条件，计数回到总数口径', async () => {
+    state.config.filterSearch = 'zzz-不存在的关键字'
+    state.config.filterShowUnchanged = false
+    const w = await mountTree()
+    expect(w.text()).toContain('命中 0 / 3 项')
+    // 全被过滤掉时出现空态与「清除过滤条件」按钮
+    const btn = w.findAll('button').find(b => b.text().includes('清除过滤条件'))
+    expect(btn).toBeTruthy()
+    await btn.trigger('click')
+    await w.vm.$nextTick()
+    expect(state.config.filterSearch).toBe('')
+    expect(state.config.filterShowUnchanged).toBe(true)
+    expect(state.config.filterRegex).toBe(false)
+    expect(state.config.filterRisk).toEqual(['HIGH', 'MEDIUM', 'LOW'])
+    expect(w.text()).not.toContain('命中') // 还原为总数口径「3 项」
+    expect(w.text()).toContain('3 项')
+    w.unmount()
+  })
+
+  it('状态记忆：过滤条件在树数据变化（展开态重置）后保持', async () => {
+    state.config.filterSearch = 'com/foo'
+    const w = await mountTree()
+    expect(w.text()).toContain('命中 2 / 3 项')
+    // 模拟重新比对/树更新触发 watch 重置滚动与展开态，过滤条件不受影响
+    state.job = { jobId: 'j1', tree: NODES.slice(), stats: null, mode: 'package' }
+    await w.vm.$nextTick()
+    expect(state.config.filterSearch).toBe('com/foo')
+    expect(w.text()).toContain('命中 2 / 3 项')
+    w.unmount()
+  })
+})
