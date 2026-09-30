@@ -126,6 +126,28 @@ function exportActive() {
   toast('success', 'AI 分析结果已导出为 Markdown')
 }
 function exportDisabled(t) { return !(t && t.answer && t.answer.length) }
+
+/** R4 一键摘要（二期 T01459）：复制当前任务 Markdown 结果到剪贴板（clipboard API，非安全上下文降级 execCommand）。 */
+async function copyActive() {
+  const t = active.value
+  if (!t || !t.answer || !t.answer.length) return
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(t.answer)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = t.answer
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    toast('success', 'AI 分析结果已复制为 Markdown（' + t.answer.length + ' 字）')
+  } catch (_) {
+    toast('danger', '复制失败（剪贴板不可用），可改用导出按钮下载 .md 文件')
+  }
+}
+function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
 </script>
 
 <template>
@@ -230,6 +252,10 @@ function exportDisabled(t) { return !(t && t.answer && t.answer.length) }
         <button class="btn btn-outline-primary btn-sm icon-only" title="在新窗口预览完整 Markdown 报告"
                 :disabled="previewDisabled(active)" @click="previewReport">
           <i class="bi bi-filetype-md"></i>
+        </button>
+        <button class="btn btn-outline-primary btn-sm icon-only" title="复制 Markdown 结果（可直接粘贴进报告）"
+                :disabled="copyDisabled(active)" @click="copyActive">
+          <i class="bi bi-clipboard"></i>
         </button>
         <button class="btn btn-outline-primary btn-sm icon-only" title="导出分析结果为 Markdown 文件"
                 :disabled="exportDisabled(active)" @click="exportActive">

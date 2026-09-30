@@ -243,7 +243,7 @@ function doCompare() { triggerCompare() }
       </button>
       <button class="btn btn-outline-secondary btn-sm" @click="onAiAnalyze"
               :disabled="!state.job || aiBusy || unpacking"
-              :title="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '发起新的 AI 分析（在下方控制台实时流式输出，可并行多类别）')">
+              :title="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '一键摘要：发起整体风险分析，下方控制台流式输出，可一键复制 Markdown（也可并行多类别分析）')">
         <i class="bi bi-cpu"></i>
       </button>
       <!-- 与右侧「智能分析」一致：只保留图标，文字「智能分类」隐藏，避免工具栏被文字占宽；功能与悬停提示（title）不变。 -->
