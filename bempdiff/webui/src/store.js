@@ -65,6 +65,7 @@ export const state = reactive({
   // 并行 AI 分析任务模型（替代原阻塞模态；每个任务独立 tab + 独立控制台窗口，互不阻塞）
   aiTasks: [],            // { id, category, title, prompt, status, thinking[], answer, error }
   aiActiveTaskId: null,   // 当前聚焦的 AI 分析任务 tab
+  compareHistory: [],     // R5 比对会话历史（跨启动 localStorage 持久化，仅路径元数据不含差异内容）
   aiSelCategory: 'risk',  // 「新建分析 / 生成报告(AI)」共享的当前分析项（risk/breaking/impact/testpoints/custom）
   reportCategory: null,   // 最近一次生成报告所用的分析项（ReportPreview「重新生成」沿用；null=基础报告/默认整体分析）
   previewMd: null,        // 控制台「预览报告」临时报告正文（与全局 reportMd 解耦，避免互相覆盖）
@@ -280,6 +281,67 @@ export function triggerCompare() {
     rightPath: state.newPath.trim(),
     options: buildOptions()
   })
+  // R5（二期 T01463）：成功发起的比对会话记入历史（供跨启动恢复路径对）
+  pushCompareHistory(state.oldPath, state.newPath, state.leftType)
+}
+
+// ---------------- R5 比对会话历史（二期 T01463） ----------------
+// 仅记录路径元数据（左右路径 + 输入类型 + 时间）并持久化 localStorage（上限 20 条滚动）；
+// AI 分析结果 / 差异内容一律不落盘（延续脱敏与 Key 不落盘约束）。
+const COMPARE_HISTORY_KEY = 'bempdiff.compareHistory'
+const COMPARE_HISTORY_MAX = 20
+
+/** 读取历史（首次从 localStorage 装载；坏数据静默清空）。 */
+export function loadCompareHistory() {
+  if (!state.compareHistory.length) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(COMPARE_HISTORY_KEY) || '[]')
+      if (Array.isArray(raw)) state.compareHistory = raw.slice(0, COMPARE_HISTORY_MAX)
+    } catch (_) { /* 忽坏数据 */ }
+  }
+  return state.compareHistory
+}
+function saveCompareHistory() {
+  try {
+    localStorage.setItem(COMPARE_HISTORY_KEY, JSON.stringify(state.compareHistory.slice(0, COMPARE_HISTORY_MAX)))
+  } catch (_) { /* 非安全上下文等异常静默 */ }
+}
+/** 记录一次比对会话；与最近一条完全一致时不重复插入（仅刷新时间戳）。 */
+export function pushCompareHistory(oldPath, newPath, leftType) {
+  const o = String(oldPath || '').trim()
+  const n = String(newPath || '').trim()
+  if (!o || !n) return
+  const list = loadCompareHistory()
+  const top = list[0]
+  if (top && top.oldPath === o && top.newPath === n && top.leftType === leftType) {
+    top.at = Date.now()
+  } else {
+    list.unshift({ oldPath: o, newPath: n, leftType: leftType || 'package', at: Date.now() })
+  }
+  state.compareHistory = list.slice(0, COMPARE_HISTORY_MAX)
+  saveCompareHistory()
+}
+/** 删除第 i 条历史（i 越界静默）。 */
+export function removeCompareHistory(i) {
+  const list = loadCompareHistory()
+  if (i < 0 || i >= list.length) return
+  list.splice(i, 1)
+  state.compareHistory = list
+  saveCompareHistory()
+}
+/** 恢复第 i 条历史：回填左右路径与输入类型（不自动比对，由用户确认「开始比对」）。 */
+export function restoreCompareHistory(i) {
+  const item = loadCompareHistory()[i]
+  if (!item) return false
+  state.leftType = item.leftType || 'package'
+  state.oldPath = item.oldPath
+  state.newPath = item.newPath
+  return true
+}
+/** 清空全部历史（带确认由调用方负责）。 */
+export function clearCompareHistory() {
+  state.compareHistory = []
+  try { localStorage.removeItem(COMPARE_HISTORY_KEY) } catch (_) { /* 静默 */ }
 }
 
 /**

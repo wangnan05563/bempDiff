@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports } from '../store'
+import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import PathBreadcrumb from './PathBreadcrumb.vue'
 import Downloads from './Downloads.vue'
@@ -20,9 +20,44 @@ function onDocClick(e) {
   if (showExport.value && exportWrap.value && !exportWrap.value.contains(e.target)) {
     showExport.value = false
   }
+  if (showHistory.value && historyWrap.value && !historyWrap.value.contains(e.target)) {
+    showHistory.value = false
+  }
 }
 onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
+
+// ---------------- R5 比对会话历史（二期 T01463） ----------------
+const showHistory = ref(false)
+const historyWrap = ref(null)
+function toggleHistory() {
+  showHistory.value = !showHistory.value
+  if (showHistory.value) loadCompareHistory()
+}
+function histTime(ts) {
+  const d = new Date(ts)
+  const p = (x) => String(x).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+function histName(p) {
+  const s = String(p || '').replace(/\\/g, '/')
+  return s.split('/').pop() || s
+}
+function onRestoreHist(i) {
+  if (restoreCompareHistory(i)) {
+    showHistory.value = false
+    toast('success', '已回填历史比对路径，确认无误后点「开始比对」')
+  }
+}
+function onRemoveHist(i) {
+  if (window.confirm('删除这条比对历史？')) removeCompareHistory(i)
+}
+function onClearHist() {
+  if (window.confirm('清空全部比对历史？')) {
+    clearCompareHistory()
+    showHistory.value = false
+  }
+}
 
 // 收敛：工具栏仅保留「生成纯文本/Markdown 报告（不调用 AI）」；AI 报告入口统一在 InfoPanel / ReportPreview
 function onReport() { showExport.value = false; generateReport(false) }
@@ -199,6 +234,33 @@ function doCompare() { triggerCompare() }
               @click="state.leftType = 'folder'" :disabled="aiBusy" title="以解压后的目录作为输入，对比目录结构的差异">
         <i class="bi bi-folder"></i>
       </button>
+    </div>
+
+    <!-- R5 比对会话历史：跨启动持久化（仅路径元数据），点击恢复路径对，单项可删 -->
+    <div class="position-relative" ref="historyWrap">
+      <button class="btn btn-outline-secondary btn-sm" @click="toggleHistory" :disabled="aiBusy"
+              title="最近比对会话：点击恢复路径对（仅记录路径与时间，不含差异内容与 AI 结果）">
+        <i class="bi bi-clock-history"></i>
+      </button>
+      <ul class="dropdown-menu show py-1" v-if="showHistory"
+          style="position:absolute;left:0;top:100%;z-index:1000;min-width:22rem;max-height:24rem;overflow:auto">
+        <li class="px-2 py-1 d-flex justify-content-between align-items-center" style="font-size:.72rem;color:var(--bs-secondary-color)">
+          <span>最近比对会话（{{ state.compareHistory.length }}）</span>
+          <a href="#" v-if="state.compareHistory.length" @click.prevent="onClearHist" style="font-size:.7rem">清空</a>
+        </li>
+        <li v-if="!state.compareHistory.length" class="px-2 py-2 text-secondary" style="font-size:.75rem">
+          暂无历史：发起比对后自动记录
+        </li>
+        <li v-for="(h, i) in state.compareHistory" :key="h.oldPath + '|' + h.newPath + '|' + h.at"
+            class="dropdown-item d-flex align-items-center gap-2 text-wrap" style="font-size:.75rem">
+          <span role="button" style="flex:1 1 auto;min-width:0" :title="h.oldPath + '  ⇄  ' + h.newPath" @click="onRestoreHist(i)">
+            <i class="bi" :class="h.leftType === 'folder' ? 'bi-folder' : 'bi-file-earmark-zip'" style="font-size:.7rem"></i>
+            {{ histName(h.oldPath) }} <i class="bi bi-arrow-left-right" style="font-size:.65rem"></i> {{ histName(h.newPath) }}
+            <span class="text-secondary ms-1" style="font-size:.68rem">{{ histTime(h.at) }}</span>
+          </span>
+          <i class="bi bi-x-lg" role="button" style="font-size:.7rem;opacity:.55" title="删除该条历史" @click.stop="onRemoveHist(i)"></i>
+        </li>
+      </ul>
     </div>
 
     <!-- 老包/老目录：可拖入文件/目录（桌面壳）；面包屑点击层级即导航到该级目录 -->
