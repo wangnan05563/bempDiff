@@ -140,6 +140,11 @@ bempdiff/scripts/_testcls/
 bempdiff/build/*
 !bempdiff/build/installer.nsh
 
+# ---------- 原型调试产物归档 (2026-09-30, workspace-cleanup 第 4 轮) ----------
+# bempdiff 根层散落的反编译/比对运行产物（decompile.py / e2e_real.py 输出）
+# 已移入 artifacts/ 统一管理；产物可由脚本重跑再生，不再纳入版本控制
+bempdiff/artifacts/
+
 # 打包验证临时输出目录（本轮排障遗留，已登记重启删除；防误入库）
 /release_verify/
 

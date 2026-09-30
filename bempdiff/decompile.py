@@ -132,12 +132,14 @@ if __name__ == "__main__":
     diff = list(difflib.unified_diff(a, b, fromfile="v1/InvoiceService", tofile="v2/InvoiceService", lineterm=""))
     diff_text = "\n".join(diff)
 
-    os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
-    with open(os.path.join(HERE, "decompiled_src_v1.java"), "w", encoding="utf-8") as f:
+    # 产物统一落 artifacts/（已被 .gitignore 忽略），避免调试产物散落在原型根目录
+    out_dir = os.path.join(HERE, "artifacts")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "decompiled_src_v1.java"), "w", encoding="utf-8") as f:
         f.write(r1["source"])
-    with open(os.path.join(HERE, "decompiled_src_v2.java"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "decompiled_src_v2.java"), "w", encoding="utf-8") as f:
         f.write(r2["source"])
-    with open(os.path.join(HERE, "decompiled_diff.txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "decompiled_diff.txt"), "w", encoding="utf-8") as f:
         f.write(diff_text)
 
     print(f"[diff] 行级差异 {len(diff)} 行，已写出 decompiled_diff.txt")

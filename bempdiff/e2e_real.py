@@ -12,6 +12,9 @@ import diff_engine as de
 import decompile as dc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 运行产物统一落 artifacts/（已被 .gitignore 忽略），不污染原型根目录
+ARTIFACTS = os.path.join(HERE, "artifacts")
+os.makedirs(ARTIFACTS, exist_ok=True)
 CFR = os.path.join(HERE, "cfr.jar")
 BEMP = r"D:/code/QJ/BEMP5.0DEV"
 
@@ -20,9 +23,9 @@ print("A) 真实两版本 jar 比对 + 反编译：commons-lang3 3.12.0 -> 3.14.
 print("=" * 64)
 de.run_compare(
     os.path.join(HERE, "lib_v1.jar"), os.path.join(HERE, "lib_v2.jar"),
-    out_json=os.path.join(HERE, "real_diff.json"),
+    out_json=os.path.join(ARTIFACTS, "real_diff.json"),
     decompile=True, cfr=CFR, expand_all=True, top_k=12,
-    report=os.path.join(HERE, "real_diff_report.md"),
+    report=os.path.join(ARTIFACTS, "real_diff_report.md"),
 )
 
 print("\n" + "=" * 64)
@@ -61,7 +64,7 @@ for c in cands[:8]:
 print("选取:", chosen)
 if chosen:
     r = dc.decompile(chosen, cfr_jar=CFR)
-    out = os.path.join(HERE, "bemp_real_class.java")
+    out = os.path.join(ARTIFACTS, "bemp_real_class.java")
     with open(out, "w", encoding="utf-8") as f:
         f.write(r["source"])
     print("反编译引擎:", r["engine"], "| 成功:", r["ok"], "| 源码行数:", r["source"].count("\n") + 1)
