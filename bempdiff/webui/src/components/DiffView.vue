@@ -1074,6 +1074,9 @@ function setupObserver() {
   if (ro) { ro.disconnect(); ro = null }
   const el = gitMode.value ? uniAreaRef.value : (wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value))
   if (!el) return
+  // 环境无 ResizeObserver（jsdom 测试 / 极老 WebView）时跳过动态测高：行高沿用估算值，
+  // 虚拟滚动仍可工作（offsets 按 EST_ROW_H 等差），仅换行多行测高回填失效。
+  if (typeof ResizeObserver === 'undefined') return
   viewportH.value = el.clientHeight || viewportH.value
   ro = new ResizeObserver(() => {
     const c = gitMode.value ? uniAreaRef.value : (wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value))
