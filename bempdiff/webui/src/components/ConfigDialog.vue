@@ -1,8 +1,46 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { state, saveConfig, testConnection, fetchModels, loadContextStatus, toast } from '../store'
+import { state, saveConfig, testConnection, fetchModels, loadContextStatus, defaultConfig, toast } from '../store'
 import { api } from '../api/client'
 import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
+
+// 断点续录：未保存就关闭配置中心时，把当前表单草稿暂存本地，下次打开恢复。
+// 仅暂存"尚未落盘"的修改，保存成功即清除——避免误以为已保存、也避免重装后读到过期草稿。
+const DRAFT_KEY = 'bempdiff:config:draft'
+const DRAFT_KEYS = new Set(['aiApiKey', 'aiBaseUrl', 'aiModel', 'aiProvider', 'httpProxy', 'httpsProxy',
+  'blockPrivateEndpoints', 'aiEnabled', 'internalPrefixes', 'expandAll', 'ignoreExtensions',
+  'filterSearch', 'filterRegex', 'filterShowModified', 'filterShowAdded', 'filterShowDeleted',
+  'filterShowUnchanged', 'filterRisk', 'sortByRisk', 'topK', 'stageATopK', 'stageBTopK',
+  'stageAFileSampleLines', 'maxPromptTokens', 'maxOutputTokens', 'costGateWarnTokens', 'treeViewMode',
+  'treeSortMode', 'unpackNested', 'unpackThreads', 'unpackMaxDepth', 'persistApiKey', 'projectContextDir',
+  'projectContextEnabled'])
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch (_) { return null }
+}
+function saveDraft(form) {
+  // 按 persistApiKey 语义脱敏：未选择"记住 API Key"则不把明文 key 落盘草稿，
+  // 与配置落盘策略保持一致（Key 只存在于当前会话内存）。
+  const persist = form.persistApiKey === true
+  const snap = {}
+  for (const k of DRAFT_KEYS) {
+    if (k === 'aiApiKey' && !persist) continue
+    if (form[k] !== undefined) snap[k] = form[k]
+  }
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(snap)) } catch (_) { /* 存储满/禁用时静默放弃草稿 */ }
+}
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY) } catch (_) { /* ignore */ }
+}
+// 取表单的「草稿相关字段」快照（用于判定未保存修改是否仍存在）。
+function snapForm(f) {
+  const o = {}
+  for (const k of DRAFT_KEYS) if (f[k] !== undefined) o[k] = f[k]
+  return o
+}
+let savedSnapshot = null // 最近一次「已保存/打开时初始」字段快照，close 时据此判断是否需要写草稿
 import HelpDoc from './HelpDoc.vue'
 import About from './About.vue'
 
@@ -93,7 +131,12 @@ const testing = ref(false)
 let prevProviderKey = null
 watch(() => props.visible, (v) => {
   if (v) {
+    // 打开时以「已落盘配置」为基底；若存在未保存草稿（上次未保存就关闭），用草稿覆盖，
+    // 恢复未提交的输入（断点续录）。保存成功后 clearDraft，避免过期草稿误当未保存内容恢复。
     Object.assign(form, JSON.parse(JSON.stringify(state.config || {})))
+    const draft = loadDraft()
+    if (draft) Object.assign(form, draft)
+    savedSnapshot = snapForm(form) // 记录本次打开的"初始已保存态"，供 close 判定是否需要写草稿
     prevProviderKey = form.aiProvider // 记录当前厂商，供首次切换时判断「是否未改过默认值」
     // 打开配置中心即查询上下文索引状态（读缓存秒回；让用户一眼看到「是否已生效」）
     if (form.projectContextEnabled && form.projectContextDir) loadContextStatus()
@@ -115,7 +158,20 @@ async function onRefreshContext() {
   await loadContextStatus(true)
 }
 
-function close() { emit('close') }
+function close() {
+  // 关闭时若存在「未保存修改」（当前表单快照 != 初始已保存态），写入草稿供下次断点续录；
+  // 完全未改则清除旧草稿，避免无意义的残留占位。
+  const cur = snapForm(form)
+  const unchanged = savedSnapshot && JSON.stringify(snappedWithDefaults(cur)) === JSON.stringify(snappedWithDefaults(savedSnapshot))
+  if (unchanged) clearDraft()
+  else saveDraft(form)
+  emit('close')
+}
+// 把快照与 defaultConfig 合并后再比，规避「缺省的未改动字段」造成误判为有修改。
+function snappedWithDefaults(snap) {
+  const base = JSON.parse(JSON.stringify(defaultConfig() || {}))
+  return Object.assign(base, snap || {})
+}
 
 // 切换厂商时，若当前 Base URL 仍等于「上一厂商的预设默认值」或为空（即用户未手动改过），
 // 则自动填充新厂商的 baseUrl/model；用户已自定义则保留其填写（不覆盖）。
@@ -176,6 +232,10 @@ async function onSave() {
   if (out.maxOutputTokens !== undefined && out.maxOutputTokens !== null && out.maxOutputTokens !== '') out.maxOutputTokens = Number(out.maxOutputTokens)
   if (out.costGateWarnTokens !== undefined && out.costGateWarnTokens !== null && out.costGateWarnTokens !== '') out.costGateWarnTokens = Number(out.costGateWarnTokens)
   await saveConfig(out)
+  // 保存成功：清除草稿（这些字段已落盘，无需再续录），并刷新"已保存态"快照，
+  // 使随后 close() 能正确判定"本次已保存、无未保存修改"。
+  clearDraft()
+  savedSnapshot = snapForm(form)
   // 保存后立即重扫上下文目录（新目录/刚开启都立即生效并展示加载态）
   if (out.projectContextEnabled && out.projectContextDir) await loadContextStatus(true)
 }
@@ -198,6 +258,64 @@ async function onCleanupTemp() {
   } finally {
     cleaning.value = false
   }
+}
+
+// ---- 配置迁移：导出 / 导入整套配置，用于重装、换机/换服务器时整体迁移 ----
+const migrateMsg = ref('')
+const importFile = ref(null)
+const isExporting = ref(false)
+const isImporting = ref(false)
+// 导出：把已落盘配置脱敏后序列化为 JSON 文件下载。
+// 脱敏规则与持久化策略一致：未勾选 persistApiKey 时不导出明文 apiKey，
+// 避免密钥随迁移文件散落到机器之外（仅导出会失去该字段，导入时用本地持久化的 Key 兜底）。
+function onExportConfig() {
+  const base = JSON.parse(JSON.stringify(state.config || {}))
+  const out = { app: 'bempdiff', kind: 'config', version: 1, exportedAt: new Date().toISOString(), config: { ...base } }
+  if (out.config.persistApiKey !== true) out.config.aiApiKey = ''
+  try {
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `bempdiff-config-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+    migrateMsg.value = '已导出配置 JSON，可在新环境「导入配置」恢复'
+    toast('success', '配置已导出')
+  } catch (e) {
+    migrateMsg.value = '导出失败：' + ((e && e.message) || e)
+    toast('danger', '导出配置失败')
+  }
+}
+// 选择导入文件 → 校验结构 → 合并到 state.config 并持久化。
+function pickImportFile(ev) {
+  const f = ev && ev.target && ev.target.files && ev.target.files[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = async () => {
+    try {
+      const obj = JSON.parse(String(reader.result || ''))
+      if (!obj || obj.app !== 'bempdiff' || obj.kind !== 'config' || !obj.config || typeof obj.config !== 'object') {
+        throw new Error('不是合法的 BempDiff 配置导出文件')
+      }
+      const merged = Object.assign({}, state.config, obj.config)
+      isImporting.value = true
+      await saveConfig(merged)
+      Object.assign(form, JSON.parse(JSON.stringify(merged)))
+      migrateMsg.value = '配置已导入并保存生效'
+      toast('success', '配置导入成功')
+    } catch (e) {
+      migrateMsg.value = '导入失败：' + ((e && e.message) || e)
+      toast('danger', '配置导入失败：' + ((e && e.message) || e))
+    } finally {
+      isImporting.value = false
+      if (importFile.value) importFile.value.value = ''
+    }
+  }
+  reader.onerror = () => { migrateMsg.value = '读取文件失败'; toast('danger', '读取导入文件失败') }
+  reader.readAsText(f)
 }
 </script>
 
@@ -489,6 +607,24 @@ async function onCleanupTemp() {
                   该目录下的项目已作为 AI 分析的背景上下文注入；关闭「启用项目级上下文增强」可停用。
                 </div>
               </div>
+            </div>
+            <!-- 配置迁移：导出/导入整套配置，用于重装、换机/换服务器时整体迁移 -->
+            <div class="card card-body py-2 mb-2 migrate-card" style="font-size:.76rem">
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold text-nowrap"><i class="bi bi-arrow-left-right"></i> 配置迁移</span>
+                <span class="text-secondary">导出当前整套配置为 JSON，到新环境「导入配置」即可整体恢复（含 AI 服务、解析导出、差异树过滤等全部设置）。</span>
+                <div class="d-flex align-items-center gap-1 ms-auto">
+                  <button class="btn btn-outline-secondary btn-sm" type="button" @click="onExportConfig" :disabled="isExporting"
+                          title="导出当前整套配置为 JSON 文件下载（未勾选「记住 API Key」时不包含明文密钥）">
+                    <i class="bi bi-download"></i> 导出配置
+                  </button>
+                  <label class="btn btn-outline-secondary btn-sm mb-0" :class="{disabled: isImporting}" title="从导出的 JSON 配置文件恢复整套配置">
+                    <i class="bi bi-upload"></i> 导入配置
+                    <input ref="importFile" type="file" accept=".json,application/json" class="d-none" @change="pickImportFile" :disabled="isImporting">
+                  </label>
+                </div>
+              </div>
+              <div v-if="migrateMsg" class="mt-1" style="font-size:.72rem"><i class="bi bi-chevron-right"></i> {{ migrateMsg }}</div>
             </div>
             <!-- 手动清理临时文件：解压残留导致的磁盘爆满时按需回收（不中断进行中任务） -->
             <div class="card card-body py-2 mb-0" style="font-size:.76rem">

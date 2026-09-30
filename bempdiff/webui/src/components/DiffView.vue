@@ -746,10 +746,13 @@ const flashRi = ref(-1) // 当前需要 flash 高亮的行原始下标；动画�
 let flashTimer = null
 
 // 切换激活文件时重置差异行导航状态，避免计数器越界与残留高亮。
+// 同时清空行 DOM 引用缓存（T00408 内存优化 P0）：虚拟滚动卸载行时 setRowRef 仅置 null 不删键，
+// 不清空则 rowEls 会随「渲染过的行」跨文件无限累积（大差异文件可达数十万键，且键保留已卸载 DOM 的强引用槽）。
 watch(() => (at.value && at.value.key), () => {
   curIdx.value = -1
   flashRi.value = -1
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null }
+  rowEls.clear()
 })
 
 function locate(idx) {
@@ -760,30 +763,43 @@ function locate(idx) {
   flashRi.value = ri
   if (flashTimer) clearTimeout(flashTimer)
   flashTimer = setTimeout(() => { flashRi.value = -1 }, 900)
-  nextTick(() => {
-    const di = foldedRows.value.findIndex(x => x._i === ri)
-    if (di < 0) {
-      // 目标行被折叠收起：展开未变后再定位
-      if (collapse.value) { collapse.value = false; nextTick(() => locate(idx)); return }
-      return
-    }
-    // Git 风格 unified 视图：目标行在 uniRows 中的位置 = foldedRows[di] 对应的拍平行起点
-    // （rep 拆成两行，取第一个匹配的拍平行即可）。滚动走 uniAreaRef，与 split/wrap 无关。
-    if (gitMode.value) {
-      const uAbs = uniRows.value.findIndex(u => u.src === di)
-      if (uAbs < 0) return
-      scrollToUni(uAbs)
-      return
-    }
-    const top = offsets.value[di] || 0
-    const h = heights.value[di] || EST_ROW_H
+  // 目标行在折叠展开后 foldedRows 中的行号（折叠态下差异行始终保留，故必存在；-1 表示未找到）。
+  const di = foldedRows.value.findIndex(x => x._i === ri)
+  if (di < 0) {
+    // 该差异行未被折叠保留（理论不会发生），回退：关闭折叠后再试一次（重查行号而非沿用旧序号）。
+    if (collapse.value) { collapse.value = false; nextTick(() => locate(idx)); }
+    return
+  }
+  // Git 风格 unified 视图：行高固定（等差偏移），不受测量回填影响，保持原有单次 scrollToUni 定位。
+  if (gitMode.value) {
+    const uAbs = uniRows.value.findIndex(u => u.src === di)
+    if (uAbs < 0) return
+    scrollToUni(uAbs)
+    return
+  }
+  // 两段式精确定位：大文件下非可视区差异行的行高仍为 EST_ROW_H 估算，offsets[di] 会偏，
+  // 单次 scrollTo 常停不到目标行 → 用户需多次点击才逐渐到位。
+  // 第一段：先把容器快速滚到「估算位置」，让目标行进入渲染窗口触发 measureVisible 回填真实行高。
+  const prime = () => {
     const target = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
     if (!target) return
+    const estTop = offsets.value[di] || 0
+    target.scrollTo({ top: Math.max(0, estTop - EST_ROW_H * 2), behavior: 'instant' })
+    if (!wrap.value && leftPaneRef.value && rightPaneRef.value) rightPaneRef.value.scrollTop = leftPaneRef.value.scrollTop
+  }
+  // 第二段：等渲染层 measure 回填真实行高后，按最新 offsets 精确居中。
+  const settle = () => {
+    const target = wrap.value ? diffAreaRef.value : (leftPaneRef.value || rightPaneRef.value)
+    if (!target) return
+    const finalDi = foldedRows.value.findIndex(x => x._i === ri)
+    if (finalDi < 0) return
+    const top = offsets.value[finalDi] || 0
+    const h = heights.value[finalDi] || EST_ROW_H
     target.scrollTo({ top: Math.max(0, top - viewportH.value / 2 + h / 2), behavior: 'smooth' })
-    if (!wrap.value && leftPaneRef.value && rightPaneRef.value) {
-      rightPaneRef.value.scrollTop = leftPaneRef.value.scrollTop
-    }
-  })
+    if (!wrap.value && leftPaneRef.value && rightPaneRef.value) rightPaneRef.value.scrollTop = leftPaneRef.value.scrollTop
+  }
+  prime()
+  requestAnimationFrame(() => nextTick(settle))
 }
 function gotoPrev() {
   if (!diffRows.value.length) return

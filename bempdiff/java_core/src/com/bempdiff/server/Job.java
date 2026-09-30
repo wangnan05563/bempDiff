@@ -50,6 +50,9 @@ public final class Job {
     /** P1-E 终态时间戳（ms）：进入 DONE/ERROR/CANCELLED 时记录，供 JobStore 按「最旧已结束」淘汰。 */
     public volatile long finishedAtMillis; // NOSONAR S1104 - 对外暴露的 plain 数据字段，外部 JobStore 直接读取（其不在本次改动范围），另有 volatile 保证可见性
 
+    /** T00425/426：内存是否已释放（幂等保护，防重复回扣全局 memo 计数）。 */
+    private volatile boolean memoryReleased = false;
+
     public Job(String id, String mode, CompareOptions opts) {
         this.id = id;
         this.mode = mode;
@@ -156,6 +159,29 @@ public final class Job {
     /** 请求取消（幂等）。 */
     public void requestCancel() {
         this.cancelRequested = true;
+    }
+
+    /**
+     * T00425/T00426：释放该作业驻留堆内的双侧快照（含 memory-backed 条目字节），并按登记值回扣
+     * {@link com.bempdiff.unpack.NestedUnpacker} 全局 memo 计数（修复计数只增不减导致 memoize 永久失效）。
+     * 供两类时机调用：① JobStore 淘汰；② 新比对启动时对非保留的历史作业（sweepSupersededJobs）。
+     * 幂等；快照引用置空后，针对该 jobId 的条目级读取（反编译/文本 diff）将不可用——仅对非当前作业执行。
+     */
+    public synchronized void releaseMemory() {
+        if (memoryReleased) return;
+        memoryReleased = true;
+        for (PackageSnapshot s : new PackageSnapshot[]{oldSnap, newSnap}) {
+            if (s != null) {
+                try {
+                    com.bempdiff.unpack.NestedUnpacker.releaseMemoized(s.getMemoizedBytes());
+                } catch (Exception ignored) {
+                    // 回扣失败不影响释放主流程（软上限语义可容忍近似）
+                }
+            }
+        }
+        oldSnap = null;
+        newSnap = null;
+        // 差异结果/统计/树等纯元数据体积小，保留供状态查询与报告回看。
     }
 
     public Path getRuntimeDir() { return runtimeDir; }

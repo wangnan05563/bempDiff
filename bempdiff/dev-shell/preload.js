@@ -33,6 +33,14 @@ contextBridge.exposeInMainWorld('bempdiff', {
     return ipcRenderer.invoke('bempdiff:show-in-folder', p)
   },
   /**
+   * 一键更新：下载 GitHub Release 的 .exe 安装包到系统下载目录并启动安装器。
+   * @param {string} url GitHub Release 资产 .exe 的 https 下载地址
+   * @returns {Promise<{ok:boolean, file?:string, message?:string}>}
+   */
+  downloadInstall(url) {
+    return ipcRenderer.invoke('bempdiff:download-install', url)
+  },
+  /**
    * 注册「外部入口传入比对路径」监听（右键菜单 / 命令行参数）。
    * 主进程在收到文件参数时通过 webContents.send('bempdiff:shell-compare', paths) 推送；
    * 渲染进程（store.init）据此自动填路径并比对。

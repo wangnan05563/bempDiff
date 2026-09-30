@@ -128,15 +128,17 @@ public final class BempServer {
     private final Map<String, Map<String, Object>> aiEstimateCache = new ConcurrentHashMap<>();
     // per-job 的 AI 工作缓存（反编译类图 + 前端文本差异 + 依赖 jar 分析）。
     // report / ai-analyze / export 三入口共用，避免并行发起多个分析类别时 N 倍重复反编译（评审 P1 #8）。
-    private final Map<String, AiWorkCache> aiWorkCache = new ConcurrentHashMap<>();
-    private static final int AI_WORK_CACHE_MAX = 16; // 粗粒度上限：超限清空，避免 job 长期驻留占用内存
-    private static final int ARCHIVE_TREE_CACHE_MAX = 64; // P0-B 粗粒度上限：超限清空，避免 job 长期驻留占用内存
+    // T00427：ConcurrentHashMap+超限全清 改 LRU（保留热点，消除全清抖动），容量语义不变。
+    private final LruMap<String, AiWorkCache> aiWorkCache = new LruMap<>(AI_WORK_CACHE_MAX);
+    private static final int AI_WORK_CACHE_MAX = 16; // LRU 容量上限（原「超限清空」阈值沿用）
+    private static final int ARCHIVE_TREE_CACHE_MAX = 64; // P0-B LRU 容量上限（原「超限清空」阈值沿用）
 
     // P0-B 归档展开结果 per-job 缓存：键 = jobId + NUL + 归档key；handleEntryChildren/recursive 共享。
     // 原因：这两端点每次请求都重新读归档 zip、重建树（报告 §8#2 的 IO 型慢点，p50 ~870ms、p95 ~1.5s），
     // 而同一 job 内同一归档反复展开结果不变——缓存在 job 内幂等，命中后跳过全部归档 IO。
     // 值可为 List(children) 或 Map(recursive)，sendJson 透传；job 内 ignoreExtensions 固定，键无需含忽略规则。
-    private final Map<String, Object> archiveTreeCache = new ConcurrentHashMap<>();
+    // T00427：归档展开缓存同样改 LRU（容量语义不变）。
+    private final LruMap<String, Object> archiveTreeCache = new LruMap<>(ARCHIVE_TREE_CACHE_MAX);
 
     // 差异资产导出：记录 + 单线程后台执行器。小包同步流式、大包异步生成（避免大导出阻塞 UI/HTTP 线程）。
     private final Map<String, ExportRecord> exports = new ConcurrentHashMap<>();
@@ -177,11 +179,11 @@ public final class BempServer {
             this.size = size;
         }
     }
-    private static final int STATIC_CACHE_MAX = 256; // P0-C 粗粒度上限：超限清空（静态资源不可变，懒重建即可）
+    private static final int STATIC_CACHE_MAX = 256; // P0-C LRU 容量上限（原「超限清空」阈值沿用；静态资源不可变，逐出后懒重建即可）
     // P0-C 静态资源内存缓存：键 = URI 相对路径。原因：webroot 下静态资源不可变，每次整文件 readAll
     // 再回传是纯 IO（报告 §8#3：static-index p50 ~98ms、p95 ~247ms）；物化到内存后重复请求不再读盘，
-    // 仅用零成本 stat（mtime+size）校验文件是否变化（开发热替换时不喂陈旧数据）。
-    private final Map<String, StaticEntry> staticCache = new ConcurrentHashMap<>();
+    // 仅用零成本 stat（mtime+size）校验文件是否变化（开发热替换时不喂陈旧数据）。T00427 改 LRU。
+    private final LruMap<String, StaticEntry> staticCache = new LruMap<>(STATIC_CACHE_MAX);
 
     public BempServer(ServerConfig config, Path webroot) {
         this.config = config;
@@ -989,8 +991,7 @@ public final class BempServer {
             LibJarDiff.Result libJar = LibJarDiff.analyze(job.getOldSnap(), job.getNewSnap(), job.getResult(),
                     new Decompiler(cfrPath(job.opts), findJava()), job.opts.getTopK());
             c = new AiWorkCache(decompiled, text, libJar);
-            aiWorkCache.put(job.id, c);
-            if (aiWorkCache.size() > AI_WORK_CACHE_MAX) aiWorkCache.clear(); // 粗粒度上限：超限清空，避免长期驻留
+            aiWorkCache.put(job.id, c); // T00427：LRU 容量到顶自动逐出最旧，无需全清
         }
         return c;
     }
@@ -1664,8 +1665,7 @@ public final class BempServer {
         if (childrenCached != null) { sendJson(ex, 200, childrenCached); return; } // P0-B：命中归档展开缓存
         try {
             List<Map<String, Object>> children = ArchiveTree.computeChildren(job.getOldSnap(), job.getNewSnap(), key, job.opts.getIgnoreExtensions());
-            archiveTreeCache.put(childrenCacheKey, children);
-            if (archiveTreeCache.size() > ARCHIVE_TREE_CACHE_MAX) archiveTreeCache.clear(); // 粗粒度上限：超限清空
+            archiveTreeCache.put(childrenCacheKey, children); // T00427：LRU 自动逐出，无需全清
             sendJson(ex, 200, children);
         } catch (Exception e) {
             LOG.log(Level.WARNING, e, () -> "展开归档失败: " + key);
@@ -1686,8 +1686,7 @@ public final class BempServer {
         if (recursiveCached != null) { sendJson(ex, 200, recursiveCached); return; } // P0-B：命中归档展开缓存
         try {
             Map<String, Object> tree = ArchiveTree.recursiveUnpack(job.getOldSnap(), job.getNewSnap(), key, job.opts.getIgnoreExtensions());
-            archiveTreeCache.put(recursiveCacheKey, tree);
-            if (archiveTreeCache.size() > ARCHIVE_TREE_CACHE_MAX) archiveTreeCache.clear(); // 粗粒度上限：超限清空
+            archiveTreeCache.put(recursiveCacheKey, tree); // T00427：LRU 自动逐出，无需全清
             sendJson(ex, 200, tree);
         } catch (Exception e) {
             LOG.log(Level.WARNING, e, () -> "递归解包失败: " + key);
@@ -2194,8 +2193,7 @@ public final class BempServer {
                 entry = e; // 命中缓存：跳过磁盘读取
             } else {
                 entry = new StaticEntry(readAll(Files.newInputStream(file)), mimeOf(path), lm, sz);
-                staticCache.put(path, entry);
-                if (staticCache.size() > STATIC_CACHE_MAX) staticCache.clear(); // 粗粒度上限：超限清空
+                staticCache.put(path, entry); // T00427：LRU 自动逐出，无需全清
             }
         } catch (IOException statFail) {
             // stat/读取瞬时失败：退化为现场读一次并直接下发（与缓存前旧行为一致），不因缓存错误拒绝服务
@@ -2748,10 +2746,24 @@ public final class BempServer {
         };
     }
 
-    /** 新比对开始：回收其它（已被取代）作业的物理解包运行时目录，使磁盘仅保留当前作业的解包产物。 */
+    /**
+     * 新比对开始：回收其它（已被取代）作业的物理解包运行时目录，使磁盘仅保留当前作业的解包产物。
+     * T00426：同时释放历史作业驻留堆内的双侧快照（含 memory-backed 字节并回扣全局 memo 计数）——
+     * GUI 单会话远达不到 MAX_JOBS=200 淘汰线，历史 DONE 任务的快照原样驻留会令堆占用随对比次数线性上涨。
+     * 保留策略：仅豁免「最近结束的 1 个终态作业」（即当前屏幕上正在展示的上一轮结果，仍可点开文件/反编译），
+     * 其余全部释放；当前 RUNNING/QUEUED 作业一律不动。
+     */
     private void sweepSupersededJobs(Job current) {
+        Job keep = null;
         for (Job j : store.all().values()) {
-            if (j != current) j.cleanupRuntime();
+            if (j == current || j == null) continue;
+            boolean finished = !"QUEUED".equals(j.getStatus()) && !"RUNNING".equals(j.getStatus());
+            if (finished && (keep == null || j.finishedAtMillis > keep.finishedAtMillis)) keep = j;
+        }
+        for (Job j : store.all().values()) {
+            if (j == current || j == keep) continue;
+            j.cleanupRuntime();
+            j.releaseMemory();
         }
     }
 }

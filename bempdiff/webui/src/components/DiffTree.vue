@@ -48,12 +48,12 @@ const counts = computed(() => {
 // 之所以必须如此：这类「无状态/未知状态」节点多为目录/包级占位（list/tree 中间层），
 // 既不属于任何勾选状态，又往往是「4 个过滤全未勾选时树仍残留、且点击无反应」的元凶；
 // 用 `!== false` 会让它们漏网（undefined !== false === true）而一直在树里显示。
-// FOLDER 节点特例：目录节点本身不在后端 tree（包模式无 FOLDER），由 buildDirTree 从文件路径推导；
-// 但 folder 对比模式会下发显式 FOLDER 节点（带 status）。FOLDER 节点的 status 描述的是「该目录整体
-// 是否变化」，其下文件是否被勾选状态过滤不影响目录骨架显示——否则会出现「勾掉某个状态后整棵子树
-// 消失，目录栏也看不到」的坍缩观感。这里对 FOLDER 节点放行状态过滤，让目录骨架保留。
+// FOLDER 节点不再特例放行：folder 对比模式后端会给「含文件目录」下发显式 FOLDER 节点，其 sha 恒为
+// 目录哨兵值，故目录自身在中始终是 UNCHANGED（除非整体新建/删除）。过去对 FOLDER 无条件 return true
+// 会让「未勾选『未变』时纯无差异文件夹仍显示」——现改为与其他节点一样按状态过滤。目录骨架不会因此
+// 塌缩：buildDirTree 会从「通过过滤的文件」的路径前缀自动重建目录行（dir_tree.buildDirTree 收集文件
+// 全部路径段），故含差异文件的目录仍显示、纯无差异目录才被隐藏，二者兼得。
 function passStatusFilter(n) {
-  if (n && n.fileClass === 'FOLDER') return true
   const cfg = state.config || {}
   const showStatus = {
     MODIFIED: cfg.filterShowModified === true,

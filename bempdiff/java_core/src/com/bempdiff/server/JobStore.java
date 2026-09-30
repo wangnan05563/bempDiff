@@ -35,7 +35,10 @@ public final class JobStore {
                 .collect(Collectors.toList());
         for (Job j : finished) {
             if (jobs.size() <= MAX_JOBS) break;
-            if (jobs.remove(j.id, j)) j.cleanupRuntime(); // 淘汰即回收该作业解包临时目录，防磁盘垃圾累积
+            if (jobs.remove(j.id, j)) {
+                j.cleanupRuntime(); // 淘汰即回收该作业解包临时目录，防磁盘垃圾累积
+                j.releaseMemory();  // T00425/426：淘汰时释放快照驻留并回扣全局 memo 计数
+            }
         }
     }
 

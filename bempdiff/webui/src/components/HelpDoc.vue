@@ -8,12 +8,25 @@ import {
   CATEGORIES, HELP_ENTRIES, searchHelp, resolveAppVersion, contentMatchesVersion,
   DOC_VERSION, PRODUCT_NAME
 } from '../lib/helpContent'
+import { setGuideButtonVisible, isGuideButtonVisible } from '../lib/guide'
 
 const query = ref('')
 const activeId = ref(HELP_ENTRIES[0] ? HELP_ENTRIES[0].id : '')
 
 const appVersion = resolveAppVersion()
 const synced = computed(() => contentMatchesVersion(DOC_VERSION, appVersion))
+
+// 引导入口开关：开启后显示左下角常驻「引导」按钮并立即唤起引导演示。
+// 默认关闭（按钮隐藏），用户在此处显式开启/再关闭，符合「引导按钮默认隐藏」的要求。
+const guideBtnOn = ref(isGuideButtonVisible())
+function toggleGuideButton() {
+  setGuideButtonVisible(!guideBtnOn.value)
+  guideBtnOn.value = isGuideButtonVisible()
+  if (guideBtnOn.value) {
+    // 开启后立即唤起引导（GuideOverlay 监听同名事件）
+    window.dispatchEvent(new Event('bempdiff:start-guide'))
+  }
+}
 
 // 目录分组：无检索时全量分类；有检索时仅保留命中的分类与条目。
 const groups = computed(() => {
@@ -47,6 +60,11 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
         <span class="badge text-bg-light border" title="当前产品版本">{{ PRODUCT_NAME }} v{{ appVersion }}</span>
         <span class="badge text-bg-light border" title="帮助内容版本，与产品版本对照判断是否滞后">内容 v{{ DOC_VERSION }}</span>
         <span v-if="!synced" class="badge text-bg-warning" title="帮助内容版本与产品版本的主版本不一致，文档可能滞后">内容可能滞后</span>
+        <button class="btn btn-sm ms-auto" :class="guideBtnOn ? 'btn-primary' : 'btn-outline-secondary'"
+                type="button" @click="toggleGuideButton"
+                title="开启/关闭左下角的常驻「引导」按钮；开启后会立即播放功能引导演示">
+          <i class="bi bi-life-preserver me-1"></i>{{ guideBtnOn ? '关闭引导' : '开始引导' }}
+        </button>
       </div>
       <div class="input-group input-group-sm helpdoc-search">
         <span class="input-group-text"><i class="bi bi-search"></i></span>

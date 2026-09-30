@@ -259,13 +259,25 @@ if (-not $SkipJava) {
 # ---------- 3. jlink 最小 JRE ----------
 if (-not $SkipJava) {
   Write-Step "jlink 最小 JRE → $JreOut"
-  # 定向结束可能锁定 dist_input/jre 的残留进程（如未关闭的 启动服务.bat 后端 / 上一轮构建残留的 java、jlink）。
-  # 仅匹配命令行含本项目路径的进程，不误杀其它 Java。避免 jre 目录被占用导致 jlink 报“目录已存在”。
+  # 定向结束可能锁定 dist_input 的残留进程（如未关闭的后端 sidecar / 上一轮构建残留的 java、javaw、jlink）。
+  # 覆盖两类命中（仅精确匹配本项目特征，绝不误杀 Jenkins 等其它 Java 进程）：
+  #   ① java.exe / javaw.exe / jlink.exe 且命令行含 bempdiff / dist_input —— sidecar 与构建工具残留；
+  #      【教训】2026-09-11 打包中断实测：sidecar 由 javaw.exe 启动，旧过滤只写 java.exe/jlink.exe
+  #      漏掉了 javaw，导致 jre 目录被锁、jlink 阶段报 Access denied。javaw 必须显式列入。
+  #   ② 可执行文件路径位于 dist_input 之下（如 dist_input\jre\bin\javaw.exe 直接启动的 sidecar），
+  #      不依赖进程名与命令行拼写，双保险兜底。
   try {
-    $holders = Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='jlink.exe'" -ErrorAction SilentlyContinue |
-      Where-Object { $_.CommandLine -and ($_.CommandLine -like "*bempdiff*" -or $_.CommandLine -like "*dist_input*") }
+    $projMarkers = @('*bempdiff*', '*dist_input*')
+    $holders = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $cmdHit = $false
+      if ($_.Name -in @('java.exe', 'javaw.exe', 'jlink.exe') -and $_.CommandLine) {
+        foreach ($m in $projMarkers) { if ($_.CommandLine -like $m) { $cmdHit = $true; break } }
+      }
+      $pathHit = ($_.ExecutablePath -and $_.ExecutablePath -like '*\dist_input\*')
+      $cmdHit -or $pathHit
+    }
     foreach ($h in $holders) {
-      Write-Host "  -> 结束占用进程 PID $($h.ProcessId): $($h.CommandLine)"
+      Write-Host "  -> 结束占用进程 PID $($h.ProcessId) [$($h.Name)]: $($h.CommandLine)"
       Stop-Process -Id $h.ProcessId -Force -ErrorAction SilentlyContinue
     }
   } catch {}

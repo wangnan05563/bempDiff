@@ -2,14 +2,13 @@
 // 场景 A: 4 个过滤全勾选（持久化 defaultConfig），应保留所有节点
 // 场景 B: 「未变」未勾选，仅保留 MODIFIED/ADDED/DELETED，UNCHANGED 被过滤
 // 场景 C: 4 个过滤全未勾选，按之前修复逻辑未知状态全过滤掉 → filtered 空
-// 场景 D: FOLDER 节点（folder 模式特有）应总通过状态过滤
+// 场景 D: 状态过滤不再对 FOLDER 特例放行：UNCHANGED 文件夹也按「未变」过滤（目录骨架由 buildDirTree 从文件路径前缀重建）
 import { describe, it, expect } from 'vitest'
 
 // 直接复制 DiffTree.vue 的过滤逻辑（最小化复现），避免引入 Vue 运行时
 function makePasses(config, aiMap = {}, excluded = {}, ignoreRules = []) {
   const cfg = config || {}
   const passStatus = (n) => {
-    if (n && n.fileClass === 'FOLDER') return true
     const show = {
       MODIFIED: cfg.filterShowModified === true,
       ADDED: cfg.filterShowAdded === true,
@@ -63,17 +62,16 @@ describe('过滤场景回归', () => {
     expect(got.every(n => n.status === 'MODIFIED')).toBe(true)
   })
 
-  it('场景 C: 4 个过滤全未勾选 → 之前逻辑全过滤掉（filtered 空），现在 FOLDER 仍保留', () => {
+  it('场景 C: 4 个过滤全未勾选 → FOLDER 也按状态过滤，全部过滤（filtered 空）', () => {
     const cfg = { filterShowModified: false, filterShowAdded: false, filterShowDeleted: false, filterShowUnchanged: false, filterRisk: ['HIGH', 'MEDIUM', 'LOW'] }
     const treeWithFolder = [...sampleTree, { key: 'bemp-served/', status: 'UNCHANGED', fileClass: 'FOLDER' }]
     const pass = makePasses(cfg)
     const got = treeWithFolder.filter(pass)
-    // 文件节点全被过滤掉，仅 FOLDER 目录节点保留（骨架显示）
-    expect(got.length).toBe(1)
-    expect(got[0].fileClass).toBe('FOLDER')
+    // 文件节点与 FOLDER 节点（UNCHANGED）全被过滤——纯无差异目录不再残留
+    expect(got.length).toBe(0)
   })
 
-  it('场景 D: folder 模式下，FOLDER 节点总是通过状态过滤（保持目录骨架）', () => {
+  it('场景 D: folder 模式下 UNCHANGED 的 FOLDER 也被状态过滤，仅 MODIFIED 文件通过', () => {
     const cfg = { filterShowModified: true, filterShowAdded: false, filterShowDeleted: false, filterShowUnchanged: false, filterRisk: ['HIGH', 'MEDIUM', 'LOW'] }
     const treeWithFolder = [
       { key: 'src/', status: 'UNCHANGED', fileClass: 'FOLDER' },
@@ -83,8 +81,8 @@ describe('过滤场景回归', () => {
     ]
     const pass = makePasses(cfg)
     const got = treeWithFolder.filter(pass)
-    // 仅 MODIFIED 文件 + 全部 FOLDER 目录节点
-    expect(got.map(n => n.key).sort()).toEqual(['src/', 'src/main/', 'src/main/A.java'].sort())
+    // UNCHANGED 的目录与文件都被过滤；仅 MODIFIED 文件通过（目录骨架由 buildDirTree 从该文件路径前缀重建，见 dir_tree 测试）
+    expect(got.map(n => n.key)).toEqual(['src/main/A.java'])
   })
 
   it('场景 E: filterRisk 只勾选 HIGH + aiClassify 已存在 → 仅 HIGH 节点通过', () => {

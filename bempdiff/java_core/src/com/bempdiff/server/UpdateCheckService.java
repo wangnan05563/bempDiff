@@ -215,7 +215,27 @@ public final class UpdateCheckService {
         out.put("url", Json.str(json, "html_url", ""));
         out.put("publishedAt", Json.str(json, "published_at", ""));
         out.put("body", Json.str(json, "body", ""));
+        // 解析 Windows 安装包资产（.exe，跳过校验和 .blockmap / 旧版等），供前端「立即更新」一键下载。
+        // 优先 .setup.exe / .exe 的 browser_download_url；找不到则置空（前端据此隐藏一键更新，仅保留跳转下载页）。
+        out.put("downloadUrl", firstExeDownloadUrl(json));
         return Optional.of(out);
+    }
+
+    /** 从 release JSON 的 assets 中挑取第一个 Windows 安装包（.exe）的 browser_download_url；无则返回空串。 */
+    private static String firstExeDownloadUrl(Map<String, Object> json) {
+        Object a = json.get("assets");
+        if (!(a instanceof java.util.List)) return "";
+        for (Object item : (java.util.List<?>) a) {
+            if (!(item instanceof Map)) continue;
+            Map<?, ?> m = (Map<?, ?>) item;
+            String name = String.valueOf(m.get("name"));
+            String dl = String.valueOf(m.get("browser_download_url"));
+            if (!"null".equals(name) && name.toLowerCase(java.util.Locale.ROOT).endsWith(".exe")
+                    && dl != null && !"null".equals(dl) && dl.startsWith("https://")) {
+                return dl;
+            }
+        }
+        return "";
     }
 
     /** 读取错误响应体里的 message 字段（GitHub 错误 JSON 形如 {"message":"..."}），失败返回空串。 */

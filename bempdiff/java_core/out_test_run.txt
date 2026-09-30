@@ -1,0 +1,49 @@
+------------------------------------------------------------
+[套件] DiffTest  (14 用例)
+  ? testBuildMetadataNoiseNormalization
+  ? testBuildNoise_collapsesVersionValueFragment
+  ? testCollectL1ClassCandidates
+  ? testCompute_foldBuildNoiseAcrossVersionedNested
+  ? testCompute_lineEndingOnlyShIsUnchanged
+  ? testCompute_pairsVersionRenamedArchive
+  ? testCompute_scaleVersionedFoldNotQuadratic
+  ? testCompute_statuses
+  ? testCompute_versionAffixBoundary
+  ? testCompute_versionedNestedWarPairs
+  ? testCompute_versionedOuterZipNestedWarPairs
+  ? testCompute_versionedRootPackageLayout
+  ? testLineDiff_hugeInputFallsBackToLinear
+  ? testStats_bizVsJar
+------------------------------------------------------------
+[套件] UnpackTest  (9 用例)
+  ? testJobCleanupRuntime
+  ? testNestedFlatten
+  ? testNestedFlattenFiltersFakeDirs
+  ? testNestedFlattenFiltersIgnoredExt
+  ? testNestedFlattenProgress
+  ? testTryMemoizeBoundary
+  ? testUnpackModels
+  ? testUnpackOptionsDefaults
+  ? testUnpackOutputerAndJob
+------------------------------------------------------------
+[套件] FolderTest  (8 用例)
+  ? testDiff_addedModifiedDeletedUnchanged
+  ? testDiff_renamedDirShowsAsDeletePlusAdd
+  ? testFolderContentDiff_textOk
+  ? testParse_classifyAndSha
+  ? testParse_listsFilesWithRelativeKeys_noDirs
+  ? testParse_rejectsNonDirectory
+  ? testParse_skipsSymlinks
+  ? testReadEntryBytes_folderMode_diskRead
+------------------------------------------------------------
+[套件] NestedZipDiffTest  (7 用例)
+  ? testDeepNestedInnerEntryContentDiff
+  ? testDeepNestingFolderMode
+  ? testDeepNestingPackageMode
+  ? testDirectoryStructureDiff
+  ? testRecursiveUnpackFullTree
+  ? testRecursiveUnpackGuards
+  ? testSideMissingAllAddedOrDeleted
+------------------------------------------------------------
+总计: 38  通过: 38  失败: 0  耗时: 5735ms
+全部通过 ?

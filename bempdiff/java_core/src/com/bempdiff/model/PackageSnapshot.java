@@ -9,6 +9,9 @@ public final class PackageSnapshot {
     private final PackageType type;
     private final String version;          // FR1.7 自动提取，可能为 null
     private final Map<String, LogicalEntry> entries;  // key -> entry（保持插入顺序）
+    /** T00425：本快照内 memory-backed 条目的字节总量（NestedUnpacker.flatten 收尾时登记）。
+     *  Job 释放内存（releaseMemory）时按此值回扣 NestedUnpacker 全局 memo 计数，保证只增不减的计数可归零。 */
+    private volatile long memoizedBytes = 0;
 
     public PackageSnapshot(Path file, PackageType type, String version, Map<String, LogicalEntry> entries) {
         this.file = file;
@@ -16,6 +19,9 @@ public final class PackageSnapshot {
         this.version = version;
         this.entries = entries;
     }
+
+    public long getMemoizedBytes() { return memoizedBytes; }
+    public void setMemoizedBytes(long b) { this.memoizedBytes = Math.max(0, b); }
 
     public Path getFile() {
         return file;

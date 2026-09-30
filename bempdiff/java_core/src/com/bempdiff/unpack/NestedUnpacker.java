@@ -112,7 +112,33 @@ public final class NestedUnpacker {
         report.finish();
         // 收尾：去除"已被物理平铺展开"的容器键 + 展开完整性自检（详见 filterExpandedContainers）。
         Map<String, LogicalEntry> ordered = filterExpandedContainers(out, report);
-        return new PackageSnapshot(snap.getFile(), snap.getType(), snap.getVersion(), ordered);
+        PackageSnapshot flat = new PackageSnapshot(snap.getFile(), snap.getType(), snap.getVersion(), ordered);
+        // T00425：登记本快照 memory-backed 字节总量，供 Job 释放内存时按值回扣全局 memo 计数（防只增不减）。
+        flat.setMemoizedBytes(memoizedBytesOf(flat));
+        return flat;
+    }
+
+    /** 统计快照内 memory-backed 条目的字节总量（幂等纯函数，供 flatten 收尾与单测复用）。 */
+    public static long memoizedBytesOf(PackageSnapshot snap) {
+        if (snap == null) return 0;
+        long n = 0;
+        for (LogicalEntry le : snap.getEntries().values()) {
+            if (le != null && le.getSrc() != null && le.getSrc().isMemoryBacked()) {
+                n += Math.max(0, le.getSize());
+            }
+        }
+        return n;
+    }
+
+    /** T00425：Job 释放内存时回扣全局 memo 计数（不下探 0 以下，容忍并发下的近似软上限语义）。 */
+    public static void releaseMemoized(long bytes) {
+        if (bytes <= 0) return;
+        globalMemoBytes.updateAndGet(cur -> Math.max(0, cur - bytes));
+    }
+
+    /** 当前全局 memo 计数（单测/诊断用）。 */
+    public static long globalMemoBytesNow() {
+        return globalMemoBytes.get();
     }
 
     /** 收集尚未展开的顶层容器键：ARCHIVE/JAR 且无 k+"/" 前缀条目（说明未被展开过）。 */

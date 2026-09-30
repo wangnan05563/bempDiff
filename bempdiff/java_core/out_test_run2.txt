@@ -1,0 +1,70 @@
+------------------------------------------------------------
+[套件] ArchiveDiffTest  (9 用例)
+  ? testBothSidesMissingReturnsFailNotThrow
+  ? testClassifyArchivesVsJars
+Sep 11, 2026 3:42:26 PM com.bempdiff.diff.ArchiveDiff diff
+警告: [ArchiveDiff] 归档清单解析失败: p.zip
+java.io.IOException: 无法作为 zip 读取（可能非 zip 结构或已损坏）: zip END header not found
+	at com.bempdiff.diff.ArchiveDiff.readListing(ArchiveDiff.java:122)
+	at com.bempdiff.diff.ArchiveDiff.diff(ArchiveDiff.java:69)
+	at com.bempdiff.test.ArchiveDiffTest.testCorruptedArchiveFailsGracefully(ArchiveDiffTest.java:123)
+	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	at com.bempdiff.test.TestRunner.main(TestRunner.java:53)
+Caused by: java.util.zip.ZipException: zip END header not found
+	at java.base/java.util.zip.ZipFile$Source.findEND(ZipFile.java:1693)
+	at java.base/java.util.zip.ZipFile$Source.initCEN(ZipFile.java:1701)
+	at java.base/java.util.zip.ZipFile$Source.<init>(ZipFile.java:1542)
+	at java.base/java.util.zip.ZipFile$Source.get(ZipFile.java:1506)
+	at java.base/java.util.zip.ZipFile$CleanableResource.<init>(ZipFile.java:704)
+	at java.base/java.util.zip.ZipFile.<init>(ZipFile.java:204)
+	at java.base/java.util.zip.ZipFile.<init>(ZipFile.java:150)
+	at java.base/java.util.zip.ZipFile.<init>(ZipFile.java:164)
+	at com.bempdiff.diff.ArchiveDiff.readListing(ArchiveDiff.java:108)
+	... 5 more
+
+  ? testCorruptedArchiveFailsGracefully
+  ? testEmptyZipProducesEmptyListing
+  ? testIdenticalArchivesProduceNoDiff
+  ? testListingDiffDetectsAddedRemovedModified
+  ? testMissingNewSideFlaggedAsDeleted
+  ? testMissingOldSideFlaggedAsAdded
+  ? testReadListingFromBytesIsCaseInsensitiveOnExtensions
+------------------------------------------------------------
+[套件] DecompileTest  (9 用例)
+  ? testDecode_utf8Chinese
+  ? testDecompile_cacheSameBytes_reusesResult
+  ? testDecompile_inProcessCfr_perfFix
+  ? testDecompile_persistentDiskCache_crossInstance
+  ? testDecompile_realClass_javap
+  ? testSimpleDiff_basic
+  ? testUnifiedDiff_added
+  ? testUnifiedDiff_deleted
+  ? testUnifiedDiff_modified
+------------------------------------------------------------
+[套件] ModelTest  (8 用例)
+  ? testDecompiledUnit_fail
+  ? testDecompiledUnit_hashFieldsBackwardCompat
+  ? testDecompiler_decompileBytes_hashIntegration
+  ? testDecompiler_decompileBytes_realClassHash
+  ? testEntrySource_isNested
+  ? testLogicalEntry_equalsAndHashCode
+  ? testShortHash_basic
+  ? testShortHash_metaAndPath
+------------------------------------------------------------
+[套件] ServerConfigTest  (7 用例)
+  ? testIgnoreExtensionsSurvivesRestart
+  ? testPersistApiKeySurvivesRestart
+  ? testStageAParamsAndMaxPromptTokensSurviveRestartAndToAiConfig
+  ? testStageAParamsRejectNonPositive
+  ? testToJsonEchoesApiKeyOnlyWhenPersistOn
+  ? testUncheckRemovesApiKeyFromDisk
+  ? testUnpackNestedSurvivesRestart
+------------------------------------------------------------
+[套件] MemoryReleaseTest  (3 用例)
+  ? testJobReleaseMemory
+  ? testLruMapEviction
+  ? testMemoBytesAccounting
+------------------------------------------------------------
+总计: 36  通过: 36  失败: 0  耗时: 3190ms
+全部通过 ?

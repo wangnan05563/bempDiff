@@ -21,6 +21,35 @@ const currentVersion = resolveAppVersion()
 const checking = ref(false)      // 检查请求进行中（true 时按钮转圈并禁用，防重复请求）
 const result = ref(null)         // 后端统一响应；null=未检查
 const showGuide = ref(false)     // 「手动手工更新指引」折叠面板开关
+const updating = ref(false)      // 一键下载更新进行中（true 时按钮转圈并禁用）
+const updateMsg = ref('')        // 一键更新结果提示
+
+// 一键更新是否可用：桌面壳（Electron）具备 downloadInstall 能力时才显示/启用。
+const canOneClick = () => !!(typeof window !== 'undefined' && window.bempdiff &&
+  typeof window.bempdiff.downloadInstall === 'function')
+
+// 一键下载更新包并触发安装（调 Electron 主进程）：成功/失败都以 updateMsg + toast 反馈。
+async function oneClickUpdate() {
+  const dl = result.value && result.value.latest && result.value.latest.downloadUrl
+  if (!dl || updating.value) return
+  updating.value = true
+  updateMsg.value = ''
+  try {
+    const r = await window.bempdiff.downloadInstall(dl)
+    if (r && r.ok) {
+      updateMsg.value = '安装包已下载到 ' + r.file + '，已启动安装向导（请完成后续安装步骤）'
+      toast('success', '更新包下载完成')
+    } else {
+      updateMsg.value = '下载失败：' + ((r && r.message) || '未知错误')
+      toast('danger', updateMsg.value)
+    }
+  } catch (e) {
+    updateMsg.value = '下载失败：' + ((e && e.message) || String(e))
+    toast('danger', updateMsg.value)
+  } finally {
+    updating.value = false
+  }
+}
 
 // ---- GitHub 访问令牌配置（可选）----
 // 落库 /api/config 的 githubToken 与 persistGithubToken。安全口径对齐 API Key：
@@ -145,6 +174,12 @@ onMounted(() => { seedToken(); doCheck() })
             <span class="badge text-bg-light border about-ver">当前 v{{ currentVersion }}</span>
             <i class="bi bi-arrow-right text-secondary"></i>
             <span class="badge text-bg-primary border about-ver">{{ result.latest.tag || '最新版本' }}</span>
+            <button v-if="result.latest.downloadUrl && canOneClick()" class="btn btn-primary btn-sm"
+                    type="button" :disabled="updating" @click="oneClickUpdate"
+                    title="下载最新安装包并启动安装向导（需桌面壳 Electron 环境）">
+              <i class="bi" :class="updating ? 'bi-arrow-repeat spinning' : 'bi-cloud-arrow-down'"></i>
+              {{ updating ? '下载中…' : '立即更新' }}
+            </button>
             <a v-if="result.latest.url" class="btn btn-outline-primary btn-sm" :href="result.latest.url"
                target="_blank" rel="noopener"
                title="前往 GitHub Release 页查看/下载安装包">
@@ -154,6 +189,12 @@ onMounted(() => { seedToken(); doCheck() })
           <div v-if="result.latest.name || result.latest.publishedAt" class="text-secondary mb-1"
                style="font-size:.74rem">
             {{ result.latest.name }} · 发布于 {{ fmtDate(result.latest.publishedAt) }}
+          </div>
+          <div v-if="updateMsg" class="mb-1 p-2 rounded"
+               :class="updateMsg.startsWith('下载失败') ? 'text-danger border border-danger-subtle' : 'text-success border border-success-subtle'"
+               style="font-size:.74rem">
+            <i class="bi" :class="updateMsg.startsWith('下载失败') ? 'bi-exclamation-triangle-fill' : 'bi-check-circle-fill'"></i>
+            {{ updateMsg }}
           </div>
           <!-- Release 说明（更新说明）预览 -->
           <div v-if="result.latest.body" class="border rounded p-2 mb-0 about-body" style="max-height:9rem;overflow:auto">

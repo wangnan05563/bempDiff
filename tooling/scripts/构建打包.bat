@@ -107,6 +107,31 @@ if errorlevel 1 (
 )
 echo [OK] dist_input refreshed.
 
+REM ---------- 4.5 Pre-clean win-unpacked: electron-builder's first step (emptyDir on the app
+REM   out dir) must delete release\win-unpacked\resources\app.asar; a leftover process holding the
+REM   file (AV scanner, desktop search index) makes it die with a cryptic stack that hides the
+REM   real holder. NOTE: '$pid' is a READ-ONLY automatic var in PowerShell - the helper used to
+REM   assign to it and aborted before printing the holder (fixed 2026-09-16).
+REM   If the lock persists we do NOT fail the build: we switch electron-builder to a brand new
+REM   output directory (release\_bk-<timestamp>), which needs no deletion at all.
+echo [STEP] Pre-cleaning release\win-unpacked ...
+set "_outrel=..\release"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\pre_clean_release.ps1"
+if errorlevel 1 (
+  echo [WARN] win-unpacked is locked by another process - see diagnostics above.
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Write-Output (Get-Date -Format 'yyyyMMdd-HHmmss')" > "..\release\.altstamp"
+  set /p "_stamp=" < "..\release\.altstamp"
+)
+if defined _stamp (
+  set "_bkname=_bk-%_stamp%-%RANDOM%"
+)
+if defined _bkname (
+  set "_outrel=..\release\%_bkname%"
+  set "_outcfg=../release/%_bkname%"
+  echo [INFO] Falling back to fresh output directory: ..\release\%_bkname%\win-unpacked
+  echo [INFO] Stale release\win-unpacked stays on disk - delete it once the holder is gone.
+)
+
 REM ---------- 5. Package with electron-builder (NSIS) ----------
 echo [STEP] Running electron-builder (NSIS) ...
 REM Persist the NSIS disk-space-precheck patch in-repo: overwrite the node_modules template before
@@ -149,17 +174,22 @@ if not defined _ver (
   exit /b 1
 )
 echo [INFO] Target version: %_ver%
-if exist "..\release\BempDiff-%_ver%-setup.exe" (
+if exist "%_outrel%\BempDiff-%_ver%-setup.exe" (
   echo [STEP] Removing previous installer for %_ver% ...
-  del /q "..\release\BempDiff-%_ver%-setup.exe" >nul 2>&1
-  if exist "..\release\BempDiff-%_ver%-setup.exe" (
+  del /q "%_outrel%\BempDiff-%_ver%-setup.exe" >nul 2>&1
+  if exist "%_outrel%\BempDiff-%_ver%-setup.exe" (
     echo [WARNING] Previous installer is still locked - electron-builder may fail to overwrite it.
     echo [WARNING] Close whatever holds BempDiff-%_ver%-setup.exe, then re-run.
   )
 )
-if exist "..\release\BempDiff-%_ver%-setup.exe.blockmap" del /q "..\release\BempDiff-%_ver%-setup.exe.blockmap" >nul 2>&1
+if exist "%_outrel%\BempDiff-%_ver%-setup.exe.blockmap" del /q "%_outrel%\BempDiff-%_ver%-setup.exe.blockmap" >nul 2>&1
 
-call npm run dist
+if defined _outcfg (
+  echo [STEP] Packaging into %_outrel% ...
+  call npm run dist -- --config.directories.output=%_outcfg%
+) else (
+  call npm run dist
+)
 set "_dist_err=%errorlevel%"
 set "TMP=%_orig_tmp%"
 set "TEMP=%_orig_temp%"
@@ -182,8 +212,8 @@ if not defined _ver (
   exit /b 1
 )
 REM Require the exact fresh installer (>= 50MB) named after $_ver.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path '%CD%\..\release' ('BempDiff-{0}-setup.exe' -f $env:_ver); if (-not (Test-Path $f)) { Write-Error ('MISSING: ' + $f + ' (ver=[' + $env:_ver + '])'); exit 1 }; $len = (Get-Item $f).Length; if ($len -ge 52428800) { Write-Output $f } else { Write-Output ('STUB:' + $f) }" > "..\release\.last_valid_exe"
-set /p "_valid_exe=" < "..\release\.last_valid_exe"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path '%CD%\%_outrel%' ('BempDiff-{0}-setup.exe' -f $env:_ver); if (-not (Test-Path $f)) { Write-Error ('MISSING: ' + $f + ' (ver=[' + $env:_ver + '])'); exit 1 }; $len = (Get-Item $f).Length; if ($len -ge 52428800) { Write-Output $f } else { Write-Output ('STUB:' + $f) }" > "%_outrel%\.last_valid_exe"
+set /p "_valid_exe=" < "%_outrel%\.last_valid_exe"
 if not defined _valid_exe (
   echo "[ERROR] No installer produced for version %_ver% - disk space issue or build failure. Check C:\ space."
   pause
@@ -195,13 +225,36 @@ if "%_valid_exe:~0,5%"=="STUB:" (
   exit /b 1
 )
 echo [OK] Valid installer produced: %_valid_exe%
-del /q "..\release\.last_valid_exe" >nul 2>&1
+del /q "%_outrel%\.last_valid_exe" >nul 2>&1
+
+REM ---- Promote the fresh installer to the release ROOT ----
+REM When win-unpacked is locked by a scanner/indexer we fall back to a _bk-<ts> output dir,
+REM so the fresh setup.exe would otherwise live ONLY under _bk-<ts> and the usual "\release\"
+REM pickup would hand out a STALE build (users report "fix not applied"). Copy the fresh
+REM installers (exe + blockmap) back to the root and re-check the root copy with the same
+REM >=50MB stub guard, so this script always leaves a valid latest installer in release\.
+if defined _bkname (
+  echo [STEP] Promoting fresh installer from %_outrel% to release root ...
+  copy /y "%_outrel%\BempDiff-%_ver%-setup.exe" "..\release\BempDiff-%_ver%-setup.exe" >nul
+  if exist "%_outrel%\BempDiff-%_ver%-setup.exe.blockmap" (
+    copy /y "%_outrel%\BempDiff-%_ver%-setup.exe.blockmap" "..\release\BempDiff-%_ver%-setup.exe.blockmap" >nul
+  )
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = '%CD%\..\release\BempDiff-%_ver%-setup.exe'; if (-not (Test-Path $f)) { Write-Error ('MISSING promoted: ' + $f); exit 1 }; $l = (Get-Item $f).Length; if ($l -lt 52428800) { Write-Error ('STUB promoted: ' + $f); exit 1 }"
+  if errorlevel 1 (
+    echo [ERROR] Failed to promote fresh installer to release root
+    pause
+    exit /b 1
+  )
+  echo [OK] Fresh installer promoted to release root.
+)
+REM Canonical deliverable: absolute-ish path from the bempdiff CWD to the release-root installer.
+set "_ship_exe=..\release\BempDiff-%_ver%-setup.exe"
 goto dist_verify
 
 REM ---------- 6. Sanity: packaged jar hash must match the freshly assembled jar ----------
 :dist_verify
 echo [STEP] Verifying packaged jar hash == fresh dist_input jar ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%CD%\..\release\win-unpacked\resources\bempdiff\dist_input\app\bempdiff.jar'; $f='%CD%\dist_input\app\bempdiff.jar'; $hp=Get-FileHash $p -ErrorAction SilentlyContinue; $hf=Get-FileHash $f -ErrorAction SilentlyContinue; if($hp -and $hf -and $hp.Hash -eq $hf.Hash){ echo [OK] packaged jar matches fresh build } else { echo [ERROR] packaged jar is STALE/differs - do NOT distribute this installer; exit 1 }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%CD%\%_outrel%\win-unpacked\resources\bempdiff\dist_input\app\bempdiff.jar'; $f='%CD%\dist_input\app\bempdiff.jar'; $hp=Get-FileHash $p -ErrorAction SilentlyContinue; $hf=Get-FileHash $f -ErrorAction SilentlyContinue; if($hp -and $hf -and $hp.Hash -eq $hf.Hash){ echo [OK] packaged jar matches fresh build } else { echo [ERROR] packaged jar is STALE/differs - do NOT distribute this installer; exit 1 }"
 if errorlevel 1 (
   echo [ERROR] Stale jar detected in installer - build aborted
   pause
@@ -210,7 +263,13 @@ if errorlevel 1 (
 
 echo.
 echo [DONE] Build complete.
-echo   Installer: release\BempDiff-*-setup.exe  (project root 18_comparePakage\release)
+REM Always print the canonical release-ROOT deliverable (absolute path + version), so
+REM whoever picks from "\release\" gets an unambiguous, correct target regardless of whether
+REM this run used the default root output or fell back to a _bk-<ts> dir (which is only a
+REM temp staging location and is NEVER the sole home of the latest build).
+set "_abs_ship=%CD%\..\release\BempDiff-%_ver%-setup.exe"
+echo   Version:    %_ver%
+echo   Installer:  %_abs_ship%
 echo.
 echo Finished. Press any key to close this window...
 pause >nul
