@@ -293,6 +293,40 @@ function toggleRisk(r) {
 }
 function statusMeta(s) { return STATUS_META[s] || STATUS_META.UNCHANGED }
 
+// ===================== R1 过滤栏显隐与命中计数（二期 T01451） =====================
+// 过滤栏（搜索框 + 状态勾选区）可整体收起：「...」视图菜单开关，localStorage 双保险记忆
+// （config 仅在配置中心保存时落盘，treeViewMode 同款限制；收起偏好要求重启即记忆，故走 localStorage，
+//  与 setAiPanelCollapsed 的 AI_COLLAPSE_KEY 模式一致）。
+const FILTER_BAR_KEY = 'bempdiff.treeFilterBarVisible'
+function readInitialFilterBarVisible() {
+  try {
+    const v = localStorage.getItem(FILTER_BAR_KEY)
+    if (v !== null) return v === 'true'
+  } catch (_) { /* 非安全上下文等异常时回落 config 默认 */ }
+  return (state.config && state.config.treeFilterBarVisible) !== false
+}
+const filterBarVisible = ref(readInitialFilterBarVisible())
+function setFilterBarVisible(v) {
+  filterBarVisible.value = !!v
+  try { localStorage.setItem(FILTER_BAR_KEY, String(filterBarVisible.value)) } catch (_) {}
+}
+// 风险过滤「实际生效」判定：已完成智能分类且未全选三档（全选 = 无过滤效果）。
+const riskEffective = computed(() => {
+  const cfg = state.config || {}
+  const rf = cfg.filterRisk
+  return !!(Object.keys(state.aiClassify || {}).length && Array.isArray(rf) && rf.length && rf.length < 3)
+})
+// 任一过滤生效（供「命中 / 总数」计数切换展示）：搜索非空 / 任一状态未勾选 / 风险过滤实际生效。
+const filtersActive = computed(() => {
+  const cfg = state.config || {}
+  if ((cfg.filterSearch || '').trim()) return true
+  if (cfg.filterShowModified !== true || cfg.filterShowAdded !== true ||
+      cfg.filterShowDeleted !== true || cfg.filterShowUnchanged !== true) return true
+  if (riskEffective.value) return true
+  return false
+})
+const hitCount = computed(() => filtered.value.length)
+
 // ===================== 虚拟化滚动（D4） =====================
 // 把 groups 拍平为「分组头 + 节点」的线性 rows，固定行高，仅渲染可视区切片。
 const ROW_H = 30 // 每行固定像素高度（分组头与节点同高，保证对齐）
@@ -686,8 +720,10 @@ function ruleTypeLabel(t) {
        :style="props.panelWidth != null && !state.treePanelCollapsed ? { width: props.panelWidth + 'px' } : undefined">
     <div v-if="!state.treePanelCollapsed" class="pane-head" title="按层级展示两个包/目录的差异文件，点击任一文件打开双栏源码比对">
       <i class="bi bi-diagram-3"></i> 差异文件树
-      <span class="fw-normal" style="font-size:.75rem;color:var(--bs-secondary-color)">
-        {{ tree.length }} 项
+      <span class="fw-normal" style="font-size:.75rem;color:var(--bs-secondary-color)"
+            :title="filtersActive ? '当前过滤条件下的命中数 / 差异总数' : '差异条目总数'">
+        <template v-if="filtersActive">命中 {{ hitCount }} / {{ tree.length }} 项</template>
+        <template v-else>{{ tree.length }} 项</template>
       </span>
       <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0"
               type="button" title="收起差异文件树，扩大比对视野" @click="setTreePanelCollapsed(true)">
@@ -700,8 +736,8 @@ function ruleTypeLabel(t) {
       <span class="tree-collapsed-label">差异文件树</span>
     </div>
 
-    <!-- 搜索框 + 正则开关 + 「...」视图/排序菜单 -->
-    <div class="dt-toolbar px-2 py-1" v-if="state.config">
+    <!-- 搜索框 + 正则开关 + 「...」视图/排序菜单（过滤栏可通过菜单收起，偏好记忆于 localStorage） -->
+    <div class="dt-toolbar px-2 py-1" v-if="state.config && filterBarVisible">
       <div class="d-flex align-items-center gap-2">
         <div class="input-group input-group-sm flex-1">
           <span class="input-group-text"><i class="bi bi-search"></i></span>
@@ -745,6 +781,16 @@ function ruleTypeLabel(t) {
               </a>
             </li>
             <li><hr class="dropdown-divider"></li>
+            <li>
+              <a class="dropdown-item d-flex align-items-center" href="#"
+                 @click.prevent="setFilterBarVisible(!filterBarVisible)"
+                 :class="{active: filterBarVisible}"
+                 :title="filterBarVisible ? '隐藏搜索与状态过滤栏（选择会被记忆）' : '显示搜索与状态过滤栏（选择会被记忆）'">
+                <i class="bi me-2" :class="filterBarVisible ? 'bi-check2' : 'bi-funnel'" style="width:1rem"></i>
+                显示过滤栏
+              </a>
+            </li>
+            <li><hr class="dropdown-divider"></li>
             <li><h6 class="dropdown-header" style="font-size:.72rem;padding:.25rem 1rem">排序方式</h6></li>
             <li>
               <a class="dropdown-item d-flex align-items-center" href="#" @click.prevent="setSortMode('path')"
@@ -778,8 +824,8 @@ function ruleTypeLabel(t) {
       </div>
     </div>
 
-    <!-- 状态过滤：可直接勾选显示/隐藏差异文件 -->
-    <div class="dt-filters px-2 py-1 d-flex flex-wrap gap-2" v-if="state.config">
+    <!-- 状态过滤：可直接勾选显示/隐藏差异文件（收起时随过滤栏一并隐藏，命中计数保留在标题行） -->
+    <div class="dt-filters px-2 py-1 d-flex flex-wrap gap-2" v-if="state.config && filterBarVisible">
       <div class="form-check form-check-inline mb-0">
         <input class="form-check-input" type="checkbox" id="ftMod" v-model="state.config.filterShowModified" title="显示内容发生变化的文件">
         <label class="form-check-label" for="ftMod" title="显示内容发生变化的文件"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-warning)"></i>修改 {{ counts.MODIFIED }}</label>

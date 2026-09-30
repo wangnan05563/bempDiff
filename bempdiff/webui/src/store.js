@@ -146,6 +146,7 @@ export function defaultConfig() {
     filterShowUnchanged: true,
     treeViewMode: 'tree',     // 差异树展示模式：'tree'(目录树：按目录层级递归展开) | 'list'(全平摊)
     treeSortMode: 'path',     // 差异树排序方式（仅 list 模式生效；tree 模式强制 path）
+    treeFilterBarVisible: true, // 差异树过滤栏（搜索+状态勾选）默认显示；显隐切换另写 localStorage 双保险记忆
     sortByRisk: false,      // 差异树按 AI 风险等级排序（高→低）
     filterRisk: ['HIGH', 'MEDIUM', 'LOW'], // 差异树风险过滤（多选；空=不过滤）
     autoAiOnCompare: true,
