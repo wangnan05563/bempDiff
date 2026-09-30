@@ -1,9 +1,12 @@
 // R2 行级选中复制与差异内查找（二期 T01453）——纯函数单测。
 // 覆盖：范围选择闭区间、按侧复制（跳过单侧缺失行）、行号前缀、全选、
 //       searchRows 双侧命中/折叠条跳过/大小写开关/空关键字。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mount } from '@vue/test-utils'
 import { rangeSelection, buildCopyText, allRowIndexes } from '../lib/diff_select'
 import { searchRows } from '../lib/diff_search'
+import { state } from '../store'
+import DiffView from '../components/DiffView.vue'
 
 const ROWS = [
   { type: 'ctx', _i: 0, left: '1', leftText: 'alpha', right: '1', rightText: 'alpha' },
@@ -93,5 +96,54 @@ describe('searchRows 差异内查找', () => {
     const elapsed = performance.now() - t0
     expect(hits).toEqual([{ di: 9999, sides: ['right'] }])
     expect(elapsed, `万行查找实测 ${elapsed.toFixed(1)}ms`).toBeLessThan(300)
+  })
+})
+
+// ---------------- DiffView 二进制摘要卡（T01454/T01455） ----------------
+
+const BIN_NODE = {
+  key: 'pkg/img/logo.png', fileClass: 'STATIC', status: 'MODIFIED',
+  size: 7, oldSize: 5, newSize: 7, oldSha256: 'sha-old', newSha256: 'sha-new'
+}
+
+function mountWithDec(dec, node = BIN_NODE) {
+  state.tabs = [{ key: node.key, node, decompile: dec, busy: false }]
+  state.activeKey = node.key
+  const w = mount(DiffView)
+  return w
+}
+
+describe('DiffView 二进制条目摘要卡', () => {
+  afterEach(() => {
+    state.tabs = []
+    state.activeKey = null
+    state.job = null
+  })
+
+  it('二进制失败条目渲染摘要卡：内容已变化 + 双端大小', () => {
+    const w = mountWithDec({ ok: false, engine: 'none', error: '内部条目为二进制（STATIC），不支持内容 diff' })
+    expect(w.text()).toContain('二进制条目摘要')
+    expect(w.text()).toContain('内容已变化')
+    expect(w.text()).toContain('5 B')
+    expect(w.text()).toContain('7 B')
+    w.unmount()
+  })
+
+  it('哈希相同 → 内容一致；单侧缺失 → 无法判定', () => {
+    const same = { ...BIN_NODE, oldSha256: 'sha-x', newSha256: 'sha-x' }
+    let w = mountWithDec({ ok: false, engine: 'none', error: '二进制不支持内容 diff' }, same)
+    expect(w.text()).toContain('内容一致')
+    w.unmount()
+
+    const half = { ...BIN_NODE, oldSha256: 'sha-x', newSha256: undefined, newSize: undefined }
+    w = mountWithDec({ ok: false, engine: 'none', error: '二进制不支持内容 diff' }, half)
+    expect(w.text()).toContain('无法判定')
+    w.unmount()
+  })
+
+  it('非二进制失败不渲染摘要卡', () => {
+    const w = mountWithDec({ ok: false, engine: 'cfr', error: '语法解析失败：unexpected token' })
+    expect(w.text()).not.toContain('二进制条目摘要')
+    w.unmount()
   })
 })

@@ -249,6 +249,41 @@ public final class ArchiveChildrenTest {
 
     /** 用 条目名->字节 构造一个归档：把 zip 落盘，并在快照里登记一个顶层归档条目
      *  （key=zipName，EntrySource 指向磁盘 zip），与真实比对产物结构一致。 */
+    /** R2 二进制摘要卡（二期 T01454）：children 节点应透传双端大小 + CRC32 + sameContent 判定。 */
+    public void testBinaryNodeMetadata() throws IOException {
+        Map<String, byte[]> oldE = new LinkedHashMap<>();
+        oldE.put("img/logo.png", "old-logo".getBytes());      // 内容变化（大小也不同）
+        oldE.put("bin/same.dat", "same-content".getBytes());  // 内容一致
+        oldE.put("only-old.bin", "x".getBytes());             // 仅旧侧
+
+        Map<String, byte[]> newE = new LinkedHashMap<>();
+        newE.put("img/logo.png", "new-logo-bytes".getBytes());
+        newE.put("bin/same.dat", "same-content".getBytes());
+        newE.put("only-new.bin", "y".getBytes());             // 仅新侧
+
+        PackageSnapshot oldSnap = snap("app.zip", oldE);
+        PackageSnapshot newSnap = snap("app.zip", newE);
+        List<Map<String, Object>> kids = ArchiveTree.computeChildren(oldSnap, newSnap, "app.zip");
+        Map<String, Map<String, Object>> byKey = index(kids);
+
+        Map<String, Object> changed = byKey.get("app.zip!/img/logo.png");
+        Asserts.assertEquals("内容变化条目 sameContent=false", Boolean.FALSE, changed.get("sameContent"));
+        Asserts.assertEquals("旧侧大小应透传", 8L, changed.get("oldSize"));
+        Asserts.assertEquals("新侧大小应透传", 14L, changed.get("newSize"));
+        Asserts.assertNotNull("应带旧侧 CRC", changed.get("oldCrc"));
+        Asserts.assertNotNull("应带新侧 CRC", changed.get("newCrc"));
+
+        Map<String, Object> same = byKey.get("app.zip!/bin/same.dat");
+        Asserts.assertEquals("同内容条目 sameContent=true", Boolean.TRUE, same.get("sameContent"));
+
+        Map<String, Object> onlyOld = byKey.get("app.zip!/only-old.bin");
+        Asserts.assertNotNull("删除条目应带旧侧大小", onlyOld.get("oldSize"));
+        Asserts.assertTrue("删除条目不应带新侧大小", !onlyOld.containsKey("newSize"));
+        Map<String, Object> onlyNew = byKey.get("app.zip!/only-new.bin");
+        Asserts.assertTrue("新增条目不应带旧侧大小", !onlyNew.containsKey("oldSize"));
+        Asserts.assertNotNull("新增条目应带新侧大小", onlyNew.get("newSize"));
+    }
+
     private static PackageSnapshot snap(String zipName, Map<String, byte[]> entries) throws IOException {
         byte[] zip = TestFixtures.makeZip(entries);
         Path zipPath = TestFixtures.writePackage(zip, "snap");
