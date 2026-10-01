@@ -20,7 +20,7 @@ describe('R11 buildHtmlReport', () => {
     const h = buildHtmlReport({ md: MD })
     expect(h).toContain('<h1>')
     expect(h).toContain('<table')
-    expect(h).toContain('<pre>')
+    expect(h).toContain('<pre')
     expect(h).toContain('rp-report-body')
   })
 
