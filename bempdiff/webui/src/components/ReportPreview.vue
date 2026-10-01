@@ -1,8 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { state, generateReport } from '../store'
 import { renderMarkdown } from '../lib/markdown'
 import { colorizeReport, sevClassFromText } from '../lib/severity'
+import { buildHtmlReport, defaultReportMeta } from '../lib/html_report'
 
 const props = defineProps({ visible: { type: Boolean, default: false }, md: { type: String, default: null } })
 const emit = defineEmits(['close'])
@@ -32,6 +33,38 @@ function downloadMd() {
   a.download = `bempdiff-report-${state.job ? state.job.jobId : 'job'}.md`
   document.body.appendChild(a); a.click(); a.remove()
   URL.revokeObjectURL(url)
+}
+
+// ===== R11 HTML 报告导出（二期 T01476）：自定义模板（标题/落款/风险口径）+ 自包含单文件 =====
+const showHtmlForm = ref(false)
+const reportMeta = ref(defaultReportMeta(state))
+const META_KEY = 'bempdiff.reportMeta'
+try {
+  const saved = JSON.parse(localStorage.getItem(META_KEY) || 'null')
+  if (saved && typeof saved === 'object') reportMeta.value = { ...reportMeta.value, ...saved }
+} catch (_) { /* 坏数据静默 */ }
+
+function toggleHtmlForm() { showHtmlForm.value = !showHtmlForm.value }
+
+function downloadHtml() {
+  if (!src.value) return
+  // 模板字段持久化（落款/风险口径下次导出复用；标题/副标题同样保存）
+  try { localStorage.setItem(META_KEY, JSON.stringify(reportMeta.value)) } catch (_) { /* 静默 */ }
+  const html = buildHtmlReport({
+    md: src.value,
+    title: reportMeta.value.title,
+    subtitle: reportMeta.value.subtitle || (state.job ? `任务 ${state.job.jobId}` : ''),
+    author: reportMeta.value.author,
+    riskNote: reportMeta.value.riskNote
+  })
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `bempdiff-report-${state.job ? state.job.jobId : 'job'}.html`
+  document.body.appendChild(a); a.click(); a.remove()
+  URL.revokeObjectURL(url)
+  showHtmlForm.value = false
 }
 </script>
 
@@ -64,9 +97,29 @@ function downloadMd() {
           </div>
         </div>
 
+        <!-- R11 HTML 导出：自定义模板（标题/落款/风险口径），自包含单文件 -->
+        <div class="html-export-panel px-3 py-2 border-bottom" v-if="showHtmlForm" style="background:var(--bs-tertiary-bg)">
+          <div class="d-flex flex-wrap gap-2 mb-2">
+            <input class="form-control form-control-sm" style="max-width:16rem" v-model="reportMeta.title"
+                   placeholder="报告标题" aria-label="报告标题">
+            <input class="form-control form-control-sm" style="max-width:16rem" v-model="reportMeta.subtitle"
+                   placeholder="副标题（如对比对象）" aria-label="报告副标题">
+            <input class="form-control form-control-sm" style="max-width:12rem" v-model="reportMeta.author"
+                   placeholder="落款（生成人/团队）" aria-label="报告落款">
+          </div>
+          <textarea class="form-control form-control-sm mb-2" rows="2" v-model="reportMeta.riskNote"
+                    placeholder="风险口径说明（评估基准与边界，将显示在报告顶部供审计必读）" aria-label="风险口径说明"></textarea>
+          <button class="btn btn-primary btn-sm" :disabled="!src" @click="downloadHtml">
+            <i class="bi bi-filetype-html"></i> 生成并下载 .html
+          </button>
+        </div>
         <div class="modal-footer py-2 px-3">
           <button class="btn btn-outline-secondary btn-sm" :disabled="!src" @click="downloadMd">
             <i class="bi bi-download"></i> 下载 .md
+          </button>
+          <button class="btn btn-outline-primary btn-sm" :disabled="!src" @click="toggleHtmlForm"
+                  title="导出自包含 HTML 报告（自定义标题/落款/风险口径，无需任何工具即可阅读）">
+            <i class="bi bi-filetype-html"></i> 导出 HTML
           </button>
           <button v-if="!srcIsTask" class="btn btn-outline-primary btn-sm" :disabled="!state.job || state.busy"
                   @click="generateReport(state.reportAi, { category: state.reportAi ? state.reportCategory : undefined, force: true })">
