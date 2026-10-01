@@ -66,6 +66,7 @@ export const state = reactive({
   aiTasks: [],            // { id, category, title, prompt, status, thinking[], answer, error }
   aiActiveTaskId: null,   // 当前聚焦的 AI 分析任务 tab
   compareHistory: [],     // R5 比对会话历史（跨启动 localStorage 持久化，仅路径元数据不含差异内容）
+  treeFilterFocusTick: 0, // R6：全局快捷键 Ctrl+K 请求聚焦差异树过滤框（自增信号，DiffTree watch）
   aiSelCategory: 'risk',  // 「新建分析 / 生成报告(AI)」共享的当前分析项（risk/breaking/impact/testpoints/custom）
   reportCategory: null,   // 最近一次生成报告所用的分析项（ReportPreview「重新生成」沿用；null=基础报告/默认整体分析）
   previewMd: null,        // 控制台「预览报告」临时报告正文（与全局 reportMd 解耦，避免互相覆盖）

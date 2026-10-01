@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { state, init, closeReportPreview } from './store'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { state, init, closeReportPreview, triggerCompare } from './store'
 import ToolBar from './components/ToolBar.vue'
 import DiffTree from './components/DiffTree.vue'
 import DiffView from './components/DiffView.vue'
@@ -11,10 +11,37 @@ import CompareOverlay from './components/CompareOverlay.vue'
 import ReportPreview from './components/ReportPreview.vue'
 import CostGateDialog from './components/CostGateDialog.vue'
 import GuideOverlay from './components/GuideOverlay.vue'
+import ShortcutHelp from './components/ShortcutHelp.vue'
+import { isEditableTarget } from './lib/shortcuts'
 
 const showConfig = ref(false)
 const showReport = ref(false)
 onMounted(() => init())
+
+// ===== R6 全局快捷键（二期 T01465）：Ctrl+Enter 比对 / Ctrl+K 聚焦过滤框 / ? 速查面板 =====
+// 冲突原则：输入框内不劫持；弹窗（.modal-backdrop，含速查面板自身）打开时仅 ?/Esc 生效（面板内部处理）。
+const showShortcuts = ref(false)
+function onGlobalKey(e) {
+  if (isEditableTarget(e)) return
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault()
+    triggerCompare()
+    return
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault()
+    state.treeFilterFocusTick++
+    return
+  }
+  if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+    // 已有其它模态弹窗时不叠加速查面板，避免焦点混乱
+    if (document.querySelector('.modal-backdrop')) return
+    e.preventDefault()
+    showShortcuts.value = !showShortcuts.value
+  }
+}
+onMounted(() => window.addEventListener('keydown', onGlobalKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
 // ===== 左右栏拖拽调宽（分隔条） =====
 // 两栏宽度由此统一管理：树栏随拖拽实时改宽；分析栏「仅在用户拖拽过」后才固定为内联宽度，
@@ -97,6 +124,8 @@ function onPreviewClose() {
   <ReportPreview :visible="showReport || state.previewOpen" :md="state.previewOpen ? state.previewMd : null" @close="onPreviewClose" />
   <CostGateDialog />
   <CompareOverlay />
+  <!-- R6 快捷键速查面板：「?」唤起 -->
+  <ShortcutHelp v-if="showShortcuts" @close="showShortcuts = false" />
   <!-- 功能引导：首次自动弹出一次，之后经左下角常驻「引导」按钮唤起 -->
   <GuideOverlay />
   <DragDropOverlay />

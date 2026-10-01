@@ -326,6 +326,15 @@ const filtersActive = computed(() => {
   return false
 })
 const hitCount = computed(() => filtered.value.length)
+// R6（T01465）：全局 Ctrl+K 聚焦过滤框——store 自增信号驱动，输入框不存在（过滤栏收起）时先展开再聚焦
+const filterInputRef = ref(null)
+watch(() => state.treeFilterFocusTick, () => {
+  if (!filterBarVisible.value) setFilterBarVisible(true)
+  nextTick(() => {
+    const el = filterInputRef.value
+    if (el) { el.focus(); el.select() }
+  })
+})
 
 // ===================== 虚拟化滚动（D4） =====================
 // 把 groups 拍平为「分组头 + 节点」的线性 rows，固定行高，仅渲染可视区切片。
@@ -741,7 +750,7 @@ function ruleTypeLabel(t) {
       <div class="d-flex align-items-center gap-2">
         <div class="input-group input-group-sm flex-1">
           <span class="input-group-text"><i class="bi bi-search"></i></span>
-          <input class="form-control" type="text" v-model="state.config.filterSearch"
+          <input ref="filterInputRef" class="form-control" type="text" v-model="state.config.filterSearch"
                  placeholder="搜索文件名（模糊）" aria-label="搜索文件名">
           <button class="btn btn-outline-secondary" type="button" :class="{active: state.config.filterRegex}"
                   @click="state.config.filterRegex = !state.config.filterRegex"
