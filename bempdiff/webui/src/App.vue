@@ -165,4 +165,47 @@ function onPreviewClose() {
   font-size: .78rem;
 }
 .update-hint .uh-text { white-space: nowrap; }
+
+/* ===== R10 主题强调色（T01475）：html[data-accent] 重映射 Bootstrap 强调元素 =====
+   Bootstrap 5.3 的 .btn-primary 等背景为编译期硬编码，须显式重映射；色值经
+   color-mix 生成 hover/active 层次，亮暗主题通用（跟随 --bs-body-bg）。 */
+[data-accent] {
+  --acc: #0d6efd;
+  --acc-rgb: 13, 110, 253;
+}
+[data-accent] .btn-primary {
+  --bs-btn-bg: var(--acc);
+  --bs-btn-border-color: var(--acc);
+  --bs-btn-hover-bg: color-mix(in srgb, var(--acc) 85%, black);
+  --bs-btn-hover-border-color: color-mix(in srgb, var(--acc) 85%, black);
+  --bs-btn-active-bg: color-mix(in srgb, var(--acc) 75%, black);
+  --bs-btn-active-border-color: color-mix(in srgb, var(--acc) 75%, black);
+  --bs-btn-disabled-bg: var(--acc);
+  --bs-btn-disabled-border-color: var(--acc);
+}
+[data-accent] .btn-outline-primary {
+  --bs-btn-color: var(--acc);
+  --bs-btn-border-color: var(--acc);
+  --bs-btn-hover-bg: var(--acc);
+  --bs-btn-hover-border-color: var(--acc);
+  --bs-btn-active-bg: var(--acc);
+  --bs-btn-active-border-color: var(--acc);
+}
+[data-accent] .progress-bar { background-color: var(--acc); }
+[data-accent] .text-primary { color: var(--acc) !important; }
+[data-accent] .bg-primary { background-color: var(--acc) !important; }
+[data-accent] .link-primary { color: var(--acc) !important; }
+[data-accent] .form-check-input:checked { background-color: var(--acc); border-color: var(--acc); }
+[data-accent] .form-control:focus, [data-accent] .form-select:focus {
+  border-color: color-mix(in srgb, var(--acc) 60%, white);
+  box-shadow: 0 0 0 .25rem rgba(var(--acc-rgb), .25);
+}
+[data-accent] .nav-tabs .nav-link.active { color: var(--acc); }
+[data-accent] .list-group-item.active { background-color: var(--acc); border-color: var(--acc); }
+[data-accent] .spinner-border.text-primary { color: var(--acc) !important; }
+.accent-dot {
+  width: .85rem; height: .85rem; border-radius: 50%;
+  display: inline-block; border: 2px solid transparent; flex: 0 0 auto;
+}
+.accent-dot.active { border-color: var(--bs-body-color); box-shadow: 0 0 0 2px var(--bs-body-bg) inset; }
 </style>

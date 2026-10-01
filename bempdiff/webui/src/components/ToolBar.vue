@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
+import { ACCENTS, loadAccentKey, applyAccent } from '../lib/accents'
 import PathBreadcrumb from './PathBreadcrumb.vue'
 import Downloads from './Downloads.vue'
 
@@ -22,6 +23,9 @@ function onDocClick(e) {
   }
   if (showHistory.value && historyWrap.value && !historyWrap.value.contains(e.target)) {
     showHistory.value = false
+  }
+  if (showAccent.value && accentWrap.value && !accentWrap.value.contains(e.target)) {
+    showAccent.value = false
   }
 }
 onMounted(() => document.addEventListener('click', onDocClick))
@@ -171,6 +175,16 @@ function goForward() {
 // 主题切换：整合进工具栏（原在 TopBar 内）
 const isDark = computed(() => state.theme === 'dark')
 function toggleTheme() { applyTheme(isDark.value ? 'light' : 'dark') }
+
+// R10 强调色（二期 T01475）：预设色盘选择，明暗主题正交叠加
+state.accent = loadAccentKey()
+applyAccent(state.accent) // 启动即恢复上次强调色
+const showAccent = ref(false)
+const accentWrap = ref(null)
+function onPickAccent(key) {
+  state.accent = applyAccent(key).key
+  showAccent.value = false
+}
 
 // AI 分析进行中：禁用工具栏的对比按钮与路径输入框，避免干扰正在生成的对比结果。
 // 复用 store.aiAnyRunning 单一判定源，避免双处维护漂移（评审 P2 #15）。
@@ -345,6 +359,24 @@ function doCompare() { triggerCompare() }
               :aria-label="isDark ? '切换浅色' : '切换深色'" :title="isDark ? '切换浅色' : '切换深色'">
         <i class="bi" :class="isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
       </button>
+      <!-- R10 强调色选择：色点下拉（明暗主题正交叠加） -->
+      <div class="position-relative" ref="accentWrap">
+        <button class="btn btn-outline-secondary btn-sm" @click="showAccent = !showAccent"
+                aria-label="选择主题强调色" title="主题强调色：改变按钮/链接/进度条等强调元素的色彩（明暗主题之上叠加）">
+          <i class="bi bi-palette"></i>
+        </button>
+        <ul class="dropdown-menu show py-1" v-if="showAccent"
+            style="position:absolute;right:0;top:100%;z-index:1000;min-width:9.5rem" role="menu">
+          <li v-for="a in ACCENTS" :key="a.key">
+            <a href="#" class="dropdown-item d-flex align-items-center gap-2" style="font-size:.78rem"
+               :aria-label="'强调色：' + a.name" @click.prevent="onPickAccent(a.key)">
+              <span class="accent-dot" :class="{ active: state.accent === a.key }"
+                    :style="{ background: a.color }" :title="a.name"></span>{{ a.name }}
+              <i v-if="state.accent === a.key" class="bi bi-check2 ms-auto text-success"></i>
+            </a>
+          </li>
+        </ul>
+      </div>
       <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" aria-label="打开配置中心：模型、解析与导出、差异树过滤、界面与高级" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
     </div>
     <!-- 下载管理面板：与导出按钮同级位置，集中展示导出记录（含异步大包导出） -->

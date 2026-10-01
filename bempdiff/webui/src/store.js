@@ -24,6 +24,7 @@ export const STATUS_LABEL = { ADDED: '新增', DELETED: '删除', MODIFIED: '修
 //   error     - 反编译抛异常的 message；与 decompile.ok=false 区分（一个是后端说不行，一个是网络/解析挂了）
 export const state = reactive({
   theme: localStorage.getItem('bempdiff-theme') || 'light',
+  accent: 'blue',        // R10 主题强调色 key（ToolBar 启动时从 localStorage 恢复）
   job: null,
   leftType: 'package',     // 比对输入类型：package（war/jar）| folder（解压目录）
   oldPath: 'sample_v1.war',// 老包/老目录（对比基准）
