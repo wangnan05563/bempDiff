@@ -6,6 +6,7 @@ import { extractFromFileName, sameBaseDifferentVersion, orderOldNew } from './li
 import { loadIgnoreRules, saveIgnoreRules, addRule as addRuleFn, removeRule as removeRuleFn } from './lib/ignore'
 import { friendlyAiError } from './lib/ai_error'
 import { resolveAppVersion } from './lib/helpContent'
+import { t } from './lib/i18n'
 
 // 状态相关展示常量，集中维护，DiffTree/DiffView/InfoPanel 共享，避免重复定义
 export const STATUS_META = {
@@ -848,10 +849,11 @@ export function isRunning() {
 export function phaseLabel() {
   const ph = (state.jobProgress && state.jobProgress.phase) || ''
   switch (ph) {
-    case 'parsing': return '正在解析包…'
-    case 'unpacking': return '正在自动迭代解包…'
-    case 'diffing': return '正在比对 / 计算差异…'
-    default: return '比对进行中…'
+    case 'parsing': return t('phase.parsing')
+    case 'unpacking': return t('phase.unpacking')
+    case 'diffing': return t('phase.diffing')
+    case 'building': return t('phase.building')
+    default: return t('phase.default')
   }
 }
 

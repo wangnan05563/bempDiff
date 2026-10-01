@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import { ACCENTS, loadAccentKey, applyAccent } from '../lib/accents'
+import { i18n, LOCALES, setLocale } from '../lib/i18n'
 import PathBreadcrumb from './PathBreadcrumb.vue'
 import Downloads from './Downloads.vue'
 
@@ -377,6 +378,11 @@ function doCompare() { triggerCompare() }
           </li>
         </ul>
       </div>
+      <!-- R12 语言切换：中/EN（i18n 框架首批覆盖核心界面，渐进迁移） -->
+      <button class="btn btn-outline-secondary btn-sm" @click="setLocale(i18n.locale === 'zh-CN' ? 'en-US' : 'zh-CN')"
+              :aria-label="i18n.locale === 'zh-CN' ? 'Switch to English' : '切换为中文'"
+              :title="i18n.locale === 'zh-CN' ? 'Switch to English' : '切换为中文'"
+              style="font-size:.72rem;font-weight:600">{{ i18n.locale === 'zh-CN' ? 'EN' : '中' }}</button>
       <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" aria-label="打开配置中心：模型、解析与导出、差异树过滤、界面与高级" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
     </div>
     <!-- 下载管理面板：与导出按钮同级位置，集中展示导出记录（含异步大包导出） -->

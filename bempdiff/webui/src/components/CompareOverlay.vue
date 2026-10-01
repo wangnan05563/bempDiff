@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { state, cancelCompare } from '../store'
+import { t } from '../lib/i18n'
 
 // 仅「确实在比对」才走确定进度条 + 取消；报告生成期间 state.reporting=true 应始终走 v-else 不确定条，
 // 故显式排除报告态，避免未来 jobProgress 残留导致遮罩误显示为「取消比对」（评审 C）。
@@ -19,9 +20,9 @@ const pct = computed(() => {
 // 三段映射（诚实口径）：反编译不在比对主流程（打开文件时按需进行，无整体百分比），
 // 故第三段为「出树」（building），不伪造「反编译」段。
 const STEPS = [
-  { label: '解包', phases: ['parsing', 'unpacking'] },
-  { label: '比对', phases: ['diffing'] },
-  { label: '出树', phases: ['building'] }
+  { key: 'step.unpack', phases: ['parsing', 'unpacking'] },
+  { key: 'step.diff', phases: ['diffing'] },
+  { key: 'step.build', phases: ['building'] }
 ]
 // 当前段下标：phase 缺失（旧后端/其它来源）返回 -1，模板退化为单条进度条（向后兼容）。
 const phaseIdx = computed(() => {
@@ -41,12 +42,12 @@ const phaseIdx = computed(() => {
         <!-- R3 三段进度指示：解包 → 比对 → 出树（当前段高亮，已完成段打勾） -->
         <div class="cmp-steps d-flex align-items-center justify-content-center gap-1 mb-2"
              style="font-size:.72rem" v-if="phaseIdx >= 0"
-             :aria-label="'比对进度：' + STEPS.map(s => s.label).join(' → ')">
+             :aria-label="'Compare: ' + STEPS.map(s => t(s.key)).join(' > ')">
           <template v-for="(s, i) in STEPS" :key="s.label">
             <span class="cmp-step d-inline-flex align-items-center gap-1"
                   :class="{ 'cmp-step-active': i === phaseIdx, 'cmp-step-done': i < phaseIdx }">
               <i class="bi" :class="i < phaseIdx ? 'bi-check2-circle' : (i === phaseIdx ? 'bi-arrow-right-circle-fill' : 'bi-circle')" style="font-size:.65rem"></i>
-              {{ s.label }}
+              {{ t(s.key) }}
             </span>
             <i v-if="i < STEPS.length - 1" class="bi bi-chevron-right" style="font-size:.6rem;color:var(--bs-secondary-color)"></i>
           </template>
@@ -61,7 +62,7 @@ const phaseIdx = computed(() => {
                :style="{ width: pct + '%' }"></div>
         </div>
         <button class="btn btn-sm btn-outline-secondary mt-3" @click="cancelCompare">
-          <i class="bi bi-x-circle"></i> 取消比对
+          <i class="bi bi-x-circle"></i> {{ t('app.cancelCompare') }}
         </button>
       </div>
 

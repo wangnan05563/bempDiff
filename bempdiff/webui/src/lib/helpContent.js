@@ -77,12 +77,25 @@ function entry(o) {
 // ---------------------------------------------------------------------------
 // 内容：功能分类 → 条目
 // ---------------------------------------------------------------------------
+import { TERM_TABLE } from './i18n'
+
 export const CATEGORIES = [
   {
     key: 'basics',
     title: '基础功能',
     icon: 'bi-stack',
     entries: [
+      entry({
+        id: 'glossary',
+        title: '术语中英对照',
+        intro: '界面与报告中的核心术语中英对照（术语首次出现处附英文，供对外沟通与审计引用）。',
+        keywords: ['术语', '对照', '英文', 'glossary', 'i18n', '翻译'],
+        blocks: [
+          para('术语对照清单（中文 — English：说明）：'),
+          list(TERM_TABLE.map((r) => `${r[0]} — ${r[1]}：${r[2]}`)),
+          para('界面语言可在工具栏「EN / 中」按钮切换；切换后核心界面文案即时生效，其余界面将随版本迭代逐步迁移。')
+        ]
+      }),
       entry({
         id: 'compare',
         title: '如何开始一次对比',
