@@ -352,6 +352,7 @@ export function clearCompareHistory() {
 // 启动后异步静默检查（24h 节流，避免频繁打 GitHub 匿名限流）：发现新版本 → 角落提示条
 // 提供「前往下载页」；**不自动下载、不自动安装**（一键安装仍留在「关于」页由用户显式触发）。
 const UPDATE_CHECK_AT_KEY = 'bempdiff.updateCheckAt'
+const UPDATE_DISMISSED_TAG_KEY = 'bempdiff.updateDismissedTag'
 const UPDATE_CHECK_INTERVAL_MS = 24 * 3600 * 1000
 export async function checkUpdateSilently() {
   try {
@@ -360,11 +361,20 @@ export async function checkUpdateSilently() {
     localStorage.setItem(UPDATE_CHECK_AT_KEY, String(Date.now()))
     const r = await api.checkUpdate({ current: resolveAppVersion() })
     if (r && r.ok && r.upToDate === false && r.latest && r.latest.tag) {
+      // R9（T01472）：用户已对该版本关闭过提示 → 不再打扰（更新到更新版本时仍会提示）
+      const dismissed = localStorage.getItem(UPDATE_DISMISSED_TAG_KEY)
+      if (dismissed && dismissed === r.latest.tag) return
       state.updateAvailable = { tag: r.latest.tag, url: r.latest.url || '', message: r.message || '' }
     }
   } catch (_) { /* 检查失败静默：不打扰主流程（「关于」页可手动检查） */ }
 }
-export function dismissUpdateHint() { state.updateAvailable = null }
+export function dismissUpdateHint() {
+  // 关闭偏好持久化：记住被关闭的版本号；同版本此后不再提示，新版本照常提示
+  if (state.updateAvailable && state.updateAvailable.tag) {
+    try { localStorage.setItem(UPDATE_DISMISSED_TAG_KEY, state.updateAvailable.tag) } catch (_) { /* 静默 */ }
+  }
+  state.updateAvailable = null
+}
 
 /**
  * 接收外部传入的比对路径（右键菜单 / 拖拽 / 命令行参数），写入工具栏并视情况自动比对。
