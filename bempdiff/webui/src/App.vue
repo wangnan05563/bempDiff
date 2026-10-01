@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { state, init, closeReportPreview, triggerCompare } from './store'
+import { state, init, closeReportPreview, triggerCompare, checkUpdateSilently, dismissUpdateHint } from './store'
 import ToolBar from './components/ToolBar.vue'
 import DiffTree from './components/DiffTree.vue'
 import DiffView from './components/DiffView.vue'
@@ -16,7 +16,11 @@ import { isEditableTarget } from './lib/shortcuts'
 
 const showConfig = ref(false)
 const showReport = ref(false)
-onMounted(() => init())
+onMounted(() => {
+  init()
+  // R9（二期 T01471）：启动 3s 后异步静默检查更新（24h 节流），发现新版本 → 右下角提示条（不自动安装）
+  setTimeout(() => { checkUpdateSilently() }, 3000)
+})
 
 // ===== R6 全局快捷键（二期 T01465）：Ctrl+Enter 比对 / Ctrl+K 聚焦过滤框 / ? 速查面板 =====
 // 冲突原则：输入框内不劫持；弹窗（.modal-backdrop，含速查面板自身）打开时仅 ?/Esc 生效（面板内部处理）。
@@ -126,6 +130,18 @@ function onPreviewClose() {
   <CompareOverlay />
   <!-- R6 快捷键速查面板：「?」唤起 -->
   <ShortcutHelp v-if="showShortcuts" @close="showShortcuts = false" />
+
+  <!-- R9 更新提示条（右下角）：仅提示与跳转下载页，不自动下载/安装 -->
+  <div class="update-hint shadow" v-if="state.updateAvailable" role="status"
+       aria-label="发现新版本提示">
+    <i class="bi bi-arrow-up-circle text-primary"></i>
+    <span class="uh-text">发现新版本 <b>v{{ state.updateAvailable.tag }}</b></span>
+    <a v-if="state.updateAvailable.url" class="btn btn-sm btn-primary py-0 px-2" style="font-size:.72rem"
+       :href="state.updateAvailable.url" target="_blank" rel="noopener"
+       title="打开 GitHub Release 下载页（不会自动安装）">前往下载页</a>
+    <button type="button" class="btn-close btn-sm" aria-label="关闭更新提示"
+            @click="dismissUpdateHint"></button>
+  </div>
   <!-- 功能引导：首次自动弹出一次，之后经左下角常驻「引导」按钮唤起 -->
   <GuideOverlay />
   <DragDropOverlay />
@@ -138,3 +154,15 @@ function onPreviewClose() {
     </div>
   </div>
 </template>
+
+<style>
+/* R9 更新提示条（右下角浮层）：轻量不遮挡主界面，点击下载页新开标签 */
+.update-hint {
+  position: fixed; right: 1rem; bottom: 3.2rem; z-index: 1500;
+  display: flex; align-items: center; gap: .5rem;
+  padding: .45rem .7rem; border-radius: .5rem;
+  background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
+  font-size: .78rem;
+}
+.update-hint .uh-text { white-space: nowrap; }
+</style>

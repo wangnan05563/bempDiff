@@ -5,6 +5,7 @@ import { activateTab as activateTabImpl, closeTabReducer as closeTabImpl, pinTab
 import { extractFromFileName, sameBaseDifferentVersion, orderOldNew } from './lib/version'
 import { loadIgnoreRules, saveIgnoreRules, addRule as addRuleFn, removeRule as removeRuleFn } from './lib/ignore'
 import { friendlyAiError } from './lib/ai_error'
+import { resolveAppVersion } from './lib/helpContent'
 
 // 状态相关展示常量，集中维护，DiffTree/DiffView/InfoPanel 共享，避免重复定义
 export const STATUS_META = {
@@ -72,6 +73,7 @@ export const state = reactive({
   reportCategory: null,   // 最近一次生成报告所用的分析项（ReportPreview「重新生成」沿用；null=基础报告/默认整体分析）
   previewMd: null,        // 控制台「预览报告」临时报告正文（与全局 reportMd 解耦，避免互相覆盖）
   previewOpen: false,
+  updateAvailable: null,  // R9 启动更新检查：发现新版本时 { tag, url, message }（不自动安装）
   error: null,
   toast: null,
   // 归档展开：复合键(outer!/inner) -> { loading, error, children:[{key,status,fileClass,size,name,expandable}] }
@@ -345,6 +347,24 @@ export function clearCompareHistory() {
   state.compareHistory = []
   try { localStorage.removeItem(COMPARE_HISTORY_KEY) } catch (_) { /* 静默 */ }
 }
+
+// ---------------- R9 启动更新检查（二期 T01471） ----------------
+// 启动后异步静默检查（24h 节流，避免频繁打 GitHub 匿名限流）：发现新版本 → 角落提示条
+// 提供「前往下载页」；**不自动下载、不自动安装**（一键安装仍留在「关于」页由用户显式触发）。
+const UPDATE_CHECK_AT_KEY = 'bempdiff.updateCheckAt'
+const UPDATE_CHECK_INTERVAL_MS = 24 * 3600 * 1000
+export async function checkUpdateSilently() {
+  try {
+    const last = Number(localStorage.getItem(UPDATE_CHECK_AT_KEY) || 0)
+    if (Date.now() - last < UPDATE_CHECK_INTERVAL_MS) return
+    localStorage.setItem(UPDATE_CHECK_AT_KEY, String(Date.now()))
+    const r = await api.checkUpdate({ current: resolveAppVersion() })
+    if (r && r.ok && r.upToDate === false && r.latest && r.latest.tag) {
+      state.updateAvailable = { tag: r.latest.tag, url: r.latest.url || '', message: r.message || '' }
+    }
+  } catch (_) { /* 检查失败静默：不打扰主流程（「关于」页可手动检查） */ }
+}
+export function dismissUpdateHint() { state.updateAvailable = null }
 
 /**
  * 接收外部传入的比对路径（右键菜单 / 拖拽 / 命令行参数），写入工具栏并视情况自动比对。
