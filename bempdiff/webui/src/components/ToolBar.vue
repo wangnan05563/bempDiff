@@ -50,10 +50,10 @@ function onRestoreHist(i) {
   }
 }
 function onRemoveHist(i) {
-  if (window.confirm('删除这条比对历史？')) removeCompareHistory(i)
+  if (window.confirm('删除这条比对历史？该操作不可恢复（仅移除记录的路径对，不影响任何本地文件）。')) removeCompareHistory(i)
 }
 function onClearHist() {
-  if (window.confirm('清空全部比对历史？')) {
+  if (window.confirm('清空全部比对历史？该操作不可恢复（仅移除记录的路径对，不影响任何本地文件）。')) {
     clearCompareHistory()
     showHistory.value = false
   }

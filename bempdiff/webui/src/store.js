@@ -4,6 +4,7 @@ import { activateTab as activateTabImpl, closeTabReducer as closeTabImpl, pinTab
   closeOtherTabsReducer as closeOtherTabsImpl, closeAllTabsReducer as closeAllTabsImpl, findActiveTab } from './lib/tabs'
 import { extractFromFileName, sameBaseDifferentVersion, orderOldNew } from './lib/version'
 import { loadIgnoreRules, saveIgnoreRules, addRule as addRuleFn, removeRule as removeRuleFn } from './lib/ignore'
+import { friendlyAiError } from './lib/ai_error'
 
 // 状态相关展示常量，集中维护，DiffTree/DiffView/InfoPanel 共享，避免重复定义
 export const STATUS_META = {
@@ -1183,10 +1184,12 @@ export async function testConnection(payload) {
       toast('success', '连接测试：' + (r.message || '已连通'))
       return true
     }
-    toast('warning', '连接测试：' + (r && r.message ? r.message : '未连通'))
+    const msg = (r && r.message) || '未连通'
+    // R8（二期 T01469）：结构化归因 + 建议动作，替代裸报错文案
+    toast('warning', '连接测试未通过。' + friendlyAiError(msg))
     return false
   } catch (e) {
-    toast('danger', '连接测试失败：' + e.message)
+    toast('danger', '连接测试未通过。' + friendlyAiError(e.message))
     return false
   }
 }
