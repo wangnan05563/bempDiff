@@ -56,8 +56,9 @@ const phaseIdx = computed(() => {
           <span>{{ pct }}%</span>
         </div>
         <div class="progress" style="height:.5rem">
-          <div class="progress-bar progress-bar-striped progress-bar-animated"
-               role="progressbar" :style="{ width: pct + '%' }"></div>
+          <div class="progress-bar progress-bar-striped progress-bar-animated" aria-label="比对总进度"
+               role="progressbar" :aria-valuenow="pct" aria-valuemin="0" aria-valuemax="100"
+               :style="{ width: pct + '%' }"></div>
         </div>
         <button class="btn btn-sm btn-outline-secondary mt-3" @click="cancelCompare">
           <i class="bi bi-x-circle"></i> 取消比对

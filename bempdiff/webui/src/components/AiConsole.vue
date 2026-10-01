@@ -159,11 +159,11 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
 
     <!-- 新建分析：类别选择 + 发起 -->
     <div class="console-new d-flex align-items-center gap-2 flex-wrap">
-      <select class="form-select form-select-sm" style="width:auto" v-model="selCategory">
+      <select class="form-select form-select-sm" style="width:auto" v-model="selCategory" aria-label="分析类别">
         <option v-for="c in AI_CATEGORIES" :key="c.key" :value="c.key">{{ c.label }}</option>
       </select>
       <input v-if="showCustom" class="form-control form-control-sm" style="max-width:220px"
-             v-model="customPrompt" placeholder="输入你的分析问题…" :disabled="!hasJob">
+             v-model="customPrompt" placeholder="输入你的分析问题…" aria-label="自定义分析问题" :disabled="!hasJob">
       <button class="btn btn-sm btn-primary" @click="newAnalysis"
               :disabled="!hasJob || unpacking || (showCustom && !customPrompt.value.trim())"
               aria-label="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面" title="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面">
