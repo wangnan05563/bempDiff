@@ -227,11 +227,11 @@ function doCompare() { triggerCompare() }
     <!-- 输入类型切换：图标 btn-group 分段控件 -->
     <div class="btn-group btn-group-sm" role="group" aria-label="输入类型">
       <button type="button" class="btn" :class="state.leftType === 'package' ? 'btn-primary' : 'btn-outline-secondary'"
-              @click="state.leftType = 'package'" :disabled="aiBusy" title="以单个 war/jar 包作为输入（默认）">
+              @click="state.leftType = 'package'" :disabled="aiBusy" aria-label="以单个 war/jar 包作为输入（默认）" title="以单个 war/jar 包作为输入（默认）">
         <i class="bi bi-file-earmark-zip"></i>
       </button>
       <button type="button" class="btn" :class="state.leftType === 'folder' ? 'btn-primary' : 'btn-outline-secondary'"
-              @click="state.leftType = 'folder'" :disabled="aiBusy" title="以解压后的目录作为输入，对比目录结构的差异">
+              @click="state.leftType = 'folder'" :disabled="aiBusy" aria-label="以解压后的目录作为输入，对比目录结构的差异" title="以解压后的目录作为输入，对比目录结构的差异">
         <i class="bi bi-folder"></i>
       </button>
     </div>
@@ -239,7 +239,7 @@ function doCompare() { triggerCompare() }
     <!-- R5 比对会话历史：跨启动持久化（仅路径元数据），点击恢复路径对，单项可删 -->
     <div class="position-relative" ref="historyWrap">
       <button class="btn btn-outline-secondary btn-sm" @click="toggleHistory" :disabled="aiBusy"
-              title="最近比对会话：点击恢复路径对（仅记录路径与时间，不含差异内容与 AI 结果）">
+              aria-label="最近比对会话：点击恢复路径对（仅记录路径与时间，不含差异内容与 AI 结果）" title="最近比对会话：点击恢复路径对（仅记录路径与时间，不含差异内容与 AI 结果）">
         <i class="bi bi-clock-history"></i>
       </button>
       <ul class="dropdown-menu show py-1" v-if="showHistory"
@@ -270,8 +270,8 @@ function doCompare() { triggerCompare() }
          @dragleave="onDragLeave('old')" @drop="onDrop('old', $event)">
       <span class="tb-label" :title="state.leftType === 'folder' ? '老目录：作为对比基准的目录' : '老包(生产)：当前生产环境运行的版本，作为对比基准'">{{ state.leftType === 'folder' ? '老目录' : '老' }}</span>
       <PathBreadcrumb v-model="state.oldPath" class="tb-crumb" :label="state.leftType === 'folder' ? '老目录' : '老包'" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('old', v)" />
-      <button class="btn btn-outline-secondary btn-sm" @click="browse('old')" :disabled="aiBusy" :title="state.leftType === 'folder' ? '浏览选择老目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择老包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
-      <button class="btn btn-outline-secondary btn-sm" @click="goUp('old')" :disabled="aiBusy" title="向上一层：老路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="browse('old')" :disabled="aiBusy" :aria-label="state.leftType === 'folder' ? '浏览选择老目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择老包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'" :title="state.leftType === 'folder' ? '浏览选择老目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择老包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="goUp('old')" :disabled="aiBusy" aria-label="向上一层：老路径切换到其上级目录" title="向上一层：老路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
     </div>
     <!-- 新包/新目录：可拖入文件/目录（桌面壳）；面包屑点击层级即导航到该级目录 -->
     <div class="d-flex align-items-center gap-1 drop-zone" :class="{ 'drop-active': dragOver === 'new' }"
@@ -280,43 +280,43 @@ function doCompare() { triggerCompare() }
          @dragleave="onDragLeave('new')" @drop="onDrop('new', $event)">
       <span class="tb-label" :title="state.leftType === 'folder' ? '新目录：本次要对比的目标目录' : '新包(下发)：本次要下发的版本，作为对比目标'">{{ state.leftType === 'folder' ? '新目录' : '新' }}</span>
       <PathBreadcrumb v-model="state.newPath" class="tb-crumb" :label="state.leftType === 'folder' ? '新目录' : '新包'" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('new', v)" />
-      <button class="btn btn-outline-secondary btn-sm" @click="browse('new')" :disabled="aiBusy" :title="state.leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
-      <button class="btn btn-outline-secondary btn-sm" @click="goUp('new')" :disabled="aiBusy" title="向上一层：新路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="browse('new')" :disabled="aiBusy" :aria-label="state.leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'" :title="state.leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="goUp('new')" :disabled="aiBusy" aria-label="向上一层：新路径切换到其上级目录" title="向上一层：新路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
     </div>
 
     <!-- BCompare 风格路径导航：两侧同时向上 + 后退/前进历史 -->
-    <button class="btn btn-outline-secondary btn-sm" @click="goUpBoth" :disabled="aiBusy" title="两侧同时向上一层：左右路径都切换到各自上级目录">
+    <button class="btn btn-outline-secondary btn-sm" @click="goUpBoth" :disabled="aiBusy" aria-label="两侧同时向上一层：左右路径都切换到各自上级目录" title="两侧同时向上一层：左右路径都切换到各自上级目录">
       <i class="bi bi-arrow-up-square"></i>
     </button>
     <div class="btn-group btn-group-sm" role="group" aria-label="路径导航历史">
-      <button class="btn btn-outline-secondary" @click="goBack" :disabled="!canBack || aiBusy" title="返回：回到上一次浏览的路径（后退）">
+      <button class="btn btn-outline-secondary" @click="goBack" :disabled="!canBack || aiBusy" aria-label="返回：回到上一次浏览的路径（后退）" title="返回：回到上一次浏览的路径（后退）">
         <i class="bi bi-arrow-left"></i>
       </button>
-      <button class="btn btn-outline-secondary" @click="goForward" :disabled="!canForward || aiBusy" title="前进：回到后退之前的路径">
+      <button class="btn btn-outline-secondary" @click="goForward" :disabled="!canForward || aiBusy" aria-label="前进：回到后退之前的路径" title="前进：回到后退之前的路径">
         <i class="bi bi-arrow-right"></i>
       </button>
     </div>
 
-    <button class="btn btn-primary btn-sm" @click="doCompare" :disabled="aiBusy" title="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）"><i class="bi bi-arrow-left-right"></i></button>
+    <button class="btn btn-primary btn-sm" @click="doCompare" :disabled="aiBusy" aria-label="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）" title="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）"><i class="bi bi-arrow-left-right"></i></button>
 
     <div class="ms-auto d-flex gap-2">
-      <button class="btn btn-outline-secondary btn-sm" @click="onOpenReport" :disabled="!state.reportMd" title="查看最近一次生成的差异/AI 分析报告">
+      <button class="btn btn-outline-secondary btn-sm" @click="onOpenReport" :disabled="!state.reportMd" aria-label="查看最近一次生成的差异/AI 分析报告" title="查看最近一次生成的差异/AI 分析报告">
         <i class="bi bi-filetype-md"></i>
       </button>
       <button class="btn btn-outline-secondary btn-sm" @click="onAiAnalyze"
               :disabled="!state.job || aiBusy || unpacking"
-              :title="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '一键摘要：发起整体风险分析，下方控制台流式输出，可一键复制 Markdown（也可并行多类别分析）')">
+              :aria-label="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '一键摘要：发起整体风险分析，下方控制台流式输出，可一键复制 Markdown（也可并行多类别分析）')" :title="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '一键摘要：发起整体风险分析，下方控制台流式输出，可一键复制 Markdown（也可并行多类别分析）')">
         <i class="bi bi-cpu"></i>
       </button>
       <!-- 与右侧「智能分析」一致：只保留图标，文字「智能分类」隐藏，避免工具栏被文字占宽；功能与悬停提示（title）不变。 -->
       <button class="btn btn-outline-secondary btn-sm" @click="onClassify"
               :disabled="!state.job || state.job.status !== 'DONE' || state.classifying || aiBusy"
-              :title="state.classifying ? '智能分类中…' : (aiBusy ? 'AI 分析进行中，请稍候' : 'AI 自动对差异文件打标分类并评估风险等级，结果在左侧差异树展示')">
+              :aria-label="state.classifying ? '智能分类中…' : (aiBusy ? 'AI 分析进行中，请稍候' : 'AI 自动对差异文件打标分类并评估风险等级，结果在左侧差异树展示')" :title="state.classifying ? '智能分类中…' : (aiBusy ? 'AI 分析进行中，请稍候' : 'AI 自动对差异文件打标分类并评估风险等级，结果在左侧差异树展示')">
         <span v-if="state.classifying" class="spinner-border spinner-border-sm" role="status" aria-label="智能分类中"></span>
         <i v-else class="bi bi-tags" role="img" aria-label="智能分类" title="智能分类"></i>
       </button>
       <div class="position-relative" ref="exportWrap">
-        <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job || state.exporting" :title="state.exporting ? '导出进行中，完成前禁用' : '导出差异报告或差异资产'">
+        <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job || state.exporting" :aria-label="state.exporting ? '导出进行中，完成前禁用' : '导出差异报告或差异资产'" :title="state.exporting ? '导出进行中，完成前禁用' : '导出差异报告或差异资产'">
           <i class="bi bi-file-earmark-arrow-down"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end show py-1" v-if="showExport"
@@ -342,10 +342,10 @@ function doCompare() { triggerCompare() }
         <span class="text-secondary" style="font-size:.66rem">{{ state.exportProgress.percent }}% {{ state.exportProgress.etaText }}</span>
       </div>
       <button class="btn btn-outline-secondary btn-sm" @click="toggleTheme"
-              :title="isDark ? '切换浅色' : '切换深色'">
+              :aria-label="isDark ? '切换浅色' : '切换深色'" :title="isDark ? '切换浅色' : '切换深色'">
         <i class="bi" :class="isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
       </button>
-      <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" aria-label="打开配置中心：模型、解析与导出、差异树过滤、界面与高级" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
     </div>
     <!-- 下载管理面板：与导出按钮同级位置，集中展示导出记录（含异步大包导出） -->
     <Downloads v-if="state.exportsOpen" />

@@ -116,14 +116,14 @@ async function copyPath() {
                     'pb-flash': seg === flashKey,
                     'pb-drive': i === 0 && firstIsDrive
                   }"
-                  :title="prefixOf(i)" :disabled="disabled"
+                  :aria-label="prefixOf(i)" :title="prefixOf(i)" :disabled="disabled"
                   @click.stop="onSegClick(seg, i)">
             <i v-if="i === 0 && firstIsDrive" class="bi bi-hdd"></i>{{ seg }}
           </button>
         </template>
         <span v-if="!segments.length" class="pb-empty">{{ label ? '未设置' + label + '路径' : '未设置路径' }}</span>
         <button v-if="modelValue" type="button" class="pb-copy" :disabled="disabled"
-                title="复制完整路径" @click.stop="copyPath">
+                aria-label="复制完整路径" title="复制完整路径" @click.stop="copyPath">
           <i class="bi bi-clipboard"></i>
         </button>
       </div>

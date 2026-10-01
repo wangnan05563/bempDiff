@@ -366,10 +366,10 @@ function pickImportFile(ev) {
               <label class="col-sm-3 col-form-label col-form-label-sm" title="模型服务提供的访问密钥；本地/私有化模型通常可留空">API Key</label>
               <div class="col-sm-9 input-group input-group-sm">
                 <input class="form-control" :type="showKey ? 'text' : 'password'" v-model="form.aiApiKey" placeholder="本地模型可留空" title="模型服务提供的访问密钥；本地/私有化模型通常可留空">
-                <button class="btn btn-outline-secondary" type="button" @click="showKey = !showKey" title="显示/隐藏 API Key">
+                <button class="btn btn-outline-secondary" type="button" @click="showKey = !showKey" aria-label="显示/隐藏 API Key" title="显示/隐藏 API Key">
                   <i class="bi" :class="showKey ? 'bi-eye-slash' : 'bi-eye'"></i>
                 </button>
-                <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" title="用当前配置测试与模型服务的连通性">
+                <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" aria-label="用当前配置测试与模型服务的连通性" title="用当前配置测试与模型服务的连通性">
                   <i class="bi bi-plug"></i> {{ testing ? '测试中…' : '连接测试' }}
                 </button>
               </div>
@@ -382,7 +382,7 @@ function pickImportFile(ev) {
                   <datalist id="aiModelList">
                     <option v-for="m in state.aiModels" :key="m" :value="m"></option>
                   </datalist>
-                  <button class="btn btn-outline-secondary" type="button" :disabled="fetchingModels" @click="onFetchModels" title="按当前 API Base URL + Key 自动获取可用模型列表">
+                  <button class="btn btn-outline-secondary" type="button" :disabled="fetchingModels" @click="onFetchModels" aria-label="按当前 API Base URL + Key 自动获取可用模型列表" title="按当前 API Base URL + Key 自动获取可用模型列表">
                     <i class="bi" :class="fetchingModels ? 'bi-arrow-repeat' : 'bi-list-ul'"></i> {{ fetchingModels ? '获取中…' : '获取模型列表' }}
                   </button>
                 </div>
@@ -506,7 +506,7 @@ function pickImportFile(ev) {
                 <div class="input-group input-group-sm">
                   <input class="form-control" v-model="customExt" placeholder="如 .MF、.properties（可多个，逗号分隔）" @keydown.enter.prevent="addCustomExt"
                          title="添加任意自定义文件后缀；支持带/不带点、逗号或空格分隔多个">
-                  <button class="btn btn-outline-secondary" type="button" @click="addCustomExt" title="把输入的后缀加入忽略列表">添加</button>
+                  <button class="btn btn-outline-secondary" type="button" @click="addCustomExt" aria-label="把输入的后缀加入忽略列表" title="把输入的后缀加入忽略列表">添加</button>
                 </div>
                 <div v-if="Array.isArray(form.ignoreExtensions) && form.ignoreExtensions.length" class="mt-1 d-flex flex-wrap gap-1">
                   <span v-for="ie in form.ignoreExtensions" :key="ie"
@@ -560,7 +560,7 @@ function pickImportFile(ev) {
               <div class="col-sm-9">
                 <div class="input-group input-group-sm">
                   <input class="form-control" v-model="form.projectContextDir" placeholder="项目源码/文档目录" title="项目源码/文档目录，用于为 AI 分析提供背景上下文">
-                  <button class="btn btn-outline-secondary" type="button" @click="pickContextDir" :disabled="!canPick" :title="pickTitle">
+                  <button class="btn btn-outline-secondary" type="button" @click="pickContextDir" :disabled="!canPick" :aria-label="pickTitle" :title="pickTitle">
                     <i class="bi bi-folder2-open"></i>
                   </button>
                 </div>
@@ -591,7 +591,7 @@ function pickImportFile(ev) {
                   <i class="bi bi-dash-circle text-secondary"></i>
                   <span class="text-secondary">尚未加载（保存配置后自动扫描）</span>
                 </template>
-                <button class="btn btn-outline-primary btn-sm ms-auto" type="button" :disabled="ctxLoading" @click="onRefreshContext" title="强制重新递归扫描上下文目录（忽略缓存）">
+                <button class="btn btn-outline-primary btn-sm ms-auto" type="button" :disabled="ctxLoading" @click="onRefreshContext" aria-label="强制重新递归扫描上下文目录（忽略缓存）" title="强制重新递归扫描上下文目录（忽略缓存）">
                   <i class="bi bi-arrow-clockwise"></i> 重新扫描
                 </button>
               </div>
@@ -615,7 +615,7 @@ function pickImportFile(ev) {
                 <span class="text-secondary">导出当前整套配置为 JSON，到新环境「导入配置」即可整体恢复（含 AI 服务、解析导出、差异树过滤等全部设置）。</span>
                 <div class="d-flex align-items-center gap-1 ms-auto">
                   <button class="btn btn-outline-secondary btn-sm" type="button" @click="onExportConfig" :disabled="isExporting"
-                          title="导出当前整套配置为 JSON 文件下载（未勾选「记住 API Key」时不包含明文密钥）">
+                          aria-label="导出当前整套配置为 JSON 文件下载（未勾选「记住 API Key」时不包含明文密钥）" title="导出当前整套配置为 JSON 文件下载（未勾选「记住 API Key」时不包含明文密钥）">
                     <i class="bi bi-download"></i> 导出配置
                   </button>
                   <label class="btn btn-outline-secondary btn-sm mb-0" :class="{disabled: isImporting}" title="从导出的 JSON 配置文件恢复整套配置">
@@ -633,7 +633,7 @@ function pickImportFile(ev) {
                 <span class="text-secondary">清理解压/抽取残留临时文件与遗留作业目录，释放磁盘空间（反编译缓存与近期日志保留）。</span>
                 <button class="btn btn-outline-danger btn-sm ms-auto" type="button" :disabled="cleaning"
                         @click="onCleanupTemp"
-                        title="立即回收系统临时目录与 .bempdiff/runtime 下的残留临时文件，避免磁盘爆满；不会中断正在进行的解压任务">
+                        aria-label="立即回收系统临时目录与 .bempdiff/runtime 下的残留临时文件，避免磁盘爆满；不会中断正在进行的解压任务" title="立即回收系统临时目录与 .bempdiff/runtime 下的残留临时文件，避免磁盘爆满；不会中断正在进行的解压任务">
                   <i class="bi" :class="cleaning ? 'bi-arrow-repeat' : 'bi-broom'"></i> {{ cleaning ? '清理中…' : '手动清理临时文件' }}
                 </button>
               </div>

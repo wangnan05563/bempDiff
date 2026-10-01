@@ -161,13 +161,13 @@ onBeforeUnmount(() => { if (pbResize) pbResize.disconnect() })
              @keydown="onEditKey" @blur="exitEdit" @click.stop />
       <div v-else ref="crumbsRef" class="pb-crumbs" @scroll.passive="updateOverflow">
         <button v-if="segments.length" type="button" class="pb-seg pb-root"
-                :title="rootTitle" @click.stop="onRootClick">
+                :aria-label="rootTitle" :title="rootTitle" @click.stop="onRootClick">
           <i class="bi" :class="isFolderMode ? 'bi-hdd' : 'bi-archive'"></i>{{ rootLabel }}
         </button>
         <template v-for="(seg, i) in segments" :key="i">
           <i class="bi bi-chevron-right pb-sep"></i>
           <button type="button" class="pb-seg" :class="{ 'pb-current': i === segments.length - 1 }"
-                  :title="segments.slice(0, i + 1).join('/')"
+                  :aria-label="segments.slice(0, i + 1).join('/')" :title="segments.slice(0, i + 1).join('/')"
                   @click.stop="onSegClick(seg, i)">
             {{ seg }}
           </button>

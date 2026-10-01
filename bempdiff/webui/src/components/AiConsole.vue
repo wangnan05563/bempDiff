@@ -166,7 +166,7 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
              v-model="customPrompt" placeholder="输入你的分析问题…" :disabled="!hasJob">
       <button class="btn btn-sm btn-primary" @click="newAnalysis"
               :disabled="!hasJob || unpacking || (showCustom && !customPrompt.value.trim())"
-              title="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面">
+              aria-label="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面" title="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面">
         <i class="bi bi-plus-lg"></i> 新建分析
       </button>
       <span v-if="unpacking" class="text-warning" style="font-size:.75rem"><i class="bi bi-boxes"></i> 正在逐层解包，完成后方可分析</span>
@@ -187,7 +187,7 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
         <button v-for="t in state.aiTasks" :key="t.id"
                 class="console-tab btn btn-sm"
                 :class="{ active: t.id === state.aiActiveTaskId }"
-                :title="t.title"
+                :aria-label="t.title" :title="t.title"
                 @click="selectAiTask(t.id)">
           <i class="bi" :class="tabCls(t)"></i>
           <span class="tab-title">{{ t.title }}</span>
@@ -241,27 +241,27 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
           <span v-else-if="active.status==='error'"><i class="bi bi-exclamation-triangle text-danger"></i> 失败</span>
         </span>
         <button v-if="active.status==='thinking' || active.status==='streaming'"
-                class="btn btn-outline-secondary btn-sm icon-only" title="中断当前分析"
+                class="btn btn-outline-secondary btn-sm icon-only" aria-label="中断当前分析" title="中断当前分析"
                 @click="stopAiAnalysis(active.id)">
           <i class="bi bi-stop-fill"></i>
         </button>
-        <button v-else class="btn btn-outline-secondary btn-sm icon-only" title="重新分析"
+        <button v-else class="btn btn-outline-secondary btn-sm icon-only" aria-label="重新分析" title="重新分析"
                 @click="restartAiAnalysis(active.id)" :disabled="!hasJob">
           <i class="bi bi-arrow-clockwise"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm icon-only" title="在新窗口预览完整 Markdown 报告"
+        <button class="btn btn-outline-primary btn-sm icon-only" aria-label="在新窗口预览完整 Markdown 报告" title="在新窗口预览完整 Markdown 报告"
                 :disabled="previewDisabled(active)" @click="previewReport">
           <i class="bi bi-filetype-md"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm icon-only" title="复制 Markdown 结果（可直接粘贴进报告）"
+        <button class="btn btn-outline-primary btn-sm icon-only" aria-label="复制 Markdown 结果（可直接粘贴进报告）" title="复制 Markdown 结果（可直接粘贴进报告）"
                 :disabled="copyDisabled(active)" @click="copyActive">
           <i class="bi bi-clipboard"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm icon-only" title="导出分析结果为 Markdown 文件"
+        <button class="btn btn-outline-primary btn-sm icon-only" aria-label="导出分析结果为 Markdown 文件" title="导出分析结果为 Markdown 文件"
                 :disabled="exportDisabled(active)" @click="exportActive">
           <i class="bi bi-download"></i>
         </button>
-        <button class="btn btn-outline-secondary btn-sm icon-only" title="关闭此分析"
+        <button class="btn btn-outline-secondary btn-sm icon-only" aria-label="关闭此分析" title="关闭此分析"
                 @click="closeAiTask(active.id)">
           <i class="bi bi-x-lg"></i>
         </button>

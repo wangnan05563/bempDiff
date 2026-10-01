@@ -1119,7 +1119,7 @@ onUpdated(() => measureVisible())
           <li v-for="t in tabs" :key="t.key" class="nav-item dvt-tab" role="presentation">
             <button class="nav-link d-flex align-items-center gap-1"
                     :class="{active: state.activeKey === t.key}"
-                    :title="fullKey(t)"
+                    :aria-label="fullKey(t)" :title="fullKey(t)"
                     role="tab"
                     :aria-selected="state.activeKey === t.key"
                     @click="onTabClick(t.key)"
@@ -1193,54 +1193,54 @@ onUpdated(() => measureVisible())
           {{ selRows.size }} 行
         </span>
         <button class="btn btn-outline-primary py-0 px-2" @click="copySelRows"
-                :title="'复制选中 ' + selRows.size + ' 行（' + (selSide === 'left' ? '旧侧' : '新侧') + '，点击行号列可切换侧）· Ctrl+C 同效'">
+                :aria-label="'复制选中 ' + selRows.size + ' 行（' + (selSide === 'left' ? '旧侧' : '新侧') + '，点击行号列可切换侧）· Ctrl+C 同效'" :title="'复制选中 ' + selRows.size + ' 行（' + (selSide === 'left' ? '旧侧' : '新侧') + '，点击行号列可切换侧）· Ctrl+C 同效'">
           <i class="bi bi-clipboard"></i>
         </button>
         <button class="btn py-0 px-2" :class="copyWithLineNo ? 'btn-primary' : 'btn-outline-primary'"
                 @click="toggleCopyLineNo"
-                title="复制时附带行号前缀（如 12: 内容），该偏好会被记忆">
+                aria-label="复制时附带行号前缀（如 12: 内容），该偏好会被记忆" title="复制时附带行号前缀（如 12: 内容），该偏好会被记忆">
           <i class="bi bi-list-ol"></i>
         </button>
-        <button class="btn btn-outline-secondary py-0 px-2" @click="clearSelection" title="清除选择（Esc）">
+        <button class="btn btn-outline-secondary py-0 px-2" @click="clearSelection" aria-label="清除选择（Esc）" title="清除选择（Esc）">
           <i class="bi bi-x"></i>
         </button>
       </div>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="openFind" title="在差异内容中查找（Ctrl+F）">
+              @click="openFind" aria-label="在差异内容中查找（Ctrl+F）" title="在差异内容中查找（Ctrl+F）">
         <i class="bi bi-search"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="toggleAiPanel" :title="state.aiPanelCollapsed ? '展开智能分析栏，查看单文件/全局分析' : '收起智能分析栏，扩大比对视野'">
+              @click="toggleAiPanel" :aria-label="state.aiPanelCollapsed ? '展开智能分析栏，查看单文件/全局分析' : '收起智能分析栏，扩大比对视野'" :title="state.aiPanelCollapsed ? '展开智能分析栏，查看单文件/全局分析' : '收起智能分析栏，扩大比对视野'">
         <i class="bi" :class="state.aiPanelCollapsed ? 'bi-layout-sidebar' : 'bi-layout-sidebar-inset-reverse'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="onToggleFocus" :title="state.focusMode ? '退出专注模式（Esc）' : '专注对比：隐藏左右栏、放大视野（Esc 退出）'">
+              @click="onToggleFocus" :aria-label="state.focusMode ? '退出专注模式（Esc）' : '专注对比：隐藏左右栏、放大视野（Esc 退出）'" :title="state.focusMode ? '退出专注模式（Esc）' : '专注对比：隐藏左右栏、放大视野（Esc 退出）'">
         <i class="bi" :class="state.focusMode ? 'bi-fullscreen-exit' : 'bi-arrows-fullscreen'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="wrap = !wrap" :title="wrap ? '当前：自动换行（单栏逐行对齐）· 点击切换为不换行（左右分栏 + 底部横向滚动同步）' : '当前：不换行（左右分栏 + 底部横向滚动同步）· 点击切换为自动换行'">
+              @click="wrap = !wrap" :aria-label="wrap ? '当前：自动换行（单栏逐行对齐）· 点击切换为不换行（左右分栏 + 底部横向滚动同步）' : '当前：不换行（左右分栏 + 底部横向滚动同步）· 点击切换为自动换行'" :title="wrap ? '当前：自动换行（单栏逐行对齐）· 点击切换为不换行（左右分栏 + 底部横向滚动同步）' : '当前：不换行（左右分栏 + 底部横向滚动同步）· 点击切换为自动换行'">
         <i class="bi" :class="wrap ? 'bi-text-wrap' : 'bi-text-paragraph'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
               @click="gitMode = !gitMode"
-              :title="gitMode ? '当前：Git 风格统一对比（左行号 + 后统一内容 + 热力地图）· 点击切换为双栏' : '切换为 Git 风格统一对比（左行号列固定，插除/新增分段展示 + 右侧热力差异地图）'">
+              :aria-label="gitMode ? '当前：Git 风格统一对比（左行号 + 后统一内容 + 热力地图）· 点击切换为双栏' : '切换为 Git 风格统一对比（左行号列固定，插除/新增分段展示 + 右侧热力差异地图）'" :title="gitMode ? '当前：Git 风格统一对比（左行号 + 后统一内容 + 热力地图）· 点击切换为双栏' : '切换为 Git 风格统一对比（左行号列固定，插除/新增分段展示 + 右侧热力差异地图）'">
         <i class="bi" :class="gitMode ? 'bi-file-diff' : 'bi-columns-gap'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="cycleGranularity" :title="'行内差异粒度：' + granularityLabel + '（点击在 整行 / 词级 / 字符级 间循环切换）'">
+              @click="cycleGranularity" :aria-label="'行内差异粒度：' + granularityLabel + '（点击在 整行 / 词级 / 字符级 间循环切换）'" :title="'行内差异粒度：' + granularityLabel + '（点击在 整行 / 词级 / 字符级 间循环切换）'">
         <i class="bi" :class="granularityIcon"></i>
       </button>
       <button class="btn btn-sm py-0 px-2" style="font-size:1.05rem"
               :class="collapse ? 'btn-primary' : 'btn-outline-secondary'"
               @click="collapse = !collapse"
-              :title="collapse ? '已折叠未变更行，点击展开全部' : '折叠远离变化块的未变更行（对标 Beyond Compare）'">
+              :aria-label="collapse ? '已折叠未变更行，点击展开全部' : '折叠远离变化块的未变更行（对标 Beyond Compare）'" :title="collapse ? '已折叠未变更行，点击展开全部' : '折叠远离变化块的未变更行（对标 Beyond Compare）'">
         <i class="bi" :class="collapse ? 'bi-arrows-expand' : 'bi-arrows-collapse'"></i>
       </button>
       <!-- 查看模式：全量内容 / 仅差异内容 合并为单个动画图标，点击切换（图标随状态翻转淡入） -->
       <button class="btn btn-sm dvt-mode-btn ms-1 py-0 px-2" style="font-size:1.05rem"
               :class="diffOnly ? 'btn-primary' : 'btn-outline-secondary'"
               @click="diffOnly = !diffOnly; collapse = false"
-              :title="diffOnly ? '当前：仅差异内容（隐藏未变更行）· 点击切换为全量内容' : '当前：全量内容（显示全部代码行，含未变更）· 点击切换为仅差异内容'">
+              :aria-label="diffOnly ? '当前：仅差异内容（隐藏未变更行）· 点击切换为全量内容' : '当前：全量内容（显示全部代码行，含未变更）· 点击切换为仅差异内容'" :title="diffOnly ? '当前：仅差异内容（隐藏未变更行）· 点击切换为全量内容' : '当前：全量内容（显示全部代码行，含未变更）· 点击切换为仅差异内容'">
         <i :key="diffOnly ? 'diff' : 'full'"
            class="bi dvt-mode-ic"
            :class="diffOnly ? 'bi-distribute-vertical' : 'bi-file-earmark-text'"></i>
@@ -1248,14 +1248,14 @@ onUpdated(() => measureVisible())
       <!-- 差异行快速定位：上一处 / 下一处（仅 add/del 算差异行） -->
       <div class="btn-group btn-group-sm ms-1" role="group" aria-label="差异行定位">
         <button class="btn btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-                @click="gotoPrev" :disabled="!diffRows.length" title="跳到上一处差异（Ctrl/Alt + ↑）">
+                @click="gotoPrev" :disabled="!diffRows.length" aria-label="跳到上一处差异（Ctrl/Alt + ↑）" title="跳到上一处差异（Ctrl/Alt + ↑）">
           <i class="bi bi-chevron-up"></i>
         </button>
         <span class="btn btn-outline-secondary py-0 px-2 disabled d-flex align-items-center justify-content-center" style="font-size:.72rem;pointer-events:none;min-width:3.2rem;flex-shrink:0;font-variant-numeric:tabular-nums">
           {{ diffCount ? curIdx + 1 : 0 }}/{{ diffCount }}
         </span>
         <button class="btn btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-                @click="gotoNext" :disabled="!diffRows.length" title="跳到下一处差异（Ctrl/Alt + ↓）">
+                @click="gotoNext" :disabled="!diffRows.length" aria-label="跳到下一处差异（Ctrl/Alt + ↓）" title="跳到下一处差异（Ctrl/Alt + ↓）">
           <i class="bi bi-chevron-down"></i>
         </button>
       </div>
@@ -1283,11 +1283,11 @@ onUpdated(() => measureVisible())
                @keydown.esc.stop="closeFind"
                @keydown.enter="findQuery && ($event.shiftKey ? findPrev() : findNext())" />
         <span class="find-count" :class="{ 'text-secondary': !findMatches.length }">{{ findMatches.length ? (findCurrent + 1) + ' / ' + findMatches.length : '无匹配' }}</span>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findPrev" :disabled="!findMatches.length" title="上一个（Shift+Enter）"><i class="bi bi-chevron-up"></i></button>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findNext" :disabled="!findMatches.length" title="下一个（Enter）"><i class="bi bi-chevron-down"></i></button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findPrev" :disabled="!findMatches.length" aria-label="上一个（Shift+Enter）" title="上一个（Shift+Enter）"><i class="bi bi-chevron-up"></i></button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findNext" :disabled="!findMatches.length" aria-label="下一个（Enter）" title="下一个（Enter）"><i class="bi bi-chevron-down"></i></button>
         <button class="btn btn-sm py-0 px-1" :class="findCaseSensitive ? 'btn-primary' : 'btn-outline-secondary'"
-                @click="findCaseSensitive = !findCaseSensitive" title="区分大小写">Aa</button>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="closeFind" title="关闭（Esc）"><i class="bi bi-x-lg"></i></button>
+                @click="findCaseSensitive = !findCaseSensitive" aria-label="区分大小写" title="区分大小写">Aa</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="closeFind" aria-label="关闭（Esc）" title="关闭（Esc）"><i class="bi bi-x-lg"></i></button>
       </div>
 
       <!-- Git 风格 unified 视图：左「旧行号|新行号」列固定 + 后统一内容列（删/改/增段按 -/+ 区分），右侧热力差异地图 -->

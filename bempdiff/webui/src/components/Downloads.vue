@@ -39,8 +39,8 @@ function fmtTime(ms) {
       <span class="fw-semibold"><i class="bi bi-download me-1"></i>下载管理</span>
       <span class="text-secondary" style="font-size:.72rem">导出记录</span>
       <div class="ms-auto d-flex gap-1">
-        <button class="btn btn-sm btn-outline-secondary" title="刷新列表" @click="refreshExports()"><i class="bi bi-arrow-clockwise"></i></button>
-        <button class="btn btn-sm btn-outline-secondary" title="关闭" @click="toggleExports()"><i class="bi bi-x-lg"></i></button>
+        <button class="btn btn-sm btn-outline-secondary" aria-label="刷新列表" title="刷新列表" @click="refreshExports()"><i class="bi bi-arrow-clockwise"></i></button>
+        <button class="btn btn-sm btn-outline-secondary" aria-label="关闭" title="关闭" @click="toggleExports()"><i class="bi bi-x-lg"></i></button>
       </div>
     </div>
 
@@ -61,7 +61,7 @@ function fmtTime(ms) {
           </div>
           <span class="text-secondary dl-size">{{ fmtBytes(s.size) }}</span>
           <div class="dl-actions">
-            <button class="btn btn-sm btn-outline-secondary" title="从本机记录中移除（不影响已下载文件）" @click="removeSyncExport(s.createdAt)">移除</button>
+            <button class="btn btn-sm btn-outline-secondary" aria-label="从本机记录中移除（不影响已下载文件）" title="从本机记录中移除（不影响已下载文件）" @click="removeSyncExport(s.createdAt)">移除</button>
           </div>
         </div>
       </template>
@@ -94,7 +94,7 @@ function fmtTime(ms) {
           <div class="dl-actions">
             <a v-if="r.status === 'done'" class="btn btn-sm btn-primary"
                :href="`/api/export/${encodeURIComponent(r.id)}/download`" :download="r.filename">下载</a>
-            <button class="btn btn-sm btn-outline-danger" title="删除此导出记录与文件" @click="deleteExport(r.id)">删除</button>
+            <button class="btn btn-sm btn-outline-danger" aria-label="删除此导出记录与文件" title="删除此导出记录与文件" @click="deleteExport(r.id)">删除</button>
           </div>
         </div>
       </template>

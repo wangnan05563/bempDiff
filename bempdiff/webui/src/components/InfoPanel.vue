@@ -101,7 +101,7 @@ function onGenerateReport(category) {
        :style="props.panelWidth != null && !state.aiPanelCollapsed ? { width: props.panelWidth + 'px' } : undefined">
     <div v-if="!state.aiPanelCollapsed" class="pane-head">
       <i class="bi bi-cpu" role="img" title="智能分析" aria-label="智能分析"></i> 智能分析
-      <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0" title="收起智能分析，扩大比对视野"
+      <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0" aria-label="收起智能分析，扩大比对视野" title="收起智能分析，扩大比对视野"
               @click="setAiPanelCollapsed(true)">
         <i class="bi bi-layout-sidebar-inset-reverse"></i>
       </button>

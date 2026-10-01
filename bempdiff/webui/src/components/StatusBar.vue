@@ -35,7 +35,7 @@ const versions = computed(() => {
     <!-- 导出进行中：从点击「导出差异资产」直至本地保存完成前，底部固定提示「导出中」（可取消，恢复按钮） -->
     <span v-if="state.exporting" class="text-primary fw-semibold" title="正在导出差异资产，请稍候">
       <i class="bi bi-arrow-repeat" style="animation:spinner-border .75s linear infinite"></i> 导出中
-      <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" @click="cancelExport()" title="取消导出">取消</button>
+      <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" @click="cancelExport()" aria-label="取消导出" title="取消导出">取消</button>
     </span>
     <!-- 比对超时提醒：RUNNING 超过阈值仍未结束 -->
     <span v-if="state.compareStalled" class="text-danger fw-semibold">
