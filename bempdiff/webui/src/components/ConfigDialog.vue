@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { state, saveConfig, testConnection, fetchModels, loadContextStatus, defaultConfig, toast } from '../store'
 import { api } from '../api/client'
 import { pickPath, isElectron, isTauri } from '../lib/tauri.js'
+import { t } from '../lib/i18n'
 
 // 断点续录：未保存就关闭配置中心时，把当前表单草稿暂存本地，下次打开恢复。
 // 仅暂存"尚未落盘"的修改，保存成功即清除——避免误以为已保存、也避免重装后读到过期草稿。
@@ -50,38 +51,38 @@ const emit = defineEmits(['close'])
 // 厂商预设：value=落到后端的 provider 代码（openai/ollama/qwen/...），label=展示名。
 // 与 java_core LlmPreset.builtinPresets() 保持一致（前端只发 code，不发明文厂商名）。
 const PRESETS = [
-  { key: 'openai',   label: 'OpenAI (GPT)',        baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', local: false },
-  { key: 'azure',    label: 'Azure OpenAI',        baseUrl: 'https://<resource>.openai.azure.com', model: 'gpt-4o', local: false },
-  { key: 'ollama',   label: 'Ollama（本地/私有化，推荐）', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', local: true },
-  { key: 'deepseek', label: 'DeepSeek',            baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', local: false },
-  { key: 'qwen',     label: '通义千问 (阿里云百炼)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', local: false },
-  { key: 'glm',      label: '智谱 GLM',            baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus', local: false },
-  { key: 'moonshot', label: 'Moonshot (Kimi)',     baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k', local: false },
-  { key: 'doubao',   label: '豆包 (火山方舟)',      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-4.0-241128', local: false },
-  { key: 'custom',   label: '自定义 OpenAI 兼容',   baseUrl: '', model: '', local: false }
+  { key: 'openai',   labelKey: 'cfg.preset.openai',        baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', local: false },
+  { key: 'azure',    labelKey: 'cfg.preset.azure',        baseUrl: 'https://<resource>.openai.azure.com', model: 'gpt-4o', local: false },
+  { key: 'ollama',   labelKey: 'cfg.preset.ollama', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', local: true },
+  { key: 'deepseek', labelKey: 'cfg.preset.deepseek',            baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', local: false },
+  { key: 'qwen',     labelKey: 'cfg.preset.qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', local: false },
+  { key: 'glm',      labelKey: 'cfg.preset.glm',            baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus', local: false },
+  { key: 'moonshot', labelKey: 'cfg.preset.moonshot',     baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k', local: false },
+  { key: 'doubao',   labelKey: 'cfg.preset.doubao',      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-pro-4.0-241128', local: false },
+  { key: 'custom',   labelKey: 'cfg.preset.custom',   baseUrl: '', model: '', local: false }
 ]
 
 // 比对级忽略的常用文件类型（多选）。value 存点号前缀的小写扩展名，与后端 CompareOptions.ignoreExtensions 对齐。
 // 运行时按需增删；勾选后对比会忽略这些类型的条目（日志、临时文件、锁文件、压缩包、图片等常见噪声）。
 const IGNORE_EXT_PRESETS = [
-  { value: '.log',        label: '日志 .log',        hint: '运行日志、控制台输出' },
-  { value: '.tmp',        label: '临时 .tmp',        hint: '临时文件' },
-  { value: '.swp',        label: '交换 .swp',        hint: 'vi/vim 交换文件' },
-  { value: '.bak',        label: '备份 .bak',        hint: '备份副本' },
-  { value: '.class',      label: '字节码 .class',    hint: '编译产物（忽略则只看源码不改）' },
-  { value: '.jar',        label: '归档 .jar',        hint: '第三方 Jar（忽略则跳过整个依赖包）' },
-  { value: '.zip',        label: '压缩 .zip',        hint: 'zip 归档' },
-  { value: '.war',        label: '压缩 .war',        hint: 'war 归档' },
-  { value: '.png',        label: '图片 .png',        hint: '位图资源' },
-  { value: '.jpg',        label: '图片 .jpg/.jpeg',  hint: '位图资源' },
-  { value: '.gif',        label: '图片 .gif',        hint: '动图资源' },
-  { value: '.svg',        label: '矢量 .svg',        hint: '矢量图资源' },
-  { value: '.ico',        label: '图标 .ico',        hint: '站点/应用图标' },
-  { value: '.db',         label: '数据库 .db',       hint: 'SQLite 等本地库文件' },
-  { value: '.lock',       label: '锁 .lock',         hint: '依赖锁/进程锁（忽略可避免伪造差异）' },
-  { value: '.map',        label: '源码映射 .map',    hint: '前端 sourcemap' },
-  { value: '.min.js',     label: '压缩JS .min.js',   hint: '前端压缩产物' },
-  { value: '.txt',        label: '纯文本 .txt',      hint: '说明/README（按需）' }
+  { value: '.log',        labelKey: 'cfg.ext.log',        hintKey: 'cfg.ext.log.hint' },
+  { value: '.tmp',        labelKey: 'cfg.ext.tmp',        hintKey: 'cfg.ext.tmp.hint' },
+  { value: '.swp',        labelKey: 'cfg.ext.swp',        hintKey: 'cfg.ext.swp.hint' },
+  { value: '.bak',        labelKey: 'cfg.ext.bak',        hintKey: 'cfg.ext.bak.hint' },
+  { value: '.class',      labelKey: 'cfg.ext.class',    hintKey: 'cfg.ext.class.hint' },
+  { value: '.jar',        labelKey: 'cfg.ext.jar',        hintKey: 'cfg.ext.jar.hint' },
+  { value: '.zip',        labelKey: 'cfg.ext.zip',        hintKey: 'cfg.ext.zip.hint' },
+  { value: '.war',        labelKey: 'cfg.ext.war',        hintKey: 'cfg.ext.war.hint' },
+  { value: '.png',        labelKey: 'cfg.ext.png',        hintKey: 'cfg.ext.png.hint' },
+  { value: '.jpg',        labelKey: 'cfg.ext.jpg',  hintKey: 'cfg.ext.png.hint' },
+  { value: '.gif',        labelKey: 'cfg.ext.gif',        hintKey: 'cfg.ext.gif.hint' },
+  { value: '.svg',        labelKey: 'cfg.ext.svg',        hintKey: 'cfg.ext.svg.hint' },
+  { value: '.ico',        labelKey: 'cfg.ext.ico',        hintKey: 'cfg.ext.ico.hint' },
+  { value: '.db',         labelKey: 'cfg.ext.db',       hintKey: 'cfg.ext.db.hint' },
+  { value: '.lock',       labelKey: 'cfg.ext.lock',         hintKey: 'cfg.ext.lock.hint' },
+  { value: '.map',        labelKey: 'cfg.ext.map',    hintKey: 'cfg.ext.map.hint' },
+  { value: '.min.js',     labelKey: 'cfg.ext.minjs',   hintKey: 'cfg.ext.minjs.hint' },
+  { value: '.txt',        labelKey: 'cfg.ext.txt',      hintKey: 'cfg.ext.txt.hint' }
 ]
 
 // 勾选响应：把「是否已勾选」的布尔映射转回扩展名数组（value 即点号扩展名，直接存储）。
@@ -190,8 +191,8 @@ function onProviderChange() {
 
 const canPick = computed(() => isElectron() || isTauri())
 const pickTitle = computed(() => canPick.value
-  ? '选择本地文件夹作为项目级上下文目录'
-  : '仅在桌面壳（Electron/Tauri）中可用，浏览器模式请手动输入服务器本机绝对路径')
+  ? t('cfg.pick.title')
+  : t('cfg.pick.browser'))
 
 async function pickContextDir() {
   const p = await pickPath({ directory: true })
@@ -249,12 +250,12 @@ async function onCleanupTemp() {
   try {
     const r = await api.cleanupTemp()
     const mb = (r.freedBytes / (1024 * 1024)).toFixed(2)
-    cleanupMsg.value = `已清理 ${r.files} 个文件 / ${r.dirs} 个目录，释放约 ${mb} MB`
-    toast('success', `临时文件清理完成，释放约 ${mb} MB`)
+    cleanupMsg.value = t('cfg.cleanup.done', { f: r.files, d: r.dirs, mb })
+    toast('success', t('cfg.cleanup.toast', { mb }))
   } catch (e) {
     const m = (e && e.message) || String(e)
-    cleanupMsg.value = '清理失败：' + m
-    toast('danger', '临时文件清理失败：' + m)
+    cleanupMsg.value = t('cfg.cleanup.fail', { msg: m })
+    toast('danger', t('cfg.cleanup.toastFail', { msg: m }))
   } finally {
     cleaning.value = false
   }
@@ -282,11 +283,11 @@ function onExportConfig() {
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 2000)
-    migrateMsg.value = '已导出配置 JSON，可在新环境「导入配置」恢复'
-    toast('success', '配置已导出')
+    migrateMsg.value = t('cfg.migrate.exported')
+    toast('success', t('cfg.migrate.exportToast'))
   } catch (e) {
-    migrateMsg.value = '导出失败：' + ((e && e.message) || e)
-    toast('danger', '导出配置失败')
+    migrateMsg.value = t('cfg.migrate.exportFail', { msg: (e && e.message) || e })
+    toast('danger', t('cfg.migrate.exportToastFail'))
   }
 }
 // 选择导入文件 → 校验结构 → 合并到 state.config 并持久化。
@@ -298,23 +299,23 @@ function pickImportFile(ev) {
     try {
       const obj = JSON.parse(String(reader.result || ''))
       if (!obj || obj.app !== 'bempdiff' || obj.kind !== 'config' || !obj.config || typeof obj.config !== 'object') {
-        throw new Error('不是合法的 BempDiff 配置导出文件')
+        throw new Error(t('cfg.migrate.invalidFile'))
       }
       const merged = Object.assign({}, state.config, obj.config)
       isImporting.value = true
       await saveConfig(merged)
       Object.assign(form, JSON.parse(JSON.stringify(merged)))
-      migrateMsg.value = '配置已导入并保存生效'
-      toast('success', '配置导入成功')
+      migrateMsg.value = t('cfg.migrate.imported')
+      toast('success', t('cfg.migrate.importToast'))
     } catch (e) {
-      migrateMsg.value = '导入失败：' + ((e && e.message) || e)
-      toast('danger', '配置导入失败：' + ((e && e.message) || e))
+      migrateMsg.value = t('cfg.migrate.importFail', { msg: (e && e.message) || e })
+      toast('danger', t('cfg.migrate.importToastFail', { msg: (e && e.message) || e }))
     } finally {
       isImporting.value = false
       if (importFile.value) importFile.value.value = ''
     }
   }
-  reader.onerror = () => { migrateMsg.value = '读取文件失败'; toast('danger', '读取导入文件失败') }
+  reader.onerror = () => { migrateMsg.value = t('cfg.migrate.readFail'); toast('danger', t('cfg.migrate.readToastFail')) }
   reader.readAsText(f)
 }
 </script>
@@ -324,199 +325,192 @@ function pickImportFile(ev) {
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content">
         <div class="modal-header py-2 px-4">
-          <h6 class="modal-title mb-0"><i class="bi bi-sliders"></i> 配置中心
-            <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">所有配置均在界面完成，无需改文件</small>
+          <h6 class="modal-title mb-0"><i class="bi bi-sliders"></i>{{ t('cfg.title') }}<small class="fw-normal text-secondary ms-2" style="font-size:.75rem">{{ t('cfg.subtitle') }}</small>
           </h6>
-          <button type="button"  class="btn-close" aria-label="关闭" @click="close"></button>
+          <button type="button"  class="btn-close" :aria-label="t('common.close')" @click="close"></button>
         </div>
 
         <div class="alert alert-warning d-flex gap-2 align-items-start mb-2 py-2" role="alert" style="font-size:.8rem">
           <i class="bi bi-shield-lock fs-6"></i>
-          <div>金融合规：默认优先使用本地/私有化模型；选择公网模型时仅发送脱敏后的 diff 摘要，原始源码不出机。默认不记住 API Key（落盘关闭）。</div>
+          <div>{{ t('cfg.compliance') }}</div>
         </div>
 
         <div class="modal-body">
           <ul class="nav nav-tabs mb-3">
-            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ai'}" @click="cfgTab='ai'">AI 服务</button></li>
-            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='parse'}" @click="cfgTab='parse'">解析与导出</button></li>
-            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='filter'}" @click="cfgTab='filter'">差异树过滤</button></li>
-            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ui'}" @click="cfgTab='ui'">界面与高级</button></li>
-            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='help'}" @click="cfgTab='help'">帮助文档</button></li>
-            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='about'}" @click="cfgTab='about'">关于</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ai'}" @click="cfgTab='ai'">{{ t('cfg.tab.ai') }}</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='parse'}" @click="cfgTab='parse'">{{ t('cfg.tab.parse') }}</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='filter'}" @click="cfgTab='filter'">{{ t('cfg.tab.filter') }}</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='ui'}" @click="cfgTab='ui'">{{ t('cfg.tab.ui') }}</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='help'}" @click="cfgTab='help'">{{ t('cfg.tab.help') }}</button></li>
+            <li class="nav-item"><button class="nav-link py-1" :class="{active: cfgTab==='about'}" @click="cfgTab='about'">{{ t('cfg.tab.about') }}</button></li>
           </ul>
 
           <!-- AI 服务 -->
           <div v-show="cfgTab==='ai'">
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="选择 LLM 服务厂商；切换时会自动填充默认 Base URL 与模型名称">模型厂商</label>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.provider.hint')">{{ t('cfg.provider') }}</label>
               <div class="col-sm-9">
-                <select class="form-select form-select-sm" v-model="form.aiProvider" @change="onProviderChange" aria-label="选择 LLM 服务厂商；切换时会自动填充默认 Base URL 与模型名称" title="选择 LLM 服务厂商；切换时会自动填充默认 Base URL 与模型名称">
-                  <option v-for="p in PRESETS" :key="p.key" :value="p.key">{{ p.label }}</option>
+                <select class="form-select form-select-sm" v-model="form.aiProvider" @change="onProviderChange" :aria-label="t('cfg.provider.hint')" :title="t('cfg.provider.hint')">
+                  <option v-for="p in PRESETS" :key="p.key" :value="p.key">{{ t(p.labelKey) }}</option>
                 </select>
-                <div class="form-text mb-0" style="font-size:.72rem" v-if="PRESETS.find(x=>x.key===form.aiProvider)?.local">
-                  本地模型：默认无需 API Key，且 blockPrivateEndpoints 应关闭以允许访问回环地址。
-                </div>
+                <div class="form-text mb-0" style="font-size:.72rem" v-if="PRESETS.find(x=>x.key===form.aiProvider)?.local">{{ t('cfg.localModelHint') }}</div>
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="OpenAI 兼容格式的聊天补全接口地址，例如 https://api.openai.com/v1">Base URL</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.aiBaseUrl" aria-label="OpenAI 兼容格式的聊天补全接口地址，例如 https://api.openai.com/v1" title="OpenAI 兼容格式的聊天补全接口地址，例如 https://api.openai.com/v1"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.baseUrl.hint')">Base URL</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.aiBaseUrl" :aria-label="t('cfg.baseUrl.hint')" :title="t('cfg.baseUrl.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="模型服务提供的访问密钥；本地/私有化模型通常可留空">API Key</label>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.apiKey.hint')">API Key</label>
               <div class="col-sm-9 input-group input-group-sm">
-                <input class="form-control" :type="showKey ? 'text' : 'password'" v-model="form.aiApiKey" placeholder="本地模型可留空" aria-label="模型服务提供的访问密钥；本地/私有化模型通常可留空" title="模型服务提供的访问密钥；本地/私有化模型通常可留空">
-                <button class="btn btn-outline-secondary" type="button" @click="showKey = !showKey" aria-label="显示/隐藏 API Key" title="显示/隐藏 API Key">
+                <input class="form-control" :type="showKey ? 'text' : 'password'" v-model="form.aiApiKey" :placeholder="t('cfg.apiKey.placeholder')" :aria-label="t('cfg.apiKey.hint')" :title="t('cfg.apiKey.hint')">
+                <button class="btn btn-outline-secondary" type="button" @click="showKey = !showKey" :aria-label="t('cfg.showKey')" :title="t('cfg.showKey')">
                   <i class="bi" :class="showKey ? 'bi-eye-slash' : 'bi-eye'"></i>
                 </button>
-                <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" aria-label="用当前配置测试与模型服务的连通性" title="用当前配置测试与模型服务的连通性">
-                  <i class="bi bi-plug"></i> {{ testing ? '测试中…' : '连接测试' }}
+                <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" :aria-label="t('cfg.test.hint')" :title="t('cfg.test.hint')">
+                  <i class="bi bi-plug"></i> {{ testing ? t('cfg.testing') : t('cfg.test') }}
                 </button>
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus；可点「获取模型列表」自动拉取">模型名称</label>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.model.hint')">{{ t('cfg.model') }}</label>
               <div class="col-sm-9">
                 <div class="input-group input-group-sm">
-                  <input class="form-control" list="aiModelList" v-model="form.aiModel" placeholder="可输入或点右侧按钮拉取" aria-label="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus；可点「获取模型列表」自动拉取" title="实际请求的模型 ID，例如 gpt-4o、deepseek-v4-flash、qwen-plus；可点「获取模型列表」自动拉取">
+                  <input class="form-control" list="aiModelList" v-model="form.aiModel" :placeholder="t('cfg.model.placeholder')" :aria-label="t('cfg.model.hint')" :title="t('cfg.model.hint')">
                   <datalist id="aiModelList">
                     <option v-for="m in state.aiModels" :key="m" :value="m"></option>
                   </datalist>
-                  <button class="btn btn-outline-secondary" type="button" :disabled="fetchingModels" @click="onFetchModels" aria-label="按当前 API Base URL + Key 自动获取可用模型列表" title="按当前 API Base URL + Key 自动获取可用模型列表">
-                    <i class="bi" :class="fetchingModels ? 'bi-arrow-repeat' : 'bi-list-ul'"></i> {{ fetchingModels ? '获取中…' : '获取模型列表' }}
+                  <button class="btn btn-outline-secondary" type="button" :disabled="fetchingModels" @click="onFetchModels" :aria-label="t('cfg.fetchModels.hint')" :title="t('cfg.fetchModels.hint')">
+                    <i class="bi" :class="fetchingModels ? 'bi-arrow-repeat' : 'bi-list-ul'"></i> {{ fetchingModels ? t('cfg.fetching') : t('cfg.fetchModels') }}
                   </button>
                 </div>
-                <div class="form-text mb-0" style="font-size:.72rem" v-if="state.aiModels.length">已拉取 {{ state.aiModels.length }} 个可用模型，可在输入框中下拉选择。</div>
+                <div class="form-text mb-0" style="font-size:.72rem" v-if="state.aiModels.length">{{ t('cfg.modelsFetched', { n: state.aiModels.length }) }}</div>
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="访问公网模型时经过的 HTTP 代理，格式如 http://proxy.example.com:8080">HTTP 代理</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.httpProxy" placeholder="企业网访问公网模型时使用" aria-label="访问公网模型时经过的 HTTP 代理，格式如 http://proxy.example.com:8080" title="访问公网模型时经过的 HTTP 代理，格式如 http://proxy.example.com:8080"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.httpProxy.hint')">{{ t('cfg.httpProxy') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.httpProxy" :placeholder="t('cfg.httpProxy.placeholder')" :aria-label="t('cfg.httpProxy.hint')" :title="t('cfg.httpProxy.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="访问公网模型时经过的 HTTPS 代理；留空则复用 HTTP 代理">HTTPS 代理</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.httpsProxy" placeholder="可选" aria-label="访问公网模型时经过的 HTTPS 代理；留空则复用 HTTP 代理" title="访问公网模型时经过的 HTTPS 代理；留空则复用 HTTP 代理"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.httpsProxy.hint')">{{ t('cfg.httpsProxy') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.httpsProxy" :placeholder="t('common.optional')" :aria-label="t('cfg.httpsProxy.hint')" :title="t('cfg.httpsProxy.hint')"></div>
             </div>
             <div class="form-check form-check-inline">
-              <input class="form-check-input" type="checkbox" id="cfgBlock" v-model="form.blockPrivateEndpoints" aria-label="勾选后禁止访问 127.0.0.1、10.x.x.x 等私网地址，防止服务端请求伪造" title="勾选后禁止访问 127.0.0.1、10.x.x.x 等私网地址，防止服务端请求伪造">
-              <label class="form-check-label" for="cfgBlock" title="勾选后禁止访问 127.0.0.1、10.x.x.x 等私网地址，防止服务端请求伪造">严格 SSRF：拒绝回环/私网地址</label>
+              <input class="form-check-input" type="checkbox" id="cfgBlock" v-model="form.blockPrivateEndpoints" :aria-label="t('cfg.ssrf.hint')" :title="t('cfg.ssrf.hint')">
+              <label class="form-check-label" for="cfgBlock" :title="t('cfg.ssrf.hint')">{{ t('cfg.ssrf') }}</label>
             </div>
             <div class="form-check form-check-inline">
-              <input class="form-check-input" type="checkbox" id="cfgAiEnabled" v-model="form.aiEnabled" aria-label="开启后比对完成可自动生成 AI 风险/影响评估报告" title="开启后比对完成可自动生成 AI 风险/影响评估报告">
-              <label class="form-check-label" for="cfgAiEnabled" title="开启后比对完成可自动生成 AI 风险/影响评估报告">启用 AI 分析</label>
+              <input class="form-check-input" type="checkbox" id="cfgAiEnabled" v-model="form.aiEnabled" :aria-label="t('cfg.aiEnabled.hint')" :title="t('cfg.aiEnabled.hint')">
+              <label class="form-check-label" for="cfgAiEnabled" :title="t('cfg.aiEnabled.hint')">{{ t('cfg.aiEnabled') }}</label>
             </div>
           </div>
 
           <!-- 解析与导出 -->
           <div v-show="cfgTab==='parse'">
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="命中此前缀的类会被标记为内部业务类，并在差异树中按业务码展开">内部包前缀</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.internalPrefixes" placeholder="命中则按 L1 业务码展开 class" aria-label="命中此前缀的类会被标记为内部业务类，并在差异树中按业务码展开" title="命中此前缀的类会被标记为内部业务类，并在差异树中按业务码展开"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.internalPrefixes.hint')">{{ t('cfg.internalPrefixes') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.internalPrefixes" :placeholder="t('cfg.internalPrefixes.placeholder')" :aria-label="t('cfg.internalPrefixes.hint')" :title="t('cfg.internalPrefixes.hint')"></div>
             </div>
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgExpand" v-model="form.expandAll" aria-label="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类" title="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类">
-              <label class="form-check-label" for="cfgExpand" title="强制展开所有 class（包括第三方依赖），否则只展开内部前缀命中的类">展开全部（含三方 class）</label>
+              <input class="form-check-input" type="checkbox" id="cfgExpand" v-model="form.expandAll" :aria-label="t('cfg.expandAll.hint')" :title="t('cfg.expandAll.hint')">
+              <label class="form-check-label" for="cfgExpand" :title="t('cfg.expandAll.hint')">{{ t('cfg.expandAll') }}</label>
             </div>
             <!-- 自动逐层解包：WAR/ZIP/JAR 嵌套归档多线程物理解包，比对完成后自动展开；AI/导出/统计覆盖嵌套子文件 -->
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="开启后比对时后端多线程逐层解包所有嵌套归档，嵌套包内部文件进入差异/AI/导出，且树中自动展开；解包完成后才允许 AI 分析与导出资产">
-                自动逐层解包
-              </label>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.unpack.hint')">{{ t('cfg.unpack') }}</label>
               <div class="col-sm-9">
                 <div class="form-check form-check-inline mb-0">
-                  <input class="form-check-input" type="checkbox" id="cfgUnpack" v-model="form.unpackNested" aria-label="开启后嵌套包（zip/war/jar 等）比对完成即自动逐层解包，无需手动点击展开；解包中禁用 AI 与分析。默认开启" title="开启后嵌套包（zip/war/jar 等）比对完成即自动逐层解包，无需手动点击展开；解包中禁用 AI 与分析。默认开启">
-                  <label class="form-check-label" for="cfgUnpack" title="开启后嵌套包（zip/war/jar 等）比对完成即自动逐层解包，无需手动点击展开；解包中禁用 AI 与分析">开启（默认）</label>
+                  <input class="form-check-input" type="checkbox" id="cfgUnpack" v-model="form.unpackNested" :aria-label="t('cfg.unpack.hint2')" :title="t('cfg.unpack.hint2')">
+                  <label class="form-check-label" for="cfgUnpack" :title="t('cfg.unpack.hint3')">{{ t('cfg.unpack.on') }}</label>
                 </div>
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="自动逐层解包的并发线程数，越大解包越快但更占内存">解包线程数</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" max="16" v-model.number="form.unpackThreads" aria-label="自动逐层解包的并发线程数，越大解包越快但更占内存" title="自动逐层解包的并发线程数，越大解包越快但更占内存"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.unpackThreads.hint')">{{ t('cfg.unpackThreads') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" max="16" v-model.number="form.unpackThreads" :aria-label="t('cfg.unpackThreads.hint')" :title="t('cfg.unpackThreads.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="自动逐层解包的最大递归深度；超深嵌套会在此深度截断并保留为可手动展开的归档节点">最大解包深度</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" max="12" v-model.number="form.unpackMaxDepth" aria-label="自动逐层解包的最大递归深度；超深嵌套会在此深度截断并保留为可手动展开的归档节点" title="自动逐层解包的最大递归深度；超深嵌套会在此深度截断并保留为可手动展开的归档节点"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.unpackMaxDepth.hint')">{{ t('cfg.unpackMaxDepth') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" max="12" v-model.number="form.unpackMaxDepth" :aria-label="t('cfg.unpackMaxDepth.hint')" :title="t('cfg.unpackMaxDepth.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="差异树概览层默认展开的 TOP 节点数">Top-K（概览展开）</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.topK" aria-label="差异树概览层默认展开的 TOP 节点数" title="差异树概览层默认展开的 TOP 节点数"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.topK.hint')">{{ t('cfg.topK') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.topK" :aria-label="t('cfg.topK.hint')" :title="t('cfg.topK.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高">StageB Top-K</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.stageBTopK" aria-label="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高" title="AI 二阶段评估时送入的变更摘要条数上限，数值越大分析越全但 token 越高"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.stageBTopK.hint')">{{ t('cfg.stageBTopK') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.stageBTopK" :aria-label="t('cfg.stageBTopK.hint')" :title="t('cfg.stageBTopK.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="阶段A 全局概览最多纳入的变更文件数；数值越大概览越全、prompt 越大">StageA Top-K（概览文件数）</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" v-model.number="form.stageATopK" aria-label="阶段A 全局概览最多纳入的变更文件数；数值越大概览越全、prompt 越大" title="阶段A 全局概览最多纳入的变更文件数；数值越大概览越全、prompt 越大"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.stageATopK.hint')">{{ t('cfg.stageATopK') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" v-model.number="form.stageATopK" :aria-label="t('cfg.stageATopK.hint')" :title="t('cfg.stageATopK.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="阶段A 每个文件的 diff 摘要最多保留的行数（超长单行另受字符上限保护）">StageA 单文件摘要行数</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" v-model.number="form.stageAFileSampleLines" aria-label="阶段A 每个文件的 diff 摘要最多保留的行数（超长单行另受字符上限保护）" title="阶段A 每个文件的 diff 摘要最多保留的行数（超长单行另受字符上限保护）"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.stageALines.hint')">{{ t('cfg.stageALines') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1" v-model.number="form.stageAFileSampleLines" :aria-label="t('cfg.stageALines.hint')" :title="t('cfg.stageALines.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）">单次请求最大输入 Token</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1000" v-model.number="form.maxPromptTokens" aria-label="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）" title="单次 AI 请求最大输入 token 护栏：发送前预估超限即取消请求（避免模型拒收的 HTTP 400）。按所用模型上下文窗口设置（128K 窗口建议 120000）"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.maxPromptTokens.hint')">{{ t('cfg.maxPromptTokens') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="1000" v-model.number="form.maxPromptTokens" :aria-label="t('cfg.maxPromptTokens.hint')" :title="t('cfg.maxPromptTokens.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="单次 AI 请求最大输出 token（请求体 max_tokens）：过小会导致长报告/测试要点被服务端硬切、尾部丢失；0 表示不限制（交服务端默认）。默认 8192，测试要点不完整时可调大">单次请求最大输出 Token</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="0" v-model.number="form.maxOutputTokens" aria-label="单次 AI 请求最大输出 token（请求体 max_tokens）：过小会导致长报告/测试要点被服务端硬切、尾部丢失；0 表示不限制（交服务端默认）。默认 8192，测试要点不完整时可调大" title="单次 AI 请求最大输出 token（请求体 max_tokens）：过小会导致长报告/测试要点被服务端硬切、尾部丢失；0 表示不限制（交服务端默认）。默认 8192，测试要点不完整时可调大"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.maxOutputTokens.hint')">{{ t('cfg.maxOutputTokens') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" min="0" v-model.number="form.maxOutputTokens" :aria-label="t('cfg.maxOutputTokens.hint')" :title="t('cfg.maxOutputTokens.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单">成本闸门告警 token</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.costGateWarnTokens" aria-label="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单" title="预计消耗 token 数超过此值时给出二次确认，防止意外高额账单"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.costGate.hint')">{{ t('cfg.costGate') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" type="number" v-model.number="form.costGateWarnTokens" :aria-label="t('cfg.costGate.hint')" :title="t('cfg.costGate.hint')"></div>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="指定外部 CFR 反编译 jar 的绝对路径；留空使用内置 CFR">自定义 CFR jar</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.cfrJar" placeholder="留空则使用内置 CFR" aria-label="指定外部 CFR 反编译 jar 的绝对路径；留空使用内置 CFR" title="指定外部 CFR 反编译 jar 的绝对路径；留空使用内置 CFR"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.cfrJar.hint')">{{ t('cfg.cfrJar') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.cfrJar" :placeholder="t('cfg.cfrJar.placeholder')" :aria-label="t('cfg.cfrJar.hint')" :title="t('cfg.cfrJar.hint')"></div>
             </div>
-            <div class="mb-1 mt-2" style="font-size:.78rem;color:var(--bs-secondary-color)">忽略不重要差异（审计降噪，对标 Beyond Compare）：</div>
+            <div class="mb-1 mt-2" style="font-size:.78rem;color:var(--bs-secondary-color)">{{ t('cfg.ignoreSection') }}</div>
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgIgWs" v-model="form.ignoreWhitespace" aria-label="忽略所有空白差异（含缩进/行尾空白），降低纯格式噪声" title="忽略所有空白差异（含缩进/行尾空白），降低纯格式噪声">
-              <label class="form-check-label" for="cfgIgWs" title="忽略所有空白差异（含缩进/行尾空白），降低纯格式噪声">忽略空白</label>
+              <input class="form-check-input" type="checkbox" id="cfgIgWs" v-model="form.ignoreWhitespace" :aria-label="t('cfg.ignoreWs.hint')" :title="t('cfg.ignoreWs.hint')">
+              <label class="form-check-label" for="cfgIgWs" :title="t('cfg.ignoreWs.hint')">{{ t('cfg.ignoreWs') }}</label>
             </div>
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgIgCmt" v-model="form.ignoreComments" title="剥离整行注释（// # /* */ <!-- --> 及 javadoc 续行），仅用于行匹配，不改显示内容">
-              <label class="form-check-label" for="cfgIgCmt" title="剥离整行注释（// # /* */ <!-- --> 及 javadoc 续行），仅用于行匹配，不改显示内容">忽略整行注释</label>
+              <input class="form-check-input" type="checkbox" id="cfgIgCmt" v-model="form.ignoreComments" :title="t('cfg.ignoreCmt.hint')">
+              <label class="form-check-label" for="cfgIgCmt" :title="t('cfg.ignoreCmt.hint')">{{ t('cfg.ignoreCmt') }}</label>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略，不会使比对崩溃）">忽略正则</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.ignoreRegex" placeholder="如 \d{4}-\d{2}-\d{2}|@Generated 等" aria-label="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略）" title="自定义正则，命中的子串从行匹配中移除（高级项；正则非法时自动忽略）"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.ignoreRegex.hint')">{{ t('cfg.ignoreRegex') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.ignoreRegex" :placeholder="t('cfg.ignoreRegex.placeholder')" :aria-label="t('cfg.ignoreRegex.hintShort')" :title="t('cfg.ignoreRegex.hintShort')"></div>
             </div>
 
             <!-- 比对过滤：多选忽略常见文件类型。勾选后对比会在解析收集阶段跳过这些类型的条目（不进差异树、不参与统计）。 -->
-            <div class="mb-1 mt-2" style="font-size:.78rem;color:var(--bs-secondary-color)">比对过滤（忽略下面勾选的文件类型）：</div>
+            <div class="mb-1 mt-2" style="font-size:.78rem;color:var(--bs-secondary-color)">{{ t('cfg.filterSection') }}</div>
             <div class="d-flex flex-wrap gap-2 mb-2">
-              <div v-for="ie in IGNORE_EXT_PRESETS" :key="ie.value" class="form-check form-check-inline mb-1" :title="ie.hint">
+              <div v-for="ie in IGNORE_EXT_PRESETS" :key="ie.value" class="form-check form-check-inline mb-1" :title="t(ie.hintKey)">
                 <input class="form-check-input" type="checkbox" :id="'iex' + ie.value.replace(/[^a-zA-Z0-9]/g, '')"
                        :checked="Array.isArray(form.ignoreExtensions) && form.ignoreExtensions.includes(ie.value)"
                        @change="midToggle($event, ie.value)"
-                       :title="ie.hint">
-                <label class="form-check-label" :for="'iex' + ie.value.replace(/[^a-zA-Z0-9]/g, '')" :title="ie.hint">{{ ie.label }}</label>
+                       :title="t(ie.hintKey)">
+                <label class="form-check-label" :for="'iex' + ie.value.replace(/[^a-zA-Z0-9]/g, '')" :title="t(ie.hintKey)">{{ t(ie.labelKey) }}</label>
               </div>
             </div>
-            <div v-if="!Array.isArray(form.ignoreExtensions) || !form.ignoreExtensions.includes('.min.js')" class="form-text" style="font-size:.72rem">
-              提示：勾选「字节码 .class」「归档 .jar」等会跳过该类全部差异；默认仅忽略日志/临时/图片等非代码噪声，可随时再次勾选去掉。
-            </div>
+            <div v-if="!Array.isArray(form.ignoreExtensions) || !form.ignoreExtensions.includes('.min.js')" class="form-text" style="font-size:.72rem">{{ t('cfg.ignoreTip') }}</div>
 
             <!-- 自定义后缀：除预置勾选项外，可添加任意文件后缀（如 .MF、.properties），
                  保存时与预置项一并提交给后端解析阶段过滤。 -->
             <div class="row g-2 align-items-center mt-1 mb-1">
-              <label class="col-sm-3 col-form-label col-form-label-sm text-nowrap" title="添加任意自定义文件后缀；支持带/不带点、逗号或空格分隔多个，如 .MF、.properties">自定义后缀</label>
+              <label class="col-sm-3 col-form-label col-form-label-sm text-nowrap" :title="t('cfg.customExt.hint')">{{ t('cfg.customExt') }}</label>
               <div class="col-sm-9">
                 <div class="input-group input-group-sm">
-                  <input class="form-control" v-model="customExt" placeholder="如 .MF、.properties（可多个，逗号分隔）" @keydown.enter.prevent="addCustomExt"
-                         aria-label="添加任意自定义文件后缀；支持带/不带点、逗号或空格分隔多个" title="添加任意自定义文件后缀；支持带/不带点、逗号或空格分隔多个">
-                  <button class="btn btn-outline-secondary" type="button" @click="addCustomExt" aria-label="把输入的后缀加入忽略列表" title="把输入的后缀加入忽略列表">添加</button>
+                  <input class="form-control" v-model="customExt" :placeholder="t('cfg.customExt.placeholder')" @keydown.enter.prevent="addCustomExt"
+                         :aria-label="t('cfg.customExt.hintShort')" :title="t('cfg.customExt.hintShort')">
+                  <button class="btn btn-outline-secondary" type="button" @click="addCustomExt" :aria-label="t('cfg.customExt.add')" :title="t('cfg.customExt.add')">{{ t('common.add') }}</button>
                 </div>
                 <div v-if="Array.isArray(form.ignoreExtensions) && form.ignoreExtensions.length" class="mt-1 d-flex flex-wrap gap-1">
                   <span v-for="ie in form.ignoreExtensions" :key="ie"
                         class="badge rounded-pill text-bg-secondary cursor-pointer d-inline-flex align-items-center gap-1"
                         style="font-size:.7rem" role="button" @click="removeCustomExt(ie)"
-                        :title="'点击移除，忽略 ' + ie + ' 类型'">
+                        :title="t('cfg.removeExtTip', { ext: ie })">
                     {{ ie }} <i class="bi bi-x-lg" style="font-size:.6rem"></i>
                   </span>
                 </div>
-                <div class="form-text mb-0" style="font-size:.72rem">当前已忽略 {{ Array.isArray(form.ignoreExtensions) ? form.ignoreExtensions.length : 0 }} 项，点徽章可移除。</div>
+                <div class="form-text mb-0" style="font-size:.72rem">{{ t('cfg.ignoredCount', { n: Array.isArray(form.ignoreExtensions) ? form.ignoreExtensions.length : 0 }) }}</div>
               </div>
             </div>
           </div>
@@ -524,42 +518,42 @@ function pickImportFile(ev) {
           <!-- 差异树过滤 -->
           <div v-show="cfgTab==='filter'">
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="按路径或类名过滤差异树节点">搜索关键字</label>
-              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.filterSearch" placeholder="按路径/类名过滤差异树" aria-label="按路径或类名过滤差异树节点" title="按路径或类名过滤差异树节点"></div>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.searchKey.hint')">{{ t('cfg.searchKey') }}</label>
+              <div class="col-sm-9"><input class="form-control form-control-sm" v-model="form.filterSearch" :placeholder="t('cfg.searchKey.placeholder')" :aria-label="t('cfg.searchKey.hint')" :title="t('cfg.searchKey.hint')"></div>
             </div>
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgRegex" v-model="form.filterRegex" aria-label="开启后搜索关键字按正则表达式匹配" title="开启后搜索关键字按正则表达式匹配">
-              <label class="form-check-label" for="cfgRegex" title="开启后搜索关键字按正则表达式匹配">正则匹配</label>
+              <input class="form-check-input" type="checkbox" id="cfgRegex" v-model="form.filterRegex" :aria-label="t('cfg.regex.hint')" :title="t('cfg.regex.hint')">
+              <label class="form-check-label" for="cfgRegex" :title="t('cfg.regex.hint')">{{ t('cfg.regex') }}</label>
             </div>
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgAutoAi" v-model="form.autoAiOnCompare" aria-label="勾选后每次比对完成自动调用 AI 生成风险/影响评估报告" title="勾选后每次比对完成自动调用 AI 生成风险/影响评估报告">
-              <label class="form-check-label" for="cfgAutoAi" title="勾选后每次比对完成自动调用 AI 生成风险/影响评估报告">比对后自动生成 AI 报告</label>
+              <input class="form-check-input" type="checkbox" id="cfgAutoAi" v-model="form.autoAiOnCompare" :aria-label="t('cfg.autoAi.hint')" :title="t('cfg.autoAi.hint')">
+              <label class="form-check-label" for="cfgAutoAi" :title="t('cfg.autoAi.hint')">{{ t('cfg.autoAi') }}</label>
             </div>
-            <div class="mb-1" style="font-size:.78rem;color:var(--bs-secondary-color)">差异树显示项：</div>
+            <div class="mb-1" style="font-size:.78rem;color:var(--bs-secondary-color)">{{ t('cfg.showSection') }}</div>
             <div class="d-flex flex-wrap gap-3">
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsM" v-model="form.filterShowModified" aria-label="在差异树中显示被修改的节点" title="在差异树中显示被修改的节点"><label class="form-check-label" for="fsM" title="在差异树中显示被修改的节点">修改</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsA" v-model="form.filterShowAdded" aria-label="在差异树中显示新增的节点" title="在差异树中显示新增的节点"><label class="form-check-label" for="fsA" title="在差异树中显示新增的节点">新增</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsD" v-model="form.filterShowDeleted" aria-label="在差异树中显示删除的节点" title="在差异树中显示删除的节点"><label class="form-check-label" for="fsD" title="在差异树中显示删除的节点">删除</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsU" v-model="form.filterShowUnchanged" aria-label="在差异树中显示未变更的节点；关闭可显著缩短差异树长度" title="在差异树中显示未变更的节点；关闭可显著缩短差异树长度"><label class="form-check-label" for="fsU" title="在差异树中显示未变更的节点；关闭可显著缩短差异树长度">未变</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsM" v-model="form.filterShowModified" :aria-label="t('cfg.showModified.hint')" :title="t('cfg.showModified.hint')"><label class="form-check-label" for="fsM" :title="t('cfg.showModified.hint')">{{ t('cfg.show.modified') }}</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsA" v-model="form.filterShowAdded" :aria-label="t('cfg.showAdded.hint')" :title="t('cfg.showAdded.hint')"><label class="form-check-label" for="fsA" :title="t('cfg.showAdded.hint')">{{ t('cfg.show.added') }}</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsD" v-model="form.filterShowDeleted" :aria-label="t('cfg.showDeleted.hint')" :title="t('cfg.showDeleted.hint')"><label class="form-check-label" for="fsD" :title="t('cfg.showDeleted.hint')">{{ t('cfg.show.deleted') }}</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="fsU" v-model="form.filterShowUnchanged" :aria-label="t('cfg.showUnchanged.hint')" :title="t('cfg.showUnchanged.hint')"><label class="form-check-label" for="fsU" :title="t('cfg.showUnchanged.hint')">{{ t('cfg.show.unchanged') }}</label></div>
             </div>
-            <div class="form-text" style="font-size:.72rem">关闭「未变」可显著缩短差异树长度；以上偏好仅影响前端展示。</div>
+            <div class="form-text" style="font-size:.72rem">{{ t('cfg.showTip') }}</div>
           </div>
 
           <!-- 界面与高级 -->
           <div v-show="cfgTab==='ui'">
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgPersist" v-model="form.persistApiKey" aria-label="开启后 API Key 将写入本地配置文件；默认关闭以保证密钥不落盘" title="开启后 API Key 将写入本地配置文件；默认关闭以保证密钥不落盘">
-              <label class="form-check-label" for="cfgPersist" title="开启后 API Key 将写入本地配置文件；默认关闭以保证密钥不落盘">记住 API Key（落盘，默认关闭）</label>
+              <input class="form-check-input" type="checkbox" id="cfgPersist" v-model="form.persistApiKey" :aria-label="t('cfg.persist.hint')" :title="t('cfg.persist.hint')">
+              <label class="form-check-label" for="cfgPersist" :title="t('cfg.persist.hint')">{{ t('cfg.persist') }}</label>
             </div>
             <div class="form-check form-check-inline mb-2">
-              <input class="form-check-input" type="checkbox" id="cfgPc" v-model="form.projectContextEnabled" aria-label="开启后比对时会额外加载该目录下的项目源码/文档作为 AI 分析的上下文" title="开启后比对时会额外加载该目录下的项目源码/文档作为 AI 分析的上下文">
-              <label class="form-check-label" for="cfgPc" title="开启后比对时会额外加载该目录下的项目源码/文档作为 AI 分析的上下文">启用项目级上下文增强</label>
+              <input class="form-check-input" type="checkbox" id="cfgPc" v-model="form.projectContextEnabled" :aria-label="t('cfg.ctx.hint')" :title="t('cfg.ctx.hint')">
+              <label class="form-check-label" for="cfgPc" :title="t('cfg.ctx.hint')">{{ t('cfg.ctx') }}</label>
             </div>
             <div class="row g-2 align-items-center mb-2">
-              <label class="col-sm-3 col-form-label col-form-label-sm" title="项目源码/文档目录，用于为 AI 分析提供背景上下文">上下文目录</label>
+              <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.ctxDir.hint')">上下文目录</label>
               <div class="col-sm-9">
                 <div class="input-group input-group-sm">
-                  <input class="form-control" v-model="form.projectContextDir" placeholder="项目源码/文档目录" aria-label="项目源码/文档目录，用于为 AI 分析提供背景上下文" title="项目源码/文档目录，用于为 AI 分析提供背景上下文">
+                  <input class="form-control" v-model="form.projectContextDir" :placeholder="t('cfg.ctxDir.placeholder')" :aria-label="t('cfg.ctxDir.hint')" :title="t('cfg.ctxDir.hint')">
                   <button class="btn btn-outline-secondary" type="button" @click="pickContextDir" :disabled="!canPick" :aria-label="pickTitle" :title="pickTitle">
                     <i class="bi bi-folder2-open"></i>
                   </button>
@@ -571,56 +565,51 @@ function pickImportFile(ev) {
               <div class="d-flex align-items-center gap-2 flex-wrap">
                 <template v-if="ctxLoading">
                   <span class="spinner-border spinner-border-sm text-primary" role="status"></span>
-                  <span class="text-secondary">正在递归识别项目，首次扫描约需数秒…</span>
+                  <span class="text-secondary">{{ t('cfg.ctx.scanning') }}</span>
                 </template>
                 <template v-else-if="ctxError">
                   <i class="bi bi-exclamation-triangle-fill text-danger"></i>
-                  <span class="text-danger">上下文加载失败：{{ ctxError }}</span>
+                  <span class="text-danger">{{ t('cfg.ctx.failed', { err: ctxError }) }}</span>
                 </template>
                 <template v-else-if="ctxData && ctxData.ok">
                   <i class="bi bi-check-circle-fill text-success"></i>
-                  <span class="fw-semibold text-success">上下文已加载</span>
+                  <span class="fw-semibold text-success">{{ t('cfg.ctx.loaded') }}</span>
                   <span class="text-secondary">
-                    · {{ ctxData.projectCount }} 个项目 · {{ ctxData.javaFileCount ?? 0 }} 个 Java 文件
-                    <span v-if="ctxData.fromCache" class="text-secondary"><i class="bi bi-database"></i> 缓存命中</span>
-                    <span v-else class="text-secondary"><i class="bi bi-arrow-repeat"></i> 已重新扫描</span>
-                    · 更新于 {{ fmtTime(ctxData.scannedAt) }}
+                    {{ t('cfg.ctx.stats', { p: ctxData.projectCount, j: ctxData.javaFileCount ?? 0 }) }}
+                    <span v-if="ctxData.fromCache" class="text-secondary"><i class="bi bi-database"></i>{{ t('cfg.ctx.cached') }}</span>
+                    <span v-else class="text-secondary"><i class="bi bi-arrow-repeat"></i>{{ t('cfg.ctx.rescanned') }}</span>
+                    {{ t('cfg.ctx.updatedAt', { time: fmtTime(ctxData.scannedAt) }) }}
                   </span>
                 </template>
                 <template v-else>
                   <i class="bi bi-dash-circle text-secondary"></i>
-                  <span class="text-secondary">尚未加载（保存配置后自动扫描）</span>
+                  <span class="text-secondary">{{ t('cfg.ctx.notLoaded') }}</span>
                 </template>
-                <button class="btn btn-outline-primary btn-sm ms-auto" type="button" :disabled="ctxLoading" @click="onRefreshContext" aria-label="强制重新递归扫描上下文目录（忽略缓存）" title="强制重新递归扫描上下文目录（忽略缓存）">
-                  <i class="bi bi-arrow-clockwise"></i> 重新扫描
-                </button>
+                <button class="btn btn-outline-primary btn-sm ms-auto" type="button" :disabled="ctxLoading" @click="onRefreshContext" :aria-label="t('cfg.ctx.refresh.hint')" :title="t('cfg.ctx.refresh.hint')">
+                  <i class="bi bi-arrow-clockwise"></i>{{ t('cfg.ctx.refresh') }}</button>
               </div>
               <div v-if="ctxData && ctxData.projects && ctxData.projects.length" class="mt-2">
-                <div class="text-secondary mb-1"><i class="bi bi-diagram-3"></i> 识别到的项目（点击展开）</div>
+                <div class="text-secondary mb-1"><i class="bi bi-diagram-3"></i>{{ t('cfg.ctx.projects') }}</div>
                 <ul class="list-unstyled mb-0 ps-2 context-project-list" style="max-height:150px;overflow:auto">
                   <li v-for="p in ctxData.projects" :key="p.relPath" class="d-flex gap-2 align-items-baseline text-nowrap" style="font-size:.74rem">
                     <code class="text-body">{{ p.relPath }}</code>
-                    <span class="text-secondary">· {{ p.buildSystem }} · {{ p.moduleCount }} 模块 · {{ p.depCount }} 依赖 · {{ p.fileCount }} 文件</span>
+                    <span class="text-secondary">{{ t('cfg.ctx.projectLine', { bs: p.buildSystem, m: p.moduleCount, d: p.depCount, f: p.fileCount }) }}</span>
                   </li>
                 </ul>
-                <div class="form-text mt-1" style="font-size:.68rem">
-                  该目录下的项目已作为 AI 分析的背景上下文注入；关闭「启用项目级上下文增强」可停用。
-                </div>
+                <div class="form-text mt-1" style="font-size:.68rem">{{ t('cfg.ctx.note') }}</div>
               </div>
             </div>
             <!-- 配置迁移：导出/导入整套配置，用于重装、换机/换服务器时整体迁移 -->
             <div class="card card-body py-2 mb-2 migrate-card" style="font-size:.76rem">
               <div class="d-flex align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold text-nowrap"><i class="bi bi-arrow-left-right"></i> 配置迁移</span>
-                <span class="text-secondary">导出当前整套配置为 JSON，到新环境「导入配置」即可整体恢复（含 AI 服务、解析导出、差异树过滤等全部设置）。</span>
+                <span class="fw-semibold text-nowrap"><i class="bi bi-arrow-left-right"></i>{{ t('cfg.migrate') }}</span>
+                <span class="text-secondary">{{ t('cfg.migrate.desc') }}</span>
                 <div class="d-flex align-items-center gap-1 ms-auto">
                   <button class="btn btn-outline-secondary btn-sm" type="button" @click="onExportConfig" :disabled="isExporting"
-                          aria-label="导出当前整套配置为 JSON 文件下载（未勾选「记住 API Key」时不包含明文密钥）" title="导出当前整套配置为 JSON 文件下载（未勾选「记住 API Key」时不包含明文密钥）">
-                    <i class="bi bi-download"></i> 导出配置
-                  </button>
-                  <label class="btn btn-outline-secondary btn-sm mb-0" :class="{disabled: isImporting}" title="从导出的 JSON 配置文件恢复整套配置">
-                    <i class="bi bi-upload"></i> 导入配置
-                    <input ref="importFile" type="file" accept=".json,application/json" class="d-none" @change="pickImportFile" :disabled="isImporting">
+                          :aria-label="t('cfg.migrate.exportHint')" :title="t('cfg.migrate.exportHint')">
+                    <i class="bi bi-download"></i>{{ t('cfg.migrate.export') }}</button>
+                  <label class="btn btn-outline-secondary btn-sm mb-0" :class="{disabled: isImporting}" :title="t('cfg.migrate.importHint')">
+                    <i class="bi bi-upload"></i>{{ t('cfg.migrate.import') }}<input ref="importFile" type="file" accept=".json,application/json" class="d-none" @change="pickImportFile" :disabled="isImporting">
                   </label>
                 </div>
               </div>
@@ -629,12 +618,12 @@ function pickImportFile(ev) {
             <!-- 手动清理临时文件：解压残留导致的磁盘爆满时按需回收（不中断进行中任务） -->
             <div class="card card-body py-2 mb-0" style="font-size:.76rem">
               <div class="d-flex align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold text-nowrap"><i class="bi bi-broom"></i> 临时文件清理</span>
-                <span class="text-secondary">清理解压/抽取残留临时文件与遗留作业目录，释放磁盘空间（反编译缓存与近期日志保留）。</span>
+                <span class="fw-semibold text-nowrap"><i class="bi bi-broom"></i>{{ t('cfg.cleanup') }}</span>
+                <span class="text-secondary">{{ t('cfg.cleanup.desc') }}</span>
                 <button class="btn btn-outline-danger btn-sm ms-auto" type="button" :disabled="cleaning"
                         @click="onCleanupTemp"
-                        aria-label="立即回收系统临时目录与 .bempdiff/runtime 下的残留临时文件，避免磁盘爆满；不会中断正在进行的解压任务" title="立即回收系统临时目录与 .bempdiff/runtime 下的残留临时文件，避免磁盘爆满；不会中断正在进行的解压任务">
-                  <i class="bi" :class="cleaning ? 'bi-arrow-repeat' : 'bi-broom'"></i> {{ cleaning ? '清理中…' : '手动清理临时文件' }}
+                        :aria-label="t('cfg.cleanup.hint')" :title="t('cfg.cleanup.hint')">
+                  <i class="bi" :class="cleaning ? 'bi-arrow-repeat' : 'bi-broom'"></i> {{ cleaning ? t('cfg.cleanup.doing') : t('cfg.cleanup.run') }}
                 </button>
               </div>
               <div v-if="cleanupMsg" class="mt-2 text-success" style="font-size:.72rem"><i class="bi bi-check-circle"></i> {{ cleanupMsg }}</div>
@@ -653,9 +642,9 @@ function pickImportFile(ev) {
         </div>
 
         <div class="modal-footer py-2 px-4 d-flex align-items-center gap-2">
-          <span class="text-secondary me-auto" style="font-size:.75rem">保存后窗口保持打开，可继续编辑；填完点「关闭」。</span>
-          <button class="btn btn-outline-secondary btn-sm" @click="close"><i class="bi bi-x-lg"></i> 关闭</button>
-          <button class="btn btn-primary btn-sm" @click="onSave"><i class="bi bi-check2"></i> 保存</button>
+          <span class="text-secondary me-auto" style="font-size:.75rem">{{ t('cfg.footerHint') }}</span>
+          <button class="btn btn-outline-secondary btn-sm" @click="close"><i class="bi bi-x-lg"></i>{{ t('common.close') }}</button>
+          <button class="btn btn-primary btn-sm" @click="onSave"><i class="bi bi-check2"></i>{{ t('common.save') }}</button>
         </div>
       </div>
     </div>
