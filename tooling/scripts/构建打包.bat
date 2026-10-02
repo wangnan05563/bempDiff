@@ -261,6 +261,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
+REM ---------- 7. Post-pack verify (T01507): installer location + webui bundle freshness ----------
+REM   1) Locate the canonical installer for %_ver% across release root AND any _bk-* dirs
+REM      (>=50MB rule); warns loudly on the stale-root scenario so nobody picks an old build.
+REM   2) Compare packaged win-unpacked webui index.html bundle hashes vs source dist_input webui
+REM      (guards "packaged OK but ships an old frontend").
+echo [STEP] Post-pack verify: installer location + webui bundle freshness ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0post_pack_verify.ps1" -ReleaseDir "%CD%\..\release" -Version "%_ver%" -SourceWebuiIndex "%CD%\dist_input\webui\index.html"
+if errorlevel 1 (
+  echo [ERROR] post-pack verify failed - see [ERROR] lines above
+  pause
+  exit /b 1
+)
+
 echo.
 echo [DONE] Build complete.
 REM Always print the canonical release-ROOT deliverable (absolute path + version), so
