@@ -4,15 +4,20 @@
 # 端口三分隔离：产品 server=18765 / dev 工具链=随机 / 本压测 Harness=18080。
 # SUT = bempdiff/perf-harness（test-only HTTP 适配层，外部自行启动，
 # 引擎不做生命周期管理 → sandbox.enabled=false，防 port_kill 误杀自管实例）。
-# mode=python_replay：本机唯一 JDK 为 dist_input/jre(25, jlink 精简无 java.scripting)，
-# JMeter 5.6.3 无法启动（javax.script.ScriptException CNFE）→ 按技能既定回退。
+#
+# mode=jmeter（T01510，2026-10-04）：zulu21.52.15 完整 JDK 已恢复到
+#   bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64（含 java.scripting，
+#   70 个模块；javac 21.0.12）。JMeter 5.6.3 --version 实测可启动，
+#   故从 python_replay 回退切回原生 JMeter（可出原生 HTML 报告）。
+#   下方 java_home 必须显式指向该 JDK —— jmeter.bat 找不到 java 时只报
+#   "Not able to find Java executable"，排查成本高，故写死不留空。
 # ============================================================================
 
-mode: python_replay
+mode: jmeter
 
 jmeter:
   bin: "D:/code/Jmeter/apache-jmeter-5.6.3/bin/jmeter.bat"
-  java_home: ""
+  java_home: "D:/code/otherProjects/18_comparePakage/bempdiff/toolchain/zulu21.52.15-ca-jdk21.0.12-win_x64"
   jvm_args: []
   properties_file: ""
   cli_extra_args: ""
