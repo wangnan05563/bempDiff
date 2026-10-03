@@ -66,12 +66,13 @@ describe('R9 更新提示条 UI 护栏', () => {
 
   it('提示条含可访问名称、跳转下载页（新标签+noopener）、关闭钮与不自动安装语义', () => {
     expect(appSrc).toContain('update-hint')
-    expect(appSrc).toContain('aria-label="发现新版本提示"')
-    expect(appSrc).toContain('前往下载页')
+    // i18n 批次4（T01508）后文案走 t() 键；护栏同步改为断言键绑定与字典译文
+    expect(appSrc).toContain(':aria-label="t(\'app.updateAria\')"')
+    expect(appSrc).toContain('t(\'app.updateGo\')')
     expect(appSrc).toContain('target="_blank"')
     expect(appSrc).toContain('rel="noopener"')
-    expect(appSrc).toContain('aria-label="关闭更新提示"')
-    expect(appSrc).toContain('不会自动安装')
+    expect(appSrc).toContain(':aria-label="t(\'app.closeUpdate\')"')
+    expect(appSrc).toContain('t(\'app.updateGoTitle\')')
     expect(appSrc).toContain('checkUpdateSilently')
   })
 })

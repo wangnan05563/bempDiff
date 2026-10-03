@@ -4,6 +4,7 @@ import { state, generateReport } from '../store'
 import { renderMarkdown } from '../lib/markdown'
 import { colorizeReport, sevClassFromText } from '../lib/severity'
 import { buildHtmlReport, defaultReportMeta } from '../lib/html_report'
+import { t } from '../lib/i18n'
 
 const props = defineProps({ visible: { type: Boolean, default: false }, md: { type: String, default: null } })
 const emit = defineEmits(['close'])
@@ -73,9 +74,9 @@ function downloadHtml() {
     <div class="modal-dialog modal-xl modal-dialog-scrollable report-dialog">
       <div class="modal-content">
         <div class="modal-header py-2">
-          <h6 class="modal-title mb-0"><i class="bi bi-filetype-md"></i> 差异分析报告
+          <h6 class="modal-title mb-0"><i class="bi bi-filetype-md"></i> {{ t('rp.title') }}
             <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">
-              {{ srcIsTask ? 'AI 分析' : (state.reportAi ? '含 AI 智能分析' : '基础报告') }}
+              {{ srcIsTask ? t('rp.aiTag') : (state.reportAi ? t('rp.withAi') : t('rp.basic')) }}
             </small>
           </h6>
           <button type="button" class="btn-close" @click="emit('close')"></button>
@@ -84,15 +85,15 @@ function downloadHtml() {
         <div class="modal-body report-body">
           <div v-if="overallRisk" class="risk-banner mb-3" :class="'rb-' + (riskCls || 'none')">
             <i class="bi bi-shield-exclamation"></i>
-            <span>总体风险结论：<b :class="riskCls">{{ overallRisk }}</b></span>
+            <span>{{ t('rp.overall') }}<b :class="riskCls">{{ overallRisk }}</b></span>
           </div>
           <div v-if="src" class="md-render" v-html="html"></div>
           <div v-else class="empty-report text-center text-secondary py-5">
             <div class="ico mb-2"><i class="bi bi-file-earmark-x"></i></div>
-            <div>尚未生成报告。</div>
+            <div>{{ t('rp.empty') }}</div>
             <button v-if="!srcIsTask" class="btn btn-sm btn-outline-primary mt-3" :disabled="!state.job || state.busy"
                     @click="generateReport(state.config && state.config.aiEnabled)">
-              <i class="bi bi-filetype-md"></i> 生成报告{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
+              <i class="bi bi-filetype-md"></i> {{ t('info.generate') }}{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
             </button>
           </div>
         </div>
@@ -101,31 +102,31 @@ function downloadHtml() {
         <div class="html-export-panel px-3 py-2 border-bottom" v-if="showHtmlForm" style="background:var(--bs-tertiary-bg)">
           <div class="d-flex flex-wrap gap-2 mb-2">
             <input class="form-control form-control-sm" style="max-width:16rem" v-model="reportMeta.title"
-                   placeholder="报告标题" aria-label="报告标题">
+                   :placeholder="t('rp.form.title')" :aria-label="t('rp.form.title')">
             <input class="form-control form-control-sm" style="max-width:16rem" v-model="reportMeta.subtitle"
-                   placeholder="副标题（如对比对象）" aria-label="报告副标题">
+                   :placeholder="t('rp.form.subtitle')" :aria-label="t('rp.form.subtitle')">
             <input class="form-control form-control-sm" style="max-width:12rem" v-model="reportMeta.author"
-                   placeholder="落款（生成人/团队）" aria-label="报告落款">
+                   :placeholder="t('rp.form.author')" :aria-label="t('rp.form.author')">
           </div>
           <textarea class="form-control form-control-sm mb-2" rows="2" v-model="reportMeta.riskNote"
-                    placeholder="风险口径说明（评估基准与边界，将显示在报告顶部供审计必读）" aria-label="风险口径说明"></textarea>
+                    :placeholder="t('rp.form.riskNote')" :aria-label="t('rp.form.riskNote')"></textarea>
           <button class="btn btn-primary btn-sm" :disabled="!src" @click="downloadHtml">
-            <i class="bi bi-filetype-html"></i> 生成并下载 .html
+            <i class="bi bi-filetype-html"></i> {{ t('rp.form.genHtml') }}
           </button>
         </div>
         <div class="modal-footer py-2 px-3">
           <button class="btn btn-outline-secondary btn-sm" :disabled="!src" @click="downloadMd">
-            <i class="bi bi-download"></i> 下载 .md
+            <i class="bi bi-download"></i> {{ t('rp.downloadMd') }}
           </button>
           <button class="btn btn-outline-primary btn-sm" :disabled="!src" @click="toggleHtmlForm"
-                  title="导出自包含 HTML 报告（自定义标题/落款/风险口径，无需任何工具即可阅读）">
-            <i class="bi bi-filetype-html"></i> 导出 HTML
+                  :title="t('rp.exportHtmlTitle')">
+            <i class="bi bi-filetype-html"></i> {{ t('rp.exportHtml') }}
           </button>
           <button v-if="!srcIsTask" class="btn btn-outline-primary btn-sm" :disabled="!state.job || state.busy"
                   @click="generateReport(state.reportAi, { category: state.reportAi ? state.reportCategory : undefined, force: true })">
-            <i class="bi bi-arrow-clockwise"></i> 重新生成{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
+            <i class="bi bi-arrow-clockwise"></i> {{ t('rp.regen') }}{{ (state.config && state.config.aiEnabled) ? '(AI)' : '' }}
           </button>
-          <button class="btn btn-secondary btn-sm ms-auto" @click="emit('close')">关闭</button>
+          <button class="btn btn-secondary btn-sm ms-auto" @click="emit('close')">{{ t('common.close') }}</button>
         </div>
       </div>
     </div>

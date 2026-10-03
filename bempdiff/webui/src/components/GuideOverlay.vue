@@ -8,8 +8,12 @@ import {
   GUIDE_STEPS, allSteps, isGuideDone, isFirstRun, progressText, locateTarget,
   GUIDE_DONE_KEY, GUIDE_SEEN_KEY, isGuideButtonVisible
 } from '../lib/guide'
+import { t } from '../lib/i18n'
 
 const emit = defineEmits(['settled'])
+// 步骤文案取 i18n：有 titleKey/textKey 走 t()，否则回退清单里的中文原文
+const titleOf = (s) => (s && s.titleKey ? t(s.titleKey) : (s ? s.title : ''))
+const textOf = (s) => (s && s.textKey ? t(s.textKey) : (s ? s.text : ''))
 const open = ref(false)
 const idx = ref(0)
 const autoplay = ref(false)
@@ -135,7 +139,7 @@ onBeforeUnmount(() => {
 <template>
   <!-- 常驻「引导」按钮：左下角悬浮。默认隐藏，需在帮助文档「开始引导」开启后显示 -->
   <button v-if="renderTick" class="guide-fab btn btn-outline-secondary btn-sm" type="button"
-          title="打开功能引导：重新查看分步操作演示" @click="openGuide(true)">
+          :title="t('guide.fabTitle')" @click="openGuide(true)">
     <i class="bi bi-life-preserver"></i>
   </button>
 
@@ -148,22 +152,22 @@ onBeforeUnmount(() => {
       <div class="guide-spot" :style="{ top: target.top + 'px', left: target.left + 'px', width: target.width + 'px', height: target.height + 'px' }"></div>
       <div class="guide-pop" :style="popStyle()">
         <div class="guide-num">{{ progress }}</div>
-        <h6 class="guide-title mb-1">{{ step.title }}</h6>
-        <p class="guide-text mb-2" v-if="step.placeholder">（此区域需先完成比对/分析后可见，此处仅说明功能位置）</p>
-        <p class="guide-text mb-0">{{ step.text }}</p>
+        <h6 class="guide-title mb-1">{{ titleOf(step) }}</h6>
+        <p class="guide-text mb-2" v-if="step.placeholder">{{ t('guide.placeholder') }}</p>
+        <p class="guide-text mb-0">{{ textOf(step) }}</p>
         <div class="d-flex align-items-center gap-2 mt-2">
-          <button class="btn btn-sm btn-outline-secondary py-0" type="button" :disabled="idx === 0" @click="prev" title="上一步">
+          <button class="btn btn-sm btn-outline-secondary py-0" type="button" :disabled="idx === 0" @click="prev" :title="t('guide.prev')">
             <i class="bi bi-chevron-left"></i>
           </button>
           <button class="btn btn-sm btn-primary py-0" type="button" @click="next"
-                  :title="idx === steps.length - 1 ? '完成引导' : '下一步'">
-            {{ idx === steps.length - 1 ? '完成' : '下一步' }} <i class="bi bi-chevron-right"></i>
+                  :title="idx === steps.length - 1 ? t('guide.finishTitle') : t('guide.next')">
+            {{ idx === steps.length - 1 ? t('guide.finish') : t('guide.next') }} <i class="bi bi-chevron-right"></i>
           </button>
           <button class="btn btn-sm btn-outline-secondary py-0" type="button"
-                  :class="{ active: autoplay }" @click="toggleAutoplay" title="自动播放：每 4 秒自动切到下一步">
+                  :class="{ active: autoplay }" @click="toggleAutoplay" :title="t('guide.autoplay')">
             <i class="bi bi-play-circle"></i>
           </button>
-          <button class="btn btn-sm btn-link py-0 ms-auto text-secondary" type="button" @click="skip" title="跳过引导（之后可点左下角引导按钮重新打开）">跳过</button>
+          <button class="btn btn-sm btn-link py-0 ms-auto text-secondary" type="button" @click="skip" :title="t('guide.skipTitle')">{{ t('guide.skip') }}</button>
         </div>
       </div>
     </template>
@@ -172,13 +176,13 @@ onBeforeUnmount(() => {
       <div class="guide-card card">
         <div class="card-body">
           <div class="guide-num">{{ progress }}</div>
-          <h5 class="guide-title mb-2">{{ step.title }}</h5>
-          <p class="guide-text mb-3">{{ step.text }}</p>
+          <h5 class="guide-title mb-2">{{ titleOf(step) }}</h5>
+          <p class="guide-text mb-3">{{ textOf(step) }}</p>
           <div class="d-flex align-items-center gap-2">
-            <button class="btn btn-sm btn-outline-secondary py-0" type="button" :disabled="idx === 0" @click="prev"><i class="bi bi-chevron-left"></i></button>
-            <button class="btn btn-sm btn-primary py-0" type="button" @click="next">{{ idx === steps.length - 1 ? '完成' : '下一步' }} <i class="bi bi-chevron-right"></i></button>
-            <button class="btn btn-sm btn-outline-secondary py-0" type="button" :class="{ active: autoplay }" @click="toggleAutoplay" title="自动播放"><i class="bi bi-play-circle"></i></button>
-            <button class="btn btn-sm btn-link py-0 ms-auto text-secondary" type="button" @click="skip">跳过</button>
+            <button class="btn btn-sm btn-outline-secondary py-0" type="button" :disabled="idx === 0" @click="prev" :title="t('guide.prev')"><i class="bi bi-chevron-left"></i></button>
+            <button class="btn btn-sm btn-primary py-0" type="button" @click="next" :title="idx === steps.length - 1 ? t('guide.finishTitle') : t('guide.next')">{{ idx === steps.length - 1 ? t('guide.finish') : t('guide.next') }} <i class="bi bi-chevron-right"></i></button>
+            <button class="btn btn-sm btn-outline-secondary py-0" type="button" :class="{ active: autoplay }" @click="toggleAutoplay" :title="t('guide.autoplayShort')"><i class="bi bi-play-circle"></i></button>
+            <button class="btn btn-sm btn-link py-0 ms-auto text-secondary" type="button" @click="skip" :title="t('guide.skipTitle')">{{ t('guide.skip') }}</button>
           </div>
         </div>
       </div>

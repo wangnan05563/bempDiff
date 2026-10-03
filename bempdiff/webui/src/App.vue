@@ -13,6 +13,7 @@ import CostGateDialog from './components/CostGateDialog.vue'
 import GuideOverlay from './components/GuideOverlay.vue'
 import ShortcutHelp from './components/ShortcutHelp.vue'
 import { isEditableTarget } from './lib/shortcuts'
+import { t } from './lib/i18n'
 
 const showConfig = ref(false)
 const showReport = ref(false)
@@ -113,10 +114,10 @@ function onPreviewClose() {
   <!-- 专注模式：隐藏左右栏，中间 diff 占满视野（由 state.focusMode 控制） -->
   <div class="app-main" :class="{ 'focus-mode': state.focusMode }">
     <DiffTree :panel-width="treeW" />
-    <div v-show="!state.treePanelCollapsed" class="vt-handle" title="拖拽调整差异文件树宽度"
+    <div v-show="!state.treePanelCollapsed" class="vt-handle" :title="t('app.resizeTree')"
          @mousedown="startResize('tree', $event)"></div>
     <DiffView />
-    <div v-show="!state.aiPanelCollapsed" class="vt-handle" title="拖拽调整智能分析面板宽度"
+    <div v-show="!state.aiPanelCollapsed" class="vt-handle" :title="t('app.resizeAi')"
          @mousedown="startResize('ai', $event)"></div>
     <InfoPanel :panel-width="aiResized ? aiW : undefined" />
   </div>
@@ -133,13 +134,13 @@ function onPreviewClose() {
 
   <!-- R9 更新提示条（右下角）：仅提示与跳转下载页，不自动下载/安装 -->
   <div class="update-hint shadow" v-if="state.updateAvailable" role="status"
-       aria-label="发现新版本提示">
+       :aria-label="t('app.updateAria')">
     <i class="bi bi-arrow-up-circle text-primary"></i>
-    <span class="uh-text">发现新版本 <b>v{{ state.updateAvailable.tag }}</b></span>
+    <span class="uh-text">{{ t('app.updateFound') }} <b>v{{ state.updateAvailable.tag }}</b></span>
     <a v-if="state.updateAvailable.url" class="btn btn-sm btn-primary py-0 px-2" style="font-size:.72rem"
        :href="state.updateAvailable.url" target="_blank" rel="noopener"
-       title="打开 GitHub Release 下载页（不会自动安装）">前往下载页</a>
-    <button type="button" class="btn-close btn-sm" aria-label="关闭更新提示"
+       :title="t('app.updateGoTitle')">{{ t('app.updateGo') }}</a>
+    <button type="button" class="btn-close btn-sm" :aria-label="t('app.closeUpdate')"
             @click="dismissUpdateHint"></button>
   </div>
   <!-- 功能引导：首次自动弹出一次，之后经左下角常驻「引导」按钮唤起 -->

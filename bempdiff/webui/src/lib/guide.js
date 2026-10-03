@@ -37,20 +37,22 @@ export function isGuideButtonVisible() { return _btnVisible }
 //   minWidth - 该步骤建议至少需要的最小窗口宽度（px），窄屏自动跳过（防布局错位）
 export const GUIDE_GROUPS = ['getstart', 'toolbar', 'difftree', 'diffview', 'ai', 'config']
 
+// title/text 保留中文原文（兼容既有单测与未迁移调用方）；
+// titleKey/textKey 为 i18n 键：渲染侧优先 t(titleKey)，缺失时回退 title。
 export const GUIDE_STEPS = [
   // 入门：整体介绍（无特定高亮，展示欢迎语）
-  { group: 'getstart', title: '欢迎使用 BempDiff', text: 'BempDiff 用于对比两个包（war/jar/zip）或两个目录的内容差异，并结合 AI 输出风险与影响分析。跟随引导快速了解核心操作。', target: null },
+  { group: 'getstart', title: '欢迎使用 BempDiff', titleKey: 'guide.step0.title', text: 'BempDiff 用于对比两个包（war/jar/zip）或两个目录的内容差异，并结合 AI 输出风险与影响分析。跟随引导快速了解核心操作。', textKey: 'guide.step0.text', target: null },
   // 工具栏
-  { group: 'toolbar', title: '① 选择输入（老包 / 新包）', text: '在顶部左侧选择"包"或"目录"类型，然后在老包/新包输入框填入路径。支持点击浏览选择，桌面壳也支持直接拖入文件。', target: '.drop-zone', minWidth: 1000 },
-  { group: 'toolbar', title: '② 开始比对', text: '两侧路径就绪后，点击蓝色"比对"按钮（arrow-left-right 图标），后端将反编译并生成差异文件树。', target: '.btn-primary[title*="反编译"]', minWidth: 900 },
+  { group: 'toolbar', title: '① 选择输入（老包 / 新包）', titleKey: 'guide.step1.title', text: '在顶部左侧选择"包"或"目录"类型，然后在老包/新包输入框填入路径。支持点击浏览选择，桌面壳也支持直接拖入文件。', textKey: 'guide.step1.text', target: '.drop-zone', minWidth: 1000 },
+  { group: 'toolbar', title: '② 开始比对', titleKey: 'guide.step2.title', text: '两侧路径就绪后，点击蓝色"比对"按钮（arrow-left-right 图标），后端将反编译并生成差异文件树。', textKey: 'guide.step2.text', target: '.btn-primary[title*="反编译"]', minWidth: 900 },
   // 差异文件树
-  { group: 'difftree', title: '③ 差异文件树', text: '左侧为差异文件树：按层级展示修改/新增/删除/未变文件，可搜索、按状态或风险过滤。若尚未比对，此区域会显示"暂无差异"。', target: '.col-tree', placeholder: true },
+  { group: 'difftree', title: '③ 差异文件树', titleKey: 'guide.step3.title', text: '左侧为差异文件树：按层级展示修改/新增/删除/未变文件，可搜索、按状态或风险过滤。若尚未比对，此区域会显示"暂无差异"。', textKey: 'guide.step3.text', target: '.col-tree', placeholder: true },
   // 对比视图
-  { group: 'diffview', title: '④ 双栏源码比对', text: '点击差异树中的文件，中间区域展示双栏（或 Git 风格）内容比对，差异行高亮、支持换行/全屏专注等切换。', target: '.app-main', placeholder: true },
+  { group: 'diffview', title: '④ 双栏源码比对', titleKey: 'guide.step4.title', text: '点击差异树中的文件，中间区域展示双栏（或 Git 风格）内容比对，差异行高亮、支持换行/全屏专注等切换。', textKey: 'guide.step4.text', target: '.app-main', placeholder: true },
   // 智能分析
-  { group: 'ai', title: '⑤ AI 智能分析', text: '右侧智能分析栏可发起整体风险分析、破坏性变更、影响范围、测试要点等多类分析；也可用顶部 CPU 图标发起新分析。', target: '.col-info, .btn-outline-secondary[title*="AI 分析"]', placeholder: true },
+  { group: 'ai', title: '⑤ AI 智能分析', titleKey: 'guide.step5.title', text: '右侧智能分析栏可发起整体风险分析、破坏性变更、影响范围、测试要点等多类分析；也可用顶部 CPU 图标发起新分析。', textKey: 'guide.step5.text', target: '.col-info, .btn-outline-secondary[title*="AI 分析"]', placeholder: true },
   // 配置中心
-  { group: 'config', title: '⑥ 配置中心', text: '点击顶部齿轮图标打开配置中心：可配置 AI 服务（模型/连接测试）、解析与导出、差异树过滤、界面与高级等。', target: '.btn-outline-secondary[title*="配置中心"]' }
+  { group: 'config', title: '⑥ 配置中心', titleKey: 'guide.step6.title', text: '点击顶部齿轮图标打开配置中心：可配置 AI 服务（模型/连接测试）、解析与导出、差异树过滤、界面与高级等。', textKey: 'guide.step6.text', target: '.btn-outline-secondary[title*="配置中心"]' }
 ]
 
 /** 取某分组的所有步骤。 */

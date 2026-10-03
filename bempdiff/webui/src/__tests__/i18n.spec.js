@@ -11,6 +11,8 @@ import CostGateDialog from '../components/CostGateDialog.vue'
 import PathBar from '../components/PathBar.vue'
 import PathBreadcrumb from '../components/PathBreadcrumb.vue'
 import InfoPanel from '../components/InfoPanel.vue'
+import GuideOverlay from '../components/GuideOverlay.vue'
+import ReportPreview from '../components/ReportPreview.vue'
 
 describe('R12 i18n 框架', () => {
   beforeEach(() => {
@@ -142,6 +144,33 @@ describe('R12 i18n 框架', () => {
     const pbZh = mount(PathBar, { props: { path: '' }, attachTo: document.body })
     expect(pbZh.text()).toContain('未选择文件')
     pbZh.unmount()
+  })
+
+  it('批次4 组件跟随语言：引导步骤 / 报告预览 EN 渲染', async () => {
+    setLocale('en-US')
+    const g = mount(GuideOverlay, { attachTo: document.body })
+    // 引导层默认不弹出（done/seen 已记录）；经 HelpDoc 同款「开始引导」事件强制打开
+    window.dispatchEvent(new Event('bempdiff:start-guide'))
+    await g.vm.$nextTick()
+    expect(g.text()).toContain('Welcome to BempDiff')
+    expect(g.text()).toContain('Next')
+    expect(g.text()).toContain('Skip')
+    g.unmount()
+
+    state.job = { jobId: 'J1', stats: null }
+    state.reportMd = ''
+    state.config = { aiEnabled: false }
+    const rp = mount(ReportPreview, { props: { visible: true }, attachTo: document.body })
+    expect(rp.text()).toContain('Difference Analysis Report')
+    expect(rp.text()).toContain('No report generated yet.')
+    rp.unmount()
+
+    setLocale('zh-CN')
+    const gZh = mount(GuideOverlay, { attachTo: document.body })
+    window.dispatchEvent(new Event('bempdiff:start-guide'))
+    await gZh.vm.$nextTick()
+    expect(gZh.text()).toContain('欢迎使用 BempDiff')
+    gZh.unmount()
   })
 
   it('帮助文档含「术语中英对照」条目', async () => {
