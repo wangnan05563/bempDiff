@@ -70,14 +70,38 @@ function entry(o) {
     title: o.title,
     intro: o.intro || '',
     blocks: o.blocks || [],
-    keywords: o.keywords || []
+    keywords: o.keywords || [],
+    // 英文字段（T01508 批次11）：缺失时渲染与检索自动回退中文原文
+    titleEn: o.titleEn || '',
+    introEn: o.introEn || '',
+    blocksEn: o.blocksEn || [],
+    keywordsEn: o.keywordsEn || []
   }
+}
+
+/** 按当前语言取条目标题（渲染期调用，随 i18n.locale 响应）。 */
+export function entryTitle(e) {
+  return (e && i18n.locale === 'en-US' && e.titleEn) ? e.titleEn : (e ? e.title : '')
+}
+/** 按当前语言取条目导语。 */
+export function entryIntro(e) {
+  return (e && i18n.locale === 'en-US' && e.introEn) ? e.introEn : (e ? e.intro : '')
+}
+/** 按当前语言取条目正文块。 */
+export function entryBlocks(e) {
+  if (e && i18n.locale === 'en-US' && e.blocksEn && e.blocksEn.length) return e.blocksEn
+  return (e && e.blocks) || []
+}
+/** 分类标题（渲染期按语言取）。 */
+export function categoryTitle(c) {
+  if (c && c.titleKey) return t(c.titleKey)
+  return (c && i18n.locale === 'en-US' && c.titleEn) ? c.titleEn : (c ? c.title : '')
 }
 
 // ---------------------------------------------------------------------------
 // 内容：功能分类 → 条目
 // ---------------------------------------------------------------------------
-import { TERM_TABLE } from './i18n'
+import { TERM_TABLE, i18n, t } from './i18n'
 
 export const CATEGORIES = [
   {
@@ -91,6 +115,14 @@ export const CATEGORIES = [
         title: '术语中英对照',
         intro: '界面与报告中的核心术语中英对照（术语首次出现处附英文，供对外沟通与审计引用）。',
         keywords: ['术语', '对照', '英文', 'glossary', 'i18n', '翻译'],
+        titleEn: 'Glossary: Chinese - English',
+        introEn: 'A Chinese-English glossary of the core terms used in the UI and reports (English is appended where a term first appears, for communication and audit references).',
+        keywordsEn: ['glossary', 'terms', 'terminology', 'english', 'i18n', 'translation'],
+        blocksEn: [
+          para('Term list (Chinese - English: description):'),
+          list(['Diff Tree \\u2014 \\u5dee\\u5f02\\u6811: a navigation view of changed files organized by directory hierarchy', 'Compare \\u2014 \\u6bd4\\u5bf9: loading two packages/directories and computing file-level differences', 'Decompile \\u2014 \\u53cd\\u7f16\\u8bd1: turning .class bytecode back into readable Java source', 'Smart Classification \\u2014 \\u667a\\u80fd\\u5206\\u7c7b: AI tagging of changed files plus a risk rating', 'AI Analysis \\u2014 \\u667a\\u80fd\\u5206\\u6790: AI interpretation of the changes (risk / impact / test points)', 'Report \\u2014 \\u62a5\\u544a: a Markdown/HTML summary of the diff and AI results', 'Export \\u2014 \\u5bfc\\u51fa: packaging diff assets (sources / jars) for download', 'Layer \\u2014 \\u5206\\u5c42: the L0 top-level / L1 in-archive / L2 nested-archive level marker']),
+          para('The interface language can be switched with the "EN / \\u4e2d" button in the toolbar; core UI text switches immediately, and the rest migrates batch by batch across releases.'),
+        ],
         blocks: [
           para('术语对照清单（中文 — English：说明）：'),
           list(TERM_TABLE.map((r) => `${r[0]} — ${r[1]}：${r[2]}`)),
@@ -102,6 +134,15 @@ export const CATEGORIES = [
         title: '如何开始一次对比',
         intro: '选择「老包」与「新包」即可开始比对。支持文件夹、WAR、JAR、ZIP、EAR 等常见格式，一次比对得到文件级差异总览。',
         keywords: ['开始对比', '导入', '选择', 'war', 'jar', 'zip', '文件夹'],
+        titleEn: 'How to start a compare',
+        introEn: 'Pick the old package and the new package, then compare. Folders, WAR, JAR, ZIP, EAR and other common formats are supported, and one compare yields a file-level overview of the differences.',
+        keywordsEn: ['start compare', 'import', 'select', 'war', 'jar', 'zip', 'folder'],
+        blocksEn: [
+          para('The old and new inputs can be two archives/folders, or two snapshots of the same folder.'),
+          steps(['Enter the two paths to compare in "Old path" / "New path" on the left (you can also drop files in or use the right-click menu).', 'If the packages share a name but differ in version (e.g. app-1.0.zip vs app-2.0.zip), the tool orders them by version automatically - you do not need to tell old from new.', 'Click the Compare button and wait for the progress to finish; then review the diff stats and the diff tree.']),
+          note('Paths may point at archives or folders; when comparing folders, nested ZIP/WAR/JAR files are unpacked layer by layer automatically (see "Auto Unpack Nested Archives").'),
+          warn('Make sure the two paths really are "old -> new"; swapping them inverts every added/deleted verdict.'),
+        ],
         blocks: [
           para('老包与新包既可以是两个压缩包/文件夹，也可以是同一个文件夹的两次快照。'),
           steps([
@@ -118,6 +159,16 @@ export const CATEGORIES = [
         title: '用拖拽快速填入老包/新包',
         intro: '把文件直接拖进应用窗口，即可自动交替填入老包与新包路径，无需逐个手动选择。',
         keywords: ['拖拽', '拖放', '拖入', '自动填入', '循环', '遮罩'],
+        titleEn: 'Fill the old/new paths by drag & drop',
+        introEn: 'Drop files straight into the app window: they fill the old and new paths alternately, so you never have to pick them one by one.',
+        keywordsEn: ['drag', 'drop', 'auto fill', 'cycle', 'overlay'],
+        blocksEn: [
+          para('In the desktop shell you can drop any archive or folder into the window; the tool fills the old/new paths in turn.'),
+          list(['First drop -> fills the old path.', 'Second drop -> fills the new path.', 'Third drop and beyond -> they alternate: odd drops go to old, even drops to new.']),
+          para('A full-screen overlay appears while dragging, telling you which side the next drop fills ("Drop the old package" / "Drop the new package"); releasing the mouse completes the fill and the overlay closes.'),
+          steps(['Drop the old package into the window; it fills the old path.', 'Drop the new package in; it fills the new path and the compare starts.', 'For the next pair: the third drop returns to old, the fourth fills new, and so on.']),
+          note('The compare starts automatically once both paths are set; if the dropped file path cannot be read (browser mode), the tool asks you to use the desktop shell or type the path manually.'),
+        ],
         blocks: [
           para('桌面壳下把任意压缩包或文件夹直接拖进窗口即可，系统会按顺序循环填入老包/新包路径。'),
           list([
@@ -139,6 +190,14 @@ export const CATEGORIES = [
         title: '差异文件树与视图',
         intro: '差异树以层级方式展示所有变化文件，支持按状态过滤、搜索、切换视图，并可通过右键快速处理条目。',
         keywords: ['差异树', '过滤', '搜索', '树视图', '列表视图', '忽略'],
+        titleEn: 'Diff tree and views',
+        introEn: 'The diff tree shows all changed files hierarchically, with status filters, search, view switching and a right-click menu for quick actions.',
+        keywordsEn: ['diff tree', 'filter', 'search', 'tree view', 'list view', 'ignore'],
+        blocksEn: [
+          para('The diff tree groups results by Modified / Added / Deleted / Unchanged.'),
+          list(['Status filters sit at the top: show only Modified / Added / Deleted; hiding Unchanged shortens the list dramatically.', 'The search box supports fuzzy matching and can switch to regex mode for precise matching.', 'The view can be switched between the directory tree and a flat list.', 'Right-click an entry to: open the compare, exclude (hide temporarily), add an ignore rule, view properties, rename/copy/delete (folder mode), etc.']),
+          note('"Exclude" only hides the entry for the current session and can be undone via Restore at the bottom of the tree; "Ignore" writes a rule and persists.'),
+        ],
         blocks: [
           para('差异树把结果按「修改 / 新增 / 删除 / 未变」归类。'),
           list([
@@ -155,6 +214,14 @@ export const CATEGORIES = [
         title: '内容比对（双栏差异）',
         intro: '点击差异树中的任一文件，即可在中间区域打开左右双栏对比，逐行查看两种版本的内容差异。',
         keywords: ['diff', '对比', '内容', '双栏', '源码', '高亮'],
+        titleEn: 'Content compare (two columns)',
+        introEn: 'Click any file in the diff tree to open a left/right two-column compare in the middle pane and inspect the differences line by line.',
+        keywordsEn: ['diff', 'compare', 'content', 'two column', 'source', 'highlight'],
+        blocksEn: [
+          para('Source files (Java/JS/HTML/CSS ...), text files, Office documents (Word/Excel/PPT) and bytecode (decompiled automatically) are all supported.'),
+          steps(['Click a Modified or Added/Deleted file in the diff tree.', 'The two columns show the old and new content, with changed lines highlighted.', 'Use folding and inline diff to zoom in on specific changes; Office documents are parsed into content first and then compared line by line.']),
+          note('Unchanged files can be opened too - handy to confirm that nothing substantial changed.'),
+        ],
         blocks: [
           para('支持源码类（Java/JS/HTML/CSS 等）、文本类、Office 文档（Word/Excel/PPT）与字节码（自动反编译）等多种文件的差异查看。'),
           steps([
@@ -170,6 +237,14 @@ export const CATEGORIES = [
         title: '导出差异资产',
         intro: '把本次差异以压缩包形式导出，便于交付或归档。导出包内按「增量」与「删除」分类组织。',
         keywords: ['导出', '差异资产', '增量', '删除', 'zip'],
+        titleEn: 'Export diff assets',
+        introEn: 'Export the diff as an archive for delivery or archiving; the archive is organized into increment and deleted sections.',
+        keywordsEn: ['export', 'diff assets', 'increment', 'deleted', 'zip'],
+        blocksEn: [
+          para('Exports are routed by size: small packages are exported synchronously (with live progress), large ones are generated in the background (you get an "export started, about X minutes" notice) and downloaded later from the Downloads panel. The archive is organized into increment and deleted sections.'),
+          list(['increment/: added and modified files (the increment you need to ship).', 'deleted/: removed files (kept for reference/audit).']),
+          steps(['After a compare finishes, click "Export diff assets" in the toolbar.', 'If a layer-by-layer unpack compare is still running, the export waits for it to finish.', 'Small packages download directly; for large ones pick the job in the Downloads panel and click Download.']),
+        ],
         blocks: [
             para('导出按规模自动分流：小包同步导出（实时显示进度），大包异步后台生成（提示“导出已启动，预计X分钟完成”），完成后到「下载管理」页下载。导出包内按「增量」与「删除」分类组织。'),
             list([
@@ -196,6 +271,14 @@ export const CATEGORIES = [
         title: '自动逐层解包',
         intro: '对比嵌套包（ZIP/WAR/JAR 层层嵌套）时，默认会自动异步多线程逐层解包并展开，无需手动点击每个包。',
         keywords: ['解包', '嵌套', '递归', '展开', '多线程'],
+        titleEn: 'Automatic layer-by-layer unpacking',
+        introEn: 'When comparing nested packages (ZIP inside WAR inside JAR ...), the tool unpacks them asynchronously with multiple threads by default - you never have to expand each archive by hand.',
+        keywordsEn: ['unpack', 'nested', 'recursive', 'expand', 'threads'],
+        blocksEn: [
+          para('Optimized for folder / WAR / ZIP comparisons: once the compare finishes, files inside nested archives are unpacked automatically and appear in the diff tree, and AI analysis plus diff export cover those nested files too.'),
+          list(['"Unpack threads" and "Max unpack depth" can be adjusted under Settings -> Parse & Export.', 'Nested archives that hit the depth limit or time out stay as manually expandable nodes, so no structure is lost.']),
+          warn('Auto-unpacking very large packages costs memory and time; if you do not need to look inside nested archives, turn auto-unpacking off in the settings.'),
+        ],
         blocks: [
           para('针对「文件夹 / WAR / ZIP」对比优化：比对完成后，嵌套包内部文件会自动解包并出现在差异树中，AI 分析与差异导出也会覆盖到嵌套子文件。'),
           list([
@@ -210,6 +293,13 @@ export const CATEGORIES = [
         title: 'AI 智能分类',
         intro: '让 AI 对差异文件自动打上风险等级与变化类别标签，帮你优先审阅高风险变更。',
         keywords: ['智能分类', '风险', '打标', '分类'],
+        titleEn: 'AI Smart Classification',
+        introEn: 'Let AI tag every changed file with a risk level and a change category so you can review the risky ones first.',
+        keywordsEn: ['smart classification', 'risk', 'tag', 'classify'],
+        blocksEn: [
+          steps(['After a compare, click "AI Smart Classification".', 'The tool tags changed files with a High / Medium / Low risk and a change category.', 'Sort or filter the diff tree by risk to handle the high-risk files first.']),
+          note('Requires a usable model configured and enabled under Settings -> AI Service, plus at least one finished compare.'),
+        ],
         blocks: [
           steps([
             '完成一次对比后，点击「AI 智能分类」。',
@@ -224,6 +314,14 @@ export const CATEGORIES = [
         title: 'AI 智能分析',
         intro: '对整体变更执行智能分析，支持多类分析并行发起，结果以控制台流式展示。',
         keywords: ['ai', 'AI分析', '风险', '影响范围', '测试要点', '破坏性'],
+        titleEn: 'AI Analysis',
+        introEn: 'Run AI analyses over the whole change set; several categories can run in parallel and results stream into the console.',
+        keywordsEn: ['ai', 'analysis', 'risk', 'impact', 'test points', 'breaking'],
+        blocksEn: [
+          para('Supported categories (they can run in parallel without blocking each other):'),
+          list(['Overall Risk Analysis: an overview of the risk in this change set.', 'Breaking Changes: finds changes that may break existing behavior.', 'Impact Scope: assesses which modules and areas the change touches.', 'Test Points: suggests what to regression-test.', 'Custom Question: ask anything in your own words.']),
+          note('AI analysis can only start after the auto-unpack compare finishes; it consumes model quota, so you are asked to confirm when the estimated cost exceeds the threshold.'),
+        ],
         blocks: [
           para('支持的分析类别（可并行、互不阻塞）：'),
           list([
@@ -241,6 +339,13 @@ export const CATEGORIES = [
         title: '报告生成',
         intro: '把比对与 AI 分析结果整理成一份结构化报告，也支持针对单一主题的聚焦报告。',
         keywords: ['报告', '生成', '导出', 'markdown'],
+        titleEn: 'Report generation',
+        introEn: 'Turn the compare and AI results into a structured report, or generate a focused report for a single topic.',
+        keywordsEn: ['report', 'generate', 'export', 'markdown'],
+        blocksEn: [
+          list(['Overall report: diff stats, changed file list, source diff summary and the AI chapters.', 'Focused report: a slim report for one selected analysis category (e.g. Test Points).']),
+          note('Enable "Auto AI report after compare" in the settings to reduce manual steps.'),
+        ],
         blocks: [
           list([
             '整体报告：包含差异统计、变更文件清单、源码 diff 摘要与 AI 章节的完整报告。',
@@ -254,6 +359,12 @@ export const CATEGORIES = [
         title: '项目级上下文增强',
         intro: '把本机项目源码/文档作为背景上下文注入 AI，让分析结果更贴合你的业务。',
         keywords: ['上下文', '项目', '增强', '注入'],
+        titleEn: 'Project-level context',
+        introEn: 'Inject local project sources/docs as background context into the AI so the analysis fits your codebase.',
+        keywordsEn: ['context', 'project', 'inject'],
+        blocksEn: [
+          steps(['Enable "Project-level Context" under Settings -> UI & Advanced and pick the project source/doc directory.', 'Saving the config scans that directory structure automatically.', 'Later AI analyses inject a project overview into the request, so results match the real code.']),
+        ],
         blocks: [
           steps([
             '在「设置 → 界面与高级」启用「项目级上下文增强」，并选择项目源码/文档目录。',
@@ -267,6 +378,13 @@ export const CATEGORIES = [
         title: '反编译查看',
         intro: '对于只有字节码（.class）的变更，自动反编译为源码后对比，避免直接看不可读的字节码。',
         keywords: ['反编译', 'class', '字节码', 'cfr'],
+        titleEn: 'Decompiled view',
+        introEn: 'For changes that only exist as bytecode (.class), the tool decompiles them to source before comparing, so you never stare at unreadable bytecode.',
+        keywordsEn: ['decompile', 'class', 'bytecode', 'cfr'],
+        blocksEn: [
+          para('A decompiler is bundled; you can also point Settings -> Parse & Export at an external CFR jar. Classes matching the internal package prefixes are expanded by business code by default.'),
+          warn('Treat decompiled output as reference for understanding only - never as the sole basis for production decisions.'),
+        ],
         blocks: [
           para('内置反编译器，也可在「设置 → 解析与导出」指定外部 CFR jar。命中内部业务前缀的类默认按业务码展开。'),
           warn('反编译结果仅作理解参考，切勿作为生产的唯一依据。'),
@@ -285,6 +403,12 @@ export const CATEGORIES = [
         title: '为什么没有看到任何差异？',
         intro: '分别排查「路径是否真正可比」「过滤是否掩盖了结果」「是否处于解包/分析中」。',
         keywords: ['无差异', '空白', '空树'],
+        titleEn: 'Why do I see no differences at all?',
+        introEn: 'Check three things: whether the paths are really comparable, whether filters hide the results, and whether unpacking/analysis is still running.',
+        keywordsEn: ['no differences', 'empty', 'blank tree'],
+        blocksEn: [
+          list(['Confirm the left side is the old version and the right side the new one, and that the content really differs.', 'Look at the status filters at the top of the diff tree: a checked filter may be hiding everything.', 'The search box may still carry a previous keyword/regex that filters everything out.', 'Unpacking or AI analysis may still be running - results only stabilize once those finish.']),
+        ],
         blocks: [
           list([
             '确认左侧为旧版、右侧为新版，且内容确实存在差异。',
@@ -299,6 +423,12 @@ export const CATEGORIES = [
         title: '点了 AI 分析没反应或报错？',
         intro: 'AI 依赖模型连通性与任务状态，按下面的顺序检查。',
         keywords: ['AI', '没反应', '报错', '模型', 'key'],
+        titleEn: 'AI analysis does nothing or reports an error?',
+        introEn: 'AI depends on model connectivity and job state - check in this order.',
+        keywordsEn: ['ai', 'no response', 'error', 'model', 'key'],
+        blocksEn: [
+          list(['First confirm under Settings -> AI Service that AI is enabled and the right model is selected; use "Test Connection" to verify.', 'Make sure at least one compare has finished - AI analyses the compare result.', 'AI is disabled while auto-unpacking runs; wait until unpacking finishes.', 'Public models may need a proxy, or "Strict SSRF" turned off (e.g. for local models).']),
+        ],
         blocks: [
           list([
             '先在「设置 → AI 服务」确认已启用并在模型厂商下拉选择正确模型，可点「连接测试」验证连通。',
@@ -313,6 +443,12 @@ export const CATEGORIES = [
         title: '导出差异资产失败/为空？',
         intro: '导出依赖已完成、解包已结束，且至少存在新增或修改文件。',
         keywords: ['导出失败', '导出为空', '资产'],
+        titleEn: 'Export of diff assets fails or is empty?',
+        introEn: 'Export needs a finished compare, finished unpacking, and at least one added or modified file.',
+        keywordsEn: ['export failed', 'empty export', 'assets'],
+        blocksEn: [
+          list(['Confirm the compare has finished and auto-unpacking has ended.', 'If all differences are "unchanged" or "deleted without increment", an export without added/modified files is normal.', 'Very large packages take a while - wait for the download to complete.']),
+        ],
         blocks: [
           list([
             '确认对比已完成（状态为完成），且自动解包已结束。',
@@ -326,6 +462,12 @@ export const CATEGORIES = [
         title: '自动解包卡住或很慢？',
         intro: '大包 + 深嵌套 + 高并发，可能受深度/字节上限/机器性能影响。',
         keywords: ['解包慢', '解包卡', '嵌套', '内存'],
+        titleEn: 'Auto-unpacking is stuck or slow?',
+        introEn: 'Large packages, deep nesting and high concurrency can hit depth/size limits or machine limits.',
+        keywordsEn: ['slow unpack', 'stuck', 'nested', 'memory'],
+        blocksEn: [
+          list(['For large packages, turn auto-unpacking off first (compare the top level only) and expand manually when needed.', 'Lower "Max unpack depth" or "Unpack threads" under Settings -> Parse & Export to reduce resource use.', 'Archives that time out or hit the limit stay as manually expandable nodes - no structure is lost.']),
+        ],
         blocks: [
           list([
             '大包建议先关闭自动逐层解包（仅比对顶层），需要时再单独展开。',
@@ -339,6 +481,12 @@ export const CATEGORIES = [
         title: '桌面版如何配置 AI / 代理？',
         intro: '所有配置都在「配置中心」界面完成，无需手工改文件。',
         keywords: ['配置', '代理', '安装', '设置'],
+        titleEn: 'How do I configure AI / proxy in the desktop app?',
+        introEn: 'Everything is configured in the Settings UI - no manual file editing needed.',
+        keywordsEn: ['config', 'proxy', 'setup', 'settings'],
+        blocksEn: [
+          list(['Model service and key: Settings -> AI Service.', 'Proxy (for public models): Settings -> AI Service -> HTTP/HTTPS proxy.', 'Local/private models usually need no API Key and require "Strict SSRF" to be off.']),
+        ],
         blocks: [
           list([
             '模型服务与密钥：设置 → AI 服务。',
@@ -352,6 +500,7 @@ export const CATEGORIES = [
   {
     key: 'tips',
     title: '使用技巧',
+    titleKey: 'hd.cat.tips',
     icon: 'bi-lightbulb',
     entries: [
       entry({
@@ -359,6 +508,12 @@ export const CATEGORIES = [
         title: '用“忽略”减少噪声',
         intro: '日志、临时文件、图片等高频噪声可通过忽略规则快速排除，让差异树更干净。',
         keywords: ['忽略', '排除', '噪声', '过滤'],
+        titleEn: 'Use "Ignore" to cut noise',
+        introEn: 'Logs, temp files and images are common noise; ignore rules remove them quickly and keep the diff tree clean.',
+        keywordsEn: ['ignore', 'exclude', 'noise', 'filter'],
+        blocksEn: [
+          list(['Right-click an entry -> "Ignore" to add it to the ignore rules (persisted).', 'Under Settings -> Parse & Export -> Compare filter, check the file types to ignore entirely (e.g. .log/.tmp).', 'Ignore rules can be reviewed and cleared in one place via "Diff Tree -> Properties".']),
+        ],
         blocks: [
           list([
             '右键条目 →「忽略」：把该文件加入忽略规则，持久化生效。',
@@ -372,6 +527,12 @@ export const CATEGORIES = [
         title: '大包对比更快的姿势',
         intro: '同一份数据，合并忽略与关闭无关层可明显提速。',
         keywords: ['性能', '大包', '优化', '卡'],
+        titleEn: 'Faster compares on large packages',
+        introEn: 'On the same data set, combining ignores with turning off irrelevant levels speeds things up noticeably.',
+        keywordsEn: ['performance', 'large package', 'optimize', 'slow'],
+        blocksEn: [
+          list(['Turn off "Unchanged" to reduce rendering and scrolling work.', 'If not needed for business review, ignore .class / .jar build outputs and keep sources only.', 'Lower the unpack depth and thread count to avoid wasted resources.']),
+        ],
         blocks: [
           list([
             '关闭「未变」显示，减少渲染与浏览量。',
@@ -385,6 +546,12 @@ export const CATEGORIES = [
         title: '控制 AI 分析与成本',
         intro: 'AI 调用会按 token 计费，配置成本闸门可避免意外高额。',
         keywords: ['成本', 'token', '闸门', '预算'],
+        titleEn: 'Control AI usage and cost',
+        introEn: 'AI calls are billed per token; the cost gate avoids surprise bills.',
+        keywordsEn: ['cost', 'token', 'gate', 'budget'],
+        blocksEn: [
+          list(['Set the "Cost Gate Warning Tokens" threshold under Settings -> Parse & Export.', 'Above the threshold, AI analyses ask for confirmation before calling the model.', 'Prefer local/private models to reduce both compliance pressure and cost.']),
+        ],
         blocks: [
           list([
             '在「设置 → 解析与导出」设置「成本闸门告警 token」阈值。',
@@ -409,11 +576,18 @@ export const HELP_ENTRIES = (() => {
 })()
 
 /** 检索用的拼装文本（标题 + 导语 + 块文本 + 关键词），命中即纳入结果。 */
-function entrySearchText(e) {
-  const blockText = (e.blocks || [])
+function blocksText(blocks) {
+  return (blocks || [])
     .map((b) => [b.text, ...(b.items || [])].filter(Boolean).join(' '))
     .join(' ')
-  return [e.title, e.intro, blockText, ...(e.keywords || [])].join(' ').toLowerCase()
+}
+/** 检索文本：中英双语拼装（EN 界面按英文关键词、ZH 界面按中文关键词均可命中）。 */
+function entrySearchText(e) {
+  return [
+    e.title, e.titleEn, e.intro, e.introEn,
+    blocksText(e.blocks), blocksText(e.blocksEn),
+    ...(e.keywords || []), ...(e.keywordsEn || [])
+  ].filter(Boolean).join(' ').toLowerCase()
 }
 
 /**

@@ -299,6 +299,31 @@ describe('R12 i18n 框架', () => {
     wZh.unmount()
   })
 
+  it('批次11 帮助正文双语 + EN 检索命中（searchHelp 双语拼装）', async () => {
+    const { searchHelp, entryTitle, entryBlocks, HELP_ENTRIES } = await import('../lib/helpContent')
+    setLocale('en-US')
+    const w = mount(HelpDoc, { attachTo: document.body })
+    // 默认首条 = 术语对照，EN 下应为英文标题与英文正文
+    expect(entryTitle(HELP_ENTRIES[0])).toBe('Glossary: Chinese - English')
+    expect(w.text()).toContain('Glossary: Chinese - English')
+    expect(w.text()).toContain('Term list (Chinese - English: description)')
+    expect(w.text()).toContain('Tips')
+    w.unmount()
+
+    // 英文关键词检索（EN 界面搜英文）
+    expect(searchHelp('unpack').length).toBeGreaterThan(0)
+    expect(searchHelp('proxy').length).toBeGreaterThan(0)
+    expect(searchHelp('two columns').length).toBeGreaterThan(0)
+    // 中文关键词仍可命中（双语拼装）
+    expect(searchHelp('解包').length).toBeGreaterThan(0)
+    expect(entryBlocks(HELP_ENTRIES[0])[0].text).toContain('Term list')
+
+    setLocale('zh-CN')
+    const wZh = mount(HelpDoc, { attachTo: document.body })
+    expect(wZh.text()).toContain('术语中英对照')
+    wZh.unmount()
+  })
+
   it('帮助文档含「术语中英对照」条目', async () => {
     const w = mount(HelpDoc)
     expect(w.text()).toContain('术语中英对照')

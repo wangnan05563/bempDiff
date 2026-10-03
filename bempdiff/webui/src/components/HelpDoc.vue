@@ -6,7 +6,7 @@
 import { ref, computed, watch } from 'vue'
 import {
   CATEGORIES, HELP_ENTRIES, searchHelp, resolveAppVersion, contentMatchesVersion,
-  DOC_VERSION, PRODUCT_NAME
+  DOC_VERSION, PRODUCT_NAME, entryTitle, entryIntro, entryBlocks, categoryTitle
 } from '../lib/helpContent'
 import { setGuideButtonVisible, isGuideButtonVisible } from '../lib/guide'
 import { t } from '../lib/i18n'
@@ -46,6 +46,9 @@ const groups = computed(() => {
 
 const activeEntry = computed(() =>
   HELP_ENTRIES.find((e) => e.id === activeId.value) || HELP_ENTRIES[0] || null)
+// 分类标题（随语言切换）：HELP_ENTRIES 上的 categoryTitle 是构建期快照，这里按 categoryKey 实时取
+const activeCategory = computed(() => CATEGORIES.find((c) => c.key === (activeEntry.value && activeEntry.value.categoryKey)) || null)
+const blocks = computed(() => entryBlocks(activeEntry.value))
 const hitCount = computed(() => (query.value.trim() ? searchHelp(query.value).length : 0))
 
 // 切换条目后内容区回到顶部，保证从长文底部点导航也能看到新条目开头。
@@ -92,9 +95,9 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
             <button v-for="e in g.entries" :key="e.id" type="button"
                     class="list-group-item list-group-item-action py-1 hm-item"
                     :class="{ active: activeId === e.id }"
-                    :title="e.intro || e.title"
+                    :title="entryIntro(e) || entryTitle(e)"
                     @click="activeId = e.id">
-              <span class="hm-item-title">{{ e.title }}</span>
+              <span class="hm-item-title">{{ entryTitle(e) }}</span>
             </button>
           </div>
         </template>
@@ -107,13 +110,13 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
       <div class="helpdoc-content" ref="contentEl">
         <template v-if="activeEntry">
           <div class="d-flex align-items-center gap-2 mb-1">
-            <span class="badge text-bg-light border">{{ activeEntry.categoryTitle }}</span>
+            <span class="badge text-bg-light border">{{ activeCategory ? categoryTitle(activeCategory) : activeEntry.categoryTitle }}</span>
             <span class="text-secondary" style="font-size:.72rem" v-if="query">{{ t('hd.hitCount', { n: hitCount }) }}</span>
           </div>
-          <h5 class="hm-h">{{ activeEntry.title }}</h5>
-          <p class="text-body-secondary hm-intro">{{ activeEntry.intro }}</p>
+          <h5 class="hm-h">{{ entryTitle(activeEntry) }}</h5>
+          <p class="text-body-secondary hm-intro">{{ entryIntro(activeEntry) }}</p>
 
-          <template v-for="(b, bi) in activeEntry.blocks" :key="bi">
+          <template v-for="(b, bi) in blocks" :key="bi">
             <p v-if="b.type === 'para'" class="mb-2">{{ b.text }}</p>
             <ul v-else-if="b.type === 'list'" class="mb-2">
               <li v-for="(it, ii) in b.items" :key="ii">{{ it }}</li>
@@ -136,7 +139,7 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
     </div>
 
     <!-- 回到顶部（便于长文导航） -->
-    <button v-if="activeEntry && activeEntry.blocks.length" type="button"
+    <button v-if="activeEntry && blocks.length" type="button"
             class="btn btn-sm btn-outline-secondary hm-backtop"
             :title="t('hd.backTop')" @click="scrollTop">
       <i class="bi bi-arrow-up"></i>
