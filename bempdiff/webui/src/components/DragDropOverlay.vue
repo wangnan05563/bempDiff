@@ -10,6 +10,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { state, inferType, triggerCompare, toast } from '../store'
 import { createDropCycle } from '../lib/dropCycle'
+import { t } from '../lib/i18n'
 
 const active = ref(false)   // 遮罩是否显示（true 时覆盖全屏）
 const target = ref('old')   // 本次拖拽对应的包类型：'old' | 'new'
@@ -55,7 +56,7 @@ function onDrop(e) {
   active.value = false
   const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]
   const path = file && file.path
-  if (!path) { toast('warning', '未能读取拖入文件的路径，请使用桌面壳（Electron）拖入'); return }
+  if (!path) { toast('warning', t('drop.readFail')); return }
   const slot = cycle.claim() // 推进奇偶位：下一次自动切换为另一包类型
   assign(slot, path)
 }
@@ -92,11 +93,11 @@ onBeforeUnmount(() => {
   <div v-if="active" class="drop-mask" aria-hidden="true">
     <div class="drop-mask-box">
       <i class="bi" :class="target === 'old' ? 'bi-box-arrow-down-left' : 'bi-box-arrow-down-right'"></i>
-      <div class="drop-mask-title">{{ target === 'old' ? '请拖入老包' : '请拖入新包' }}</div>
+      <div class="drop-mask-title">{{ target === 'old' ? t('drop.old') : t('drop.new') }}</div>
       <div class="drop-mask-sub">
-        {{ target === 'old' ? '生产当前运行的版本（对比基准）' : '本次要下发的版本（对比目标）' }}
+        {{ target === 'old' ? t('drop.oldSub') : t('drop.newSub') }}
       </div>
-      <div class="drop-mask-tip">松手后自动填入{{ target === 'old' ? '老包' : '新包' }}路径</div>
+      <div class="drop-mask-tip">{{ t('drop.tip', { side: target === 'old' ? t('drop.side.old') : t('drop.side.new') }) }}</div>
     </div>
   </div>
 </template>

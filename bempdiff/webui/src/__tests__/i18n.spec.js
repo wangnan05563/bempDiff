@@ -8,6 +8,9 @@ import HelpDoc from '../components/HelpDoc.vue'
 import ShortcutHelp from '../components/ShortcutHelp.vue'
 import Downloads from '../components/Downloads.vue'
 import CostGateDialog from '../components/CostGateDialog.vue'
+import PathBar from '../components/PathBar.vue'
+import PathBreadcrumb from '../components/PathBreadcrumb.vue'
+import InfoPanel from '../components/InfoPanel.vue'
 
 describe('R12 i18n 框架', () => {
   beforeEach(() => {
@@ -110,6 +113,35 @@ describe('R12 i18n 框架', () => {
     const shZh = mount(ShortcutHelp, { attachTo: document.body })
     expect(shZh.text()).toContain('快捷键速查')
     shZh.unmount()
+  })
+
+  it('批次3 组件跟随语言：路径栏 / 面包屑 / 信息面板 EN 渲染', async () => {
+    setLocale('en-US')
+    state.job = { mode: 'package', tree: [], stats: null }
+    const pb = mount(PathBar, { props: { path: '' }, attachTo: document.body })
+    expect(pb.text()).toContain('No file selected')
+    pb.unmount()
+
+    const pbc = mount(PathBreadcrumb, { props: { modelValue: '' }, attachTo: document.body })
+    expect(pbc.text()).toContain('No path set')
+    pbc.unmount()
+
+    // 隔离：jsdom 视口 1024 ≤ 自动收起阈值 1080，需显式写偏好否则智能分析栏被收起、tab 不渲染
+    try { localStorage.setItem('bempdiff.analysisCollapsed', 'false') } catch (_) {}
+    state.aiPanelCollapsed = false
+    state.aiPanelTab = 'file'
+    state.tabs = []
+    state.activeKey = null
+    const ip = mount(InfoPanel, { attachTo: document.body })
+    expect(ip.text()).toContain('Single File')
+    expect(ip.text()).toContain('Global Summary')
+    expect(ip.text()).toContain('Breaking')
+    ip.unmount()
+
+    setLocale('zh-CN')
+    const pbZh = mount(PathBar, { props: { path: '' }, attachTo: document.body })
+    expect(pbZh.text()).toContain('未选择文件')
+    pbZh.unmount()
   })
 
   it('帮助文档含「术语中英对照」条目', async () => {

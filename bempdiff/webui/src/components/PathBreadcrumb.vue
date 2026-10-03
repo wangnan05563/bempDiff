@@ -8,6 +8,7 @@
 //  - 兼容 Windows 盘符（D: → D:/）与相对路径；disabled（AI 分析中）时全组件禁用。
 import { ref, computed, nextTick } from 'vue'
 import { toast } from '../store'
+import { t } from '../lib/i18n'
 
 const props = defineProps({
   modelValue: { type: String, default: '' }, // 完整路径字符串（双向绑定）
@@ -96,12 +97,14 @@ async function copyPath() {
     try { ok = document.execCommand('copy') } catch (e) { ok = false }
     document.body.removeChild(ta)
   }
-  toast('success', (props.label ? props.label + ' ' : '') + '路径已复制：' + text)
+  toast('success', props.label
+    ? t('pbc.copiedLabel', { label: props.label, path: text })
+    : t('pbc.copied', { path: text }))
 }
 </script>
 
 <template>
-  <div class="pbc" :class="{ 'pbc-disabled': disabled }" :title="modelValue || '未设置路径'" @click="onBarClick">
+  <div class="pbc" :class="{ 'pbc-disabled': disabled }" :title="modelValue || t('pbc.unset')" @click="onBarClick">
     <Transition name="pb-swap" mode="out-in">
       <input v-if="editing" ref="inputRef" v-model="editText" class="pb-input"
              :title="modelValue" spellcheck="false" autocomplete="off"
@@ -121,9 +124,9 @@ async function copyPath() {
             <i v-if="i === 0 && firstIsDrive" class="bi bi-hdd"></i>{{ seg }}
           </button>
         </template>
-        <span v-if="!segments.length" class="pb-empty">{{ label ? '未设置' + label + '路径' : '未设置路径' }}</span>
+        <span v-if="!segments.length" class="pb-empty">{{ label ? t('pbc.unsetLabel', { label }) : t('pbc.unset') }}</span>
         <button v-if="modelValue" type="button" class="pb-copy" :disabled="disabled"
-                aria-label="复制完整路径" title="复制完整路径" @click.stop="copyPath">
+                :aria-label="t('pbc.copy')" :title="t('pbc.copy')" @click.stop="copyPath">
           <i class="bi bi-clipboard"></i>
         </button>
       </div>

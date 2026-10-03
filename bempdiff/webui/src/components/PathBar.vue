@@ -7,6 +7,7 @@
 // folder 模式可传 rootPath（磁盘根）→ 编辑框显示绝对路径。
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { state, selectEntry, toast, locateTreePrefix } from '../store'
+import { t } from '../lib/i18n'
 
 const props = defineProps({
   path: { type: String, default: '' },      // 相对 key
@@ -30,11 +31,11 @@ const fullPath = computed(() => {
 const rootLabel = computed(() => {
   if (props.rootPath) {
     const m = props.rootPath.match(/^[a-zA-Z]:/)
-    return m ? m[0] : '根目录'
+    return m ? m[0] : t('pb.rootDrive')
   }
-  return '包根'
+  return t('pb.rootPkg')
 })
-const rootTitle = computed(() => (isFolderMode.value ? (props.rootPath || '') : '压缩包内根目录'))
+const rootTitle = computed(() => (isFolderMode.value ? (props.rootPath || '') : t('pb.rootPkgTitle')))
 
 // ---------- 编辑模式 ----------
 const editing = ref(false)
@@ -84,7 +85,7 @@ function commitEdit() {
   const tree = (state.job && state.job.tree) || []
   if (tree.some(n => n.key === rel)) { selectEntry(rel); return }        // 精确文件 → 打开
   if (tree.some(n => n.key.startsWith(rel + '/'))) { locateTreePrefix(rel); return } // 目录前缀 → 定位
-  toast('warning', '未找到该路径（请输入差异树中的相对路径）')
+  toast('warning', t('pb.notFound'))
 }
 
 function onEditKey(e) {
@@ -154,7 +155,7 @@ onBeforeUnmount(() => { if (pbResize) pbResize.disconnect() })
 </script>
 
 <template>
-  <div class="pathbar" :title="fullPath || '未选择文件'" @click="onBarClick">
+  <div class="pathbar" :title="fullPath || t('pb.empty')" @click="onBarClick">
     <Transition name="pb-swap" mode="out-in">
       <input v-if="editing" ref="inputRef" v-model="editText" class="pb-input"
              :title="fullPath" spellcheck="false" autocomplete="off"
@@ -172,7 +173,7 @@ onBeforeUnmount(() => { if (pbResize) pbResize.disconnect() })
             {{ seg }}
           </button>
         </template>
-        <span v-if="!segments.length" class="pb-empty">未选择文件</span>
+        <span v-if="!segments.length" class="pb-empty">{{ t('pb.empty') }}</span>
       </div>
     </Transition>
     <!-- 溢出渐隐遮罩：指示该方向还有可滚动内容（长路径不被截断后"看不见"）。
