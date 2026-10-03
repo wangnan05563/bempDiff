@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
 import { api } from '../api/client'
 import { ensureAiBudget } from '../store'
+import { t } from '../lib/i18n'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -38,13 +39,13 @@ function reset() {
 
 async function start() {
   if (!props.jobId) {
-    errorMsg.value = '当前没有可分析的任务，请先完成一次「开始比对」。'
+    errorMsg.value = t('ai.noJob')
     return
   }
   // 成本闸门（P0 #5）：超阈值强制确认，未确认则不发起任何 AI 调用
   const ok = await ensureAiBudget('analyze')
   if (!ok) {
-    errorMsg.value = '已取消：本次 AI 分析预估超成本阈值，未发起调用。'
+    errorMsg.value = t('ai.cancelled')
     return
   }
   reset()
@@ -59,7 +60,7 @@ async function start() {
     onDone: () => { streaming.value = false; live.value = false; scrollBottom() },
     onError: (d) => {
       streaming.value = false; live.value = false
-      errorMsg.value = (d && d.message) || '分析失败'
+      errorMsg.value = (d && d.message) || t('ai.analyzeFailed')
     }
   })
 }
@@ -87,9 +88,10 @@ function scrollBottom() {
   })
 }
 
+// 思考步骤阶段标签：文案走 i18n（渲染期求值，切语言即时刷新）
+const PHASE_KEY = { thinking: 'ai.phase.thinking', tool_call: 'ai.phase.tool_call', composing: 'ai.phase.composing' }
 function phaseLabel(p) {
-  const m = { thinking: '思考', tool_call: '调用', composing: '组织' }
-  return m[p] || '思考'
+  return t(PHASE_KEY[p] || 'ai.phase.thinking')
 }
 
 function toggleThinking() {
@@ -105,8 +107,8 @@ function toggleThinking() {
       <div class="modal-content">
         <div class="modal-header py-2 px-4">
           <h6 class="modal-title mb-0">
-            <i class="bi bi-cpu"></i> AI 分析
-            <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">实时流式输出 · 含可展开的思考过程</small>
+            <i class="bi bi-cpu"></i> {{ t('ai.dialogTitle') }}
+            <small class="fw-normal text-secondary ms-2" style="font-size:.75rem">{{ t('ai.subtitle') }}</small>
           </h6>
           <button type="button" class="btn-close" @click="close"></button>
         </div>
@@ -121,7 +123,8 @@ function toggleThinking() {
             <div class="thinking-header" @click="toggleThinking">
               <i class="bi bi-lightbulb thinking-icon"></i>
               <span class="thinking-summary">
-                已思考 {{ thinkingSteps.length }} 步<span v-if="thinkingSteps.length"> · 点击{{ (thinkingCollapsed && !live) ? '展开' : '折叠' }}查看思考过程</span>
+                {{ t('ai.thoughtSteps', { n: thinkingSteps.length })
+                }}<span v-if="thinkingSteps.length"> · {{ (thinkingCollapsed && !live) ? t('ai.clickExpand') : t('ai.clickCollapse') }}</span>
               </span>
               <i class="bi thinking-toggle" :class="(thinkingCollapsed && !live) ? 'bi-chevron-right' : 'bi-chevron-down'"></i>
             </div>
@@ -136,10 +139,10 @@ function toggleThinking() {
           <!-- 答案流式输出区 -->
           <div class="ai-answer ai-md">
             <div v-if="!hasAnswer && streaming" class="loading-dots">
-              <span></span><span></span><span></span> AI 正在生成…
+              <span></span><span></span><span></span> {{ t('ai.generating') }}
             </div>
             <div v-else-if="!hasAnswer && !streaming && !errorMsg" class="text-secondary" style="font-size:.82rem">
-              暂无输出
+              {{ t('ai.empty') }}
             </div>
             <div v-html="renderMarkdown(answer)"></div><span v-if="streaming" class="stream-cursor">▋</span>
           </div>
@@ -147,16 +150,16 @@ function toggleThinking() {
 
         <div class="modal-footer py-2 px-4 d-flex align-items-center gap-2">
           <span class="me-auto text-secondary" style="font-size:.75rem">
-            <span v-if="streaming"><i class="bi bi-arrow-repeat spin"></i> 分析中…</span>
-            <span v-else-if="hasAnswer"><i class="bi bi-check2-circle"></i> 分析完成</span>
+            <span v-if="streaming"><i class="bi bi-arrow-repeat spin"></i> {{ t('ai.analyzing') }}</span>
+            <span v-else-if="hasAnswer"><i class="bi bi-check2-circle"></i> {{ t('ai.done') }}</span>
           </span>
           <button v-if="streaming" class="btn btn-outline-secondary btn-sm" @click="stop">
-            <i class="bi bi-stop-fill"></i> 停止
+            <i class="bi bi-stop-fill"></i> {{ t('ai.stop') }}
           </button>
           <button v-else class="btn btn-outline-secondary btn-sm" :disabled="!props.jobId" @click="start">
-            <i class="bi bi-arrow-clockwise"></i> 重新分析
+            <i class="bi bi-arrow-clockwise"></i> {{ t('ai.retry') }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="close">关闭</button>
+          <button class="btn btn-primary btn-sm" @click="close">{{ t('common.close') }}</button>
         </div>
       </div>
     </div>

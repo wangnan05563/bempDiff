@@ -1,10 +1,13 @@
 // R12 i18n（二期 T01477）——框架与首批覆盖验收。
 import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { t, setLocale, i18n, tTerm, TERM_TABLE, LOCALES, LANG_KEY } from '../lib/i18n'
+import { t, setLocale, i18n, tTerm, TERM_TABLE, LOCALES, LANG_KEY, allKeys } from '../lib/i18n'
 import { state } from '../store'
 import CompareOverlay from '../components/CompareOverlay.vue'
 import HelpDoc from '../components/HelpDoc.vue'
+import ShortcutHelp from '../components/ShortcutHelp.vue'
+import Downloads from '../components/Downloads.vue'
+import CostGateDialog from '../components/CostGateDialog.vue'
 
 describe('R12 i18n 框架', () => {
   beforeEach(() => {
@@ -68,6 +71,45 @@ describe('R12 i18n 框架', () => {
     await w.vm.$nextTick()
     expect(w.findAll('.cmp-step').map(s => s.text().trim())).toEqual(['解包', '比对', '出树'])
     w.unmount()
+  })
+
+  it('渐进迁移护栏：zh-CN 的每个 key 在 en-US 都有非空译文（防漏译）', () => {
+    const keys = allKeys()
+    expect(keys.length).toBeGreaterThanOrEqual(200)
+    setLocale('en-US')
+    const missing = keys.filter(k => !t(k) || t(k) === k)
+    expect(missing, `en-US 漏译 key：${missing.join(', ')}`).toEqual([])
+    setLocale('zh-CN')
+    const missingZh = keys.filter(k => !t(k))
+    expect(missingZh).toEqual([])
+  })
+
+  it('批次2 组件跟随语言：快捷键/下载管理/成本闸门 EN 渲染', async () => {
+    setLocale('en-US')
+    const sh = mount(ShortcutHelp, { attachTo: document.body })
+    expect(sh.text()).toContain('Keyboard Shortcuts')
+    expect(sh.text()).toContain('Start compare')
+    sh.unmount()
+
+    state.exportRecords = []
+    state.syncExports = []
+    const dl = mount(Downloads, { attachTo: document.body })
+    expect(dl.text()).toContain('Downloads')
+    expect(dl.text()).toContain('Sync Exports')
+    expect(dl.text()).toContain('Last 7 days')
+    dl.unmount()
+
+    state.costGate = { action: 'report', estimate: 90000, threshold: 20000 }
+    const cg = mount(CostGateDialog, { attachTo: document.body })
+    expect(cg.text()).toContain('AI Cost Estimate Confirmation')
+    expect(cg.text()).toContain('AI Report')
+    cg.unmount()
+    state.costGate = null
+
+    setLocale('zh-CN')
+    const shZh = mount(ShortcutHelp, { attachTo: document.body })
+    expect(shZh.text()).toContain('快捷键速查')
+    shZh.unmount()
   })
 
   it('帮助文档含「术语中英对照」条目', async () => {

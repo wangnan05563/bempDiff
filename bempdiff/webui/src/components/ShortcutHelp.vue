@@ -2,9 +2,14 @@
 // R6 快捷键速查面板（二期 T01465）：按作用域分组的全局速查，「?」唤起、Esc 或点击遮罩关闭。
 import { onMounted, onBeforeUnmount } from 'vue'
 import { SHORTCUTS, groupByScope } from '../lib/shortcuts'
+import { t } from '../lib/i18n'
 
 const emit = defineEmits(['close'])
 const groups = groupByScope(SHORTCUTS)
+
+// 文案取 i18n：有 labelKey 走 t()，否则回退清单里的中文原文
+const labelOf = (s) => (s && s.labelKey ? t(s.labelKey) : (s ? s.label : ''))
+const scopeOf = (g) => (g && g.items && g.items[0] && g.items[0].scopeKey ? t(g.items[0].scopeKey) : (g ? g.scope : ''))
 
 function onKey(e) {
   if (e.key === 'Escape' || e.key === '?') {
@@ -18,22 +23,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 <template>
   <div class="modal-backdrop" @click="emit('close')">
-    <div class="shortcut-panel shadow" role="dialog" aria-label="快捷键速查" @click.stop>
+    <div class="shortcut-panel shadow" role="dialog" :aria-label="t('sc.title')" @click.stop>
       <div class="d-flex justify-content-between align-items-center mb-2">
-        <span style="font-weight:600"><i class="bi bi-keyboard me-1"></i>快捷键速查</span>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-2" aria-label="关闭" @click="emit('close')">
+        <span style="font-weight:600"><i class="bi bi-keyboard me-1"></i>{{ t('sc.title') }}</span>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" :aria-label="t('common.close')" @click="emit('close')">
           <i class="bi bi-x-lg"></i>
         </button>
       </div>
       <div v-for="g in groups" :key="g.scope" class="mb-2">
-        <div class="sc-scope text-secondary" style="font-size:.7rem">{{ g.scope }}</div>
+        <div class="sc-scope text-secondary" style="font-size:.7rem">{{ scopeOf(g) }}</div>
         <div v-for="s in g.items" :key="s.keys + s.label" class="sc-row d-flex justify-content-between align-items-center">
-          <span class="sc-label">{{ s.label }}</span>
+          <span class="sc-label">{{ labelOf(s) }}</span>
           <kbd class="sc-keys">{{ s.keys }}</kbd>
         </div>
       </div>
       <div class="text-secondary" style="font-size:.68rem">
-        输入框内不劫持全局快捷键；Ctrl+A / Ctrl+C 仅在无原生文本选区时接管。
+        {{ t('sc.note') }}
       </div>
     </div>
   </div>

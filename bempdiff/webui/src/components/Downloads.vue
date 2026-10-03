@@ -1,11 +1,13 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { state, toggleExports, refreshExports, deleteExport, removeSyncExport, fmtBytes } from '../store'
+import { t } from '../lib/i18n'
 
 const query = ref('')
 const range = ref('all') // all / today /7d
 
-const STATUS_LABEL = { queued: '排队', running: '生成中', done: '完成', error: '失败' }
+// 状态徽章文案走 i18n（key 映射，渲染期求值以支持切语言即时刷新）
+const STATUS_KEY = { queued: 'dl.status.queued', running: 'dl.status.running', done: 'dl.status.done', error: 'dl.status.error' }
 
 const asyncList = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -34,50 +36,50 @@ function fmtTime(ms) {
 </script>
 
 <template>
-  <div class="dl-panel shadow" role="dialog" aria-label="下载管理">
+  <div class="dl-panel shadow" role="dialog" :aria-label="t('dl.title')">
     <div class="dl-head">
-      <span class="fw-semibold"><i class="bi bi-download me-1"></i>下载管理</span>
-      <span class="text-secondary" style="font-size:.72rem">导出记录</span>
+      <span class="fw-semibold"><i class="bi bi-download me-1"></i>{{ t('dl.title') }}</span>
+      <span class="text-secondary" style="font-size:.72rem">{{ t('dl.subtitle') }}</span>
       <div class="ms-auto d-flex gap-1">
-        <button class="btn btn-sm btn-outline-secondary" aria-label="刷新列表" title="刷新列表" @click="refreshExports()"><i class="bi bi-arrow-clockwise"></i></button>
-        <button class="btn btn-sm btn-outline-secondary" aria-label="关闭" title="关闭" @click="toggleExports()"><i class="bi bi-x-lg"></i></button>
+        <button class="btn btn-sm btn-outline-secondary" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="refreshExports()"><i class="bi bi-arrow-clockwise"></i></button>
+        <button class="btn btn-sm btn-outline-secondary" :aria-label="t('common.close')" :title="t('common.close')" @click="toggleExports()"><i class="bi bi-x-lg"></i></button>
       </div>
     </div>
 
     <div class="dl-hint text-secondary">
-      同步导出资产保存在浏览器下载目录；异步导出资产由后端生成，完成后在此点击「下载」。查看记录，按时间回溯。
+      {{ t('dl.hint') }}
     </div>
 
     <!-- 同步导出资产（本机浏览器下载目录，客户端回溯） -->
-    <div class="dl-section-title"><i class="bi bi-lightning-charge"></i> 同步导出资产
-      <span class="text-secondary" style="font-size:.66rem">共 {{ syncList.length }} 项</span>
+    <div class="dl-section-title"><i class="bi bi-lightning-charge"></i> {{ t('dl.sync') }}
+      <span class="text-secondary" style="font-size:.66rem">{{ t('dl.count', { n: syncList.length }) }}</span>
     </div>
     <div class="dl-list dl-list-sync">
       <template v-if="syncList.length">
         <div v-for="s in syncList" :key="s.createdAt" class="dl-row">
           <div class="dl-main">
             <span class="dl-name" :title="s.filename">{{ s.filename }}</span>
-            <span class="text-secondary dl-sub">同步导出 · {{ fmtTime(s.createdAt) }} · 已保存到浏览器下载目录</span>
+            <span class="text-secondary dl-sub">{{ t('dl.syncSub', { time: fmtTime(s.createdAt) }) }}</span>
           </div>
           <span class="text-secondary dl-size">{{ fmtBytes(s.size) }}</span>
           <div class="dl-actions">
-            <button class="btn btn-sm btn-outline-secondary" aria-label="从本机记录中移除（不影响已下载文件）" title="从本机记录中移除（不影响已下载文件）" @click="removeSyncExport(s.createdAt)">移除</button>
+            <button class="btn btn-sm btn-outline-secondary" :aria-label="t('dl.removeTitle')" :title="t('dl.removeTitle')" @click="removeSyncExport(s.createdAt)">{{ t('dl.remove') }}</button>
           </div>
         </div>
       </template>
-      <div v-else class="dl-empty">暂无同步导出记录（小包直接下载后此处出现）</div>
+      <div v-else class="dl-empty">{{ t('dl.emptySync') }}</div>
     </div>
 
     <!-- 异步导出资产（后端生成记录，可下载/删除） -->
-    <div class="dl-section-title"><i class="bi bi-clock-history"></i> 异步导出资产
-      <span class="text-secondary" style="font-size:.66rem">共 {{ asyncList.length }} 项</span>
+    <div class="dl-section-title"><i class="bi bi-clock-history"></i> {{ t('dl.async') }}
+      <span class="text-secondary" style="font-size:.66rem">{{ t('dl.count', { n: asyncList.length }) }}</span>
     </div>
     <div class="dl-toolbar d-flex gap-2">
-      <input class="form-control form-control-sm" v-model.trim="query" placeholder="筛选文件名或任务ID">
+      <input class="form-control form-control-sm" v-model.trim="query" :placeholder="t('dl.filterPlaceholder')">
       <select class="form-select form-select-sm" style="width:auto" v-model="range">
-        <option value="all">全部时间</option>
-        <option value="today">今天</option>
-        <option value="7d">近 7 天</option>
+        <option value="all">{{ t('dl.range.all') }}</option>
+        <option value="today">{{ t('dl.range.today') }}</option>
+        <option value="7d">{{ t('dl.range.7d') }}</option>
       </select>
     </div>
     <div class="dl-list dl-list-async">
@@ -85,20 +87,20 @@ function fmtTime(ms) {
         <div v-for="r in asyncList" :key="r.id" class="dl-row">
           <div class="dl-main">
             <span class="dl-name" :title="r.filename">{{ r.filename }}</span>
-            <span class="text-secondary dl-sub" :title="r.id">任务 {{ r.id }} · {{ fmtTime(r.createdAt) }}</span>
+            <span class="text-secondary dl-sub" :title="r.id">{{ t('dl.task', { id: r.id, time: fmtTime(r.createdAt) }) }}</span>
           </div>
-          <span :class="statusChip(r)">{{ STATUS_LABEL[r.status] || r.status }}</span>
+          <span :class="statusChip(r)">{{ STATUS_KEY[r.status] ? t(STATUS_KEY[r.status]) : r.status }}</span>
           <span class="text-secondary dl-size">{{ r.status === 'done' ? fmtBytes(r.size) : fmtBytes(r.estimatedBytes) }}</span>
           <span v-if="r.status === 'error'" class="text-danger dl-msg" :title="r.message">{{ r.message }}</span>
           <span v-else-if="r.status === 'running' && r.etaText" class="text-secondary dl-msg">{{ r.etaText }}</span>
           <div class="dl-actions">
             <a v-if="r.status === 'done'" class="btn btn-sm btn-primary"
-               :href="`/api/export/${encodeURIComponent(r.id)}/download`" :download="r.filename">下载</a>
-            <button class="btn btn-sm btn-outline-danger" aria-label="删除此导出记录与文件" title="删除此导出记录与文件" @click="deleteExport(r.id)">删除</button>
+               :href="`/api/export/${encodeURIComponent(r.id)}/download`" :download="r.filename">{{ t('common.download') }}</a>
+            <button class="btn btn-sm btn-outline-danger" :aria-label="t('dl.deleteTitle')" :title="t('dl.deleteTitle')" @click="deleteExport(r.id)">{{ t('common.delete') }}</button>
           </div>
         </div>
       </template>
-      <div v-else class="dl-empty">暂无异步导出记录（大包导出完成后此处出现）。</div>
+      <div v-else class="dl-empty">{{ t('dl.emptyAsync') }}</div>
     </div>
   </div>
 </template>
