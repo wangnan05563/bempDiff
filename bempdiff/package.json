@@ -7,7 +7,11 @@
     "dev": "cd webui && npm run dev",
     "build": "cd webui && npm run build",
     "dist": "electron-builder",
-    "dist:dir": "electron-builder --dir"
+    "dist:dir": "electron-builder --dir",
+    "jre:fetch": "node ../tooling/scripts/fetch-jre.mjs",
+    "jre:status": "node ../tooling/scripts/switch-jre.mjs --status",
+    "dist:arm64": "node ../tooling/scripts/switch-jre.mjs --arch arm64 && electron-builder --arm64 --config.nsis.artifactName=BempDiff-${version}-arm64-setup.${ext}",
+    "dist:x64": "node ../tooling/scripts/switch-jre.mjs --arch x64 && electron-builder --x64"
   },
   "devDependencies": {
     "electron-builder": "^24.13.3"
