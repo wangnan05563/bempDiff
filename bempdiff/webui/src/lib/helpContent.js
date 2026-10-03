@@ -83,6 +83,7 @@ export const CATEGORIES = [
   {
     key: 'basics',
     title: '基础功能',
+    titleKey: 'hd.cat.basics',
     icon: 'bi-stack',
     entries: [
       entry({
@@ -187,6 +188,7 @@ export const CATEGORIES = [
   {
     key: 'advanced',
     title: '高级功能',
+    titleKey: 'hd.cat.advanced',
     icon: 'bi-stars',
     entries: [
       entry({
@@ -275,6 +277,7 @@ export const CATEGORIES = [
   {
     key: 'faq',
     title: '常见问题（FAQ）',
+    titleKey: 'hd.cat.faq',
     icon: 'bi-question-circle',
     entries: [
       entry({

@@ -9,6 +9,10 @@ import {
   DOC_VERSION, PRODUCT_NAME
 } from '../lib/helpContent'
 import { setGuideButtonVisible, isGuideButtonVisible } from '../lib/guide'
+import { t } from '../lib/i18n'
+
+// 分类标题取 i18n：有 titleKey 走 t()，否则回退清单里的中文原文
+const catTitle = (g) => (g && g.titleKey ? t(g.titleKey) : (g ? g.title : ''))
 
 const query = ref('')
 const activeId = ref(HELP_ENTRIES[0] ? HELP_ENTRIES[0].id : '')
@@ -56,21 +60,21 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
     <div class="helpdoc-head">
       <div class="d-flex align-items-center gap-2 flex-wrap">
         <i class="bi bi-question-circle-fill text-primary"></i>
-        <span class="fw-semibold">帮助文档</span>
-        <span class="badge text-bg-light border" title="当前产品版本">{{ PRODUCT_NAME }} v{{ appVersion }}</span>
-        <span class="badge text-bg-light border" title="帮助内容版本，与产品版本对照判断是否滞后">内容 v{{ DOC_VERSION }}</span>
-        <span v-if="!synced" class="badge text-bg-warning" title="帮助内容版本与产品版本的主版本不一致，文档可能滞后">内容可能滞后</span>
+        <span class="fw-semibold">{{ t('hd.title') }}</span>
+        <span class="badge text-bg-light border" :title="t('hd.appVer')">{{ PRODUCT_NAME }} v{{ appVersion }}</span>
+        <span class="badge text-bg-light border" :title="t('hd.docVer')">{{ t('hd.docVerShort') }} v{{ DOC_VERSION }}</span>
+        <span v-if="!synced" class="badge text-bg-warning" :title="t('hd.staleTip')">{{ t('hd.stale') }}</span>
         <button class="btn btn-sm ms-auto" :class="guideBtnOn ? 'btn-primary' : 'btn-outline-secondary'"
                 type="button" @click="toggleGuideButton"
-                title="开启/关闭左下角的常驻「引导」按钮；开启后会立即播放功能引导演示">
-          <i class="bi bi-life-preserver me-1"></i>{{ guideBtnOn ? '关闭引导' : '开始引导' }}
+                :title="t('hd.guideTip')">
+          <i class="bi bi-life-preserver me-1"></i>{{ guideBtnOn ? t('hd.guideOn') : t('hd.guideOff') }}
         </button>
       </div>
       <div class="input-group input-group-sm helpdoc-search">
         <span class="input-group-text"><i class="bi bi-search"></i></span>
         <input class="form-control" type="text" v-model.trim="query"
-               placeholder="搜索功能、操作或问题（如：导出 / 解包 / AI）" aria-label="搜索帮助文档">
-        <button v-if="query" class="btn btn-outline-secondary" type="button" title="清空搜索"
+               :placeholder="t('hd.searchPlaceholder')" :aria-label="t('hd.searchAria')">
+        <button v-if="query" class="btn btn-outline-secondary" type="button" :title="t('hd.searchClear')"
                 @click="query = ''"><i class="bi bi-x-lg"></i></button>
       </div>
     </div>
@@ -81,8 +85,8 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
       <div class="helpdoc-nav">
         <template v-if="groups.length">
           <div v-for="g in groups" :key="g.key" class="hm-group">
-            <div class="hm-group-title" :title="g.title">
-              <i class="bi" :class="g.icon"></i> {{ g.title }}
+            <div class="hm-group-title" :title="catTitle(g)">
+              <i class="bi" :class="g.icon"></i> {{ catTitle(g) }}
               <span class="text-secondary hm-count">{{ g.entries.length }}</span>
             </div>
             <button v-for="e in g.entries" :key="e.id" type="button"
@@ -95,7 +99,7 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
           </div>
         </template>
         <div v-else class="text-secondary px-2 py-3 text-center" style="font-size:.78rem">
-          未找到与“{{ query }}”相关的内容，换个关键词试试。
+          {{ t('hd.noHit', { q: query }) }}
         </div>
       </div>
 
@@ -104,7 +108,7 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
         <template v-if="activeEntry">
           <div class="d-flex align-items-center gap-2 mb-1">
             <span class="badge text-bg-light border">{{ activeEntry.categoryTitle }}</span>
-            <span class="text-secondary" style="font-size:.72rem" v-if="query">命中 {{ hitCount }} 项</span>
+            <span class="text-secondary" style="font-size:.72rem" v-if="query">{{ t('hd.hitCount', { n: hitCount }) }}</span>
           </div>
           <h5 class="hm-h">{{ activeEntry.title }}</h5>
           <p class="text-body-secondary hm-intro">{{ activeEntry.intro }}</p>
@@ -127,14 +131,14 @@ function scrollTop() { if (contentEl.value) contentEl.value.scrollTop = 0 }
             </div>
           </template>
         </template>
-        <div v-else class="text-secondary py-4 text-center">请选择左侧目录中的条目查看说明。</div>
+        <div v-else class="text-secondary py-4 text-center">{{ t('hd.pickEntry') }}</div>
       </div>
     </div>
 
     <!-- 回到顶部（便于长文导航） -->
     <button v-if="activeEntry && activeEntry.blocks.length" type="button"
             class="btn btn-sm btn-outline-secondary hm-backtop"
-            title="回到内容顶部" @click="scrollTop">
+            :title="t('hd.backTop')" @click="scrollTop">
       <i class="bi bi-arrow-up"></i>
     </button>
   </div>

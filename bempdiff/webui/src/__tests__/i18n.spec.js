@@ -246,6 +246,22 @@ describe('R12 i18n 框架', () => {
     wZh.unmount()
   })
 
+  it('批次8 帮助文档外壳 EN 渲染（正文内容仍为中文，属独立批次）', async () => {
+    setLocale('en-US')
+    const w = mount(HelpDoc, { attachTo: document.body })
+    expect(w.text()).toContain('Help Documentation')
+    expect(w.text()).toContain('Basics')
+    expect(w.text()).toContain('Advanced')
+    expect(w.text()).toContain('FAQ')
+    expect(w.find('input[aria-label="Search help documentation"]').exists()).toBe(true)
+    w.unmount()
+    setLocale('zh-CN')
+    const wZh = mount(HelpDoc, { attachTo: document.body })
+    expect(wZh.text()).toContain('帮助文档')
+    expect(wZh.text()).toContain('基础功能')
+    wZh.unmount()
+  })
+
   it('帮助文档含「术语中英对照」条目', async () => {
     const w = mount(HelpDoc)
     expect(w.text()).toContain('术语中英对照')
