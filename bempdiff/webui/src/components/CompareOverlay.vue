@@ -36,7 +36,7 @@ const phaseIdx = computed(() => {
   <div class="busy-overlay" v-if="state.busy">
     <div class="busy-card shadow">
       <div class="spinner-border text-primary" role="status"></div>
-      <div>{{ state.busyText || '处理中…' }}</div>
+      <div>{{ state.busyText || t('app.processing') }}</div>
 
       <div v-if="comparing" class="w-100 mt-2">
         <!-- R3 三段进度指示：解包 → 比对 → 出树（当前段高亮，已完成段打勾） -->
@@ -53,11 +53,11 @@ const phaseIdx = computed(() => {
           </template>
         </div>
         <div class="d-flex justify-content-between mb-1" style="font-size:.75rem;color:var(--bs-secondary-color)">
-          <span>{{ state.jobProgress.message || '处理中…' }}</span>
+          <span>{{ state.jobProgress.message || t('app.processing') }}</span>
           <span>{{ pct }}%</span>
         </div>
         <div class="progress" style="height:.5rem">
-          <div class="progress-bar progress-bar-striped progress-bar-animated" aria-label="比对总进度"
+          <div class="progress-bar progress-bar-striped progress-bar-animated" :aria-label="t('cmp.totalProgress')"
                role="progressbar" :aria-valuenow="pct" aria-valuemin="0" aria-valuemax="100"
                :style="{ width: pct + '%' }"></div>
         </div>
@@ -71,7 +71,7 @@ const phaseIdx = computed(() => {
       <div v-else class="w-100 mt-3">
         <div class="progress" style="height:.5rem">
           <div class="progress-bar progress-bar-striped progress-bar-animated w-100"
-               role="progressbar" aria-label="报告生成中"></div>
+               role="progressbar" :aria-label="t('cmp.reporting')"></div>
         </div>
       </div>
     </div>

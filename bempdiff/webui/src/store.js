@@ -7,6 +7,8 @@ import { loadIgnoreRules, saveIgnoreRules, addRule as addRuleFn, removeRule as r
 import { friendlyAiError } from './lib/ai_error'
 import { resolveAppVersion } from './lib/helpContent'
 import { t } from './lib/i18n'
+// 别名导入：runAiTaskStream(task) 等函数以 t 作任务参数名，函数体内用 tr() 取译文避免覆蔽冲突
+import { t as tr } from './lib/i18n'
 
 // 状态相关展示常量，集中维护，DiffTree/DiffView/InfoPanel 共享，避免重复定义
 export const STATUS_META = {
@@ -808,12 +810,13 @@ export async function runAiClassify() {
 // task.status ∈ { thinking, streaming, done, error, aborted }
 
 /** AI 分析类别目录：用户可在控制台下拉选择，并行发起多种类别的分析。 */
+// label 保留中文原文（兼容既有单测断言）；labelKey 为 i18n 键（下拉与任务标题渲染侧优先）
 export const AI_CATEGORIES = [
-  { key: 'risk',       label: '整体风险分析',   icon: 'bi-shield-exclamation' },
-  { key: 'breaking',   label: '破坏性变更专项', icon: 'bi-exclamation-octagon' },
-  { key: 'impact',     label: '影响范围分析',   icon: 'bi-diagram-3' },
-  { key: 'testpoints', label: '测试要点分析',   icon: 'bi-list-check' },
-  { key: 'custom',     label: '自定义问题',     icon: 'bi-chat-left-text' }
+  { key: 'risk',       label: '整体风险分析',   labelKey: 'cat.risk',       icon: 'bi-shield-exclamation' },
+  { key: 'breaking',   label: '破坏性变更专项', labelKey: 'cat.breaking',   icon: 'bi-exclamation-octagon' },
+  { key: 'impact',     label: '影响范围分析',   labelKey: 'cat.impact',     icon: 'bi-diagram-3' },
+  { key: 'testpoints', label: '测试要点分析',   labelKey: 'cat.testpoints', icon: 'bi-list-check' },
+  { key: 'custom',     label: '自定义问题',     labelKey: 'cat.custom',     icon: 'bi-chat-left-text' }
 ]
 
 let aiTaskSeq = 0
@@ -871,21 +874,21 @@ function fileSummaryLabel(fileKey) {
 export function startAiAnalysis(category = 'risk', prompt = '', opts = {}) {
   // 比对进行中（含解析/解包/对比）直接拦截并给进度引导，避免竞态下后端返回「409 比对尚未完成: RUNNING」。
   if (isRunning()) {
-    toast('warning', '比对仍在进行中，请等待比对完成后，再发起 AI 分析')
+    toast('warning', t('ac.waitCompare'))
     return
   }
   if (!state.job || state.job.status !== 'DONE') {
-    toast('warning', '请先完成一次「开始比对」，再发起 AI 分析')
+    toast('warning', t('ac.needCompare'))
     return
   }
   // 'file' 不在下拉目录中（仅右键入口使用），找不到时构造虚拟类别避免误标为「整体风险分析」
-  const cat = AI_CATEGORIES.find(c => c.key === category) || { key: category, label: '文件总结', icon: 'bi-file-earmark-text' }
+  const cat = AI_CATEGORIES.find(c => c.key === category) || { key: category, label: t('cat.file'), labelKey: 'cat.file', icon: 'bi-file-earmark-text' }
   const fileKey = opts.fileKey || null
   const fileStatus = opts.fileStatus || null
   const id = 'ai-' + (++aiTaskSeq)
   const title = cat.key === 'custom'
-    ? '自定义：' + (prompt || '').slice(0, 18)
-    : (fileKey ? '文件总结：' + fileSummaryLabel(fileKey) : cat.label)
+    ? t('ac.customTitle', { q: (prompt || '').slice(0, 18) })
+    : (fileKey ? t('ac.fileTitle', { name: fileSummaryLabel(fileKey) }) : t(cat.labelKey || 'cat.file'))
   const task = {
     id, category: cat.key, title, prompt: cat.key === 'custom' ? (prompt || '') : '',
     fileKey, fileStatus,
@@ -894,18 +897,20 @@ export function startAiAnalysis(category = 'risk', prompt = '', opts = {}) {
     thinkingCollapsed: true // 思维链折叠态（显式初始化，避免依赖 undefined 隐式语义，评审 P2 #12）
   }
   state.aiTasks.push(task)
-  const t = state.aiTasks[state.aiTasks.length - 1] // 取响应式代理引用，后续 mutation 都走它
+  // 注意：此处局部变量有意命名 taskRef 而非 t——模块级 t 是 i18n 翻译函数，
+  // 若用 const t 覆蔽会与其上方 title 计算处的 t() 调用形成 TDZ 冲突（同函数作用域）。
+  const taskRef = state.aiTasks[state.aiTasks.length - 1] // 取响应式代理引用，后续 mutation 都走它
   state.aiActiveTaskId = id
   state.aiPanelCollapsed = false // 展开智能分析栏以露出控制台
   state.aiPanelTab = 'console'    // 自动切到「控制台」tab，确保用户即时看到流式输出
   ensureAiBudget('analyze', { category: cat.key, prompt: cat.key === 'custom' ? (prompt || '') : '', fileKey }).then((ok) => {
-    if (!t.alive) return // 等待闸门期间任务已被中断/关闭，丢弃，不复活（评审 P0 #2）
+    if (!taskRef.alive) return // 等待闸门期间任务已被中断/关闭，丢弃，不复活（评审 P0 #2）
     if (!ok) {
-      t.status = 'error'
-      t.error = '已取消：本次 AI 分析预估超成本阈值，未发起调用。'
+      taskRef.status = 'error'
+      taskRef.error = t('ai.cancelled')
       return
     }
-    runAiTaskStream(t)
+    runAiTaskStream(taskRef)
   })
 }
 
@@ -947,7 +952,7 @@ function runAiTaskStream(t) {
       if (aiControllers.get(t.id) !== controller) return
       aiControllers.delete(t.id)
       t.status = 'error'
-      t.error = (d && d.message) || '分析失败'
+      t.error = (d && d.message) || tr('ai.analyzeFailed')
     }
   }, body)
   aiControllers.set(t.id, controller)

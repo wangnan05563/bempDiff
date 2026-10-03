@@ -16,6 +16,7 @@ import ReportPreview from '../components/ReportPreview.vue'
 import ToolBar from '../components/ToolBar.vue'
 import About from '../components/About.vue'
 import StatusBar from '../components/StatusBar.vue'
+import AiConsole from '../components/AiConsole.vue'
 import { ACCENTS } from '../lib/accents'
 
 describe('R12 i18n 框架', () => {
@@ -225,6 +226,24 @@ describe('R12 i18n 框架', () => {
     const sbZh = mount(StatusBar, { attachTo: document.body })
     expect(sbZh.text()).toContain('反编译引擎')
     sbZh.unmount()
+  })
+
+  it('批次7 组件跟随语言：AI 控制台/分析类别 EN 渲染', async () => {
+    setLocale('en-US')
+    state.aiPanelTab = 'console'
+    state.aiTasks = [{ id: 'ai-1', category: 'risk', title: 'Overall Risk Analysis', prompt: '', thinking: [], answer: '', status: 'done', thinkingCollapsed: true }]
+    state.aiActiveTaskId = 'ai-1'
+    state.job = { status: 'DONE' }
+    const w = mount(AiConsole, { attachTo: document.body })
+    expect(w.text()).toContain('New Analysis')
+    expect(w.text()).toContain('Overall Risk Analysis')
+    expect(w.find('button[title="Stop current analysis"]').exists() || w.find('button[title="Re-analyze"]').exists()).toBe(true)
+    w.unmount()
+
+    setLocale('zh-CN')
+    const wZh = mount(AiConsole, { attachTo: document.body })
+    expect(wZh.text()).toContain('新建分析')
+    wZh.unmount()
   })
 
   it('帮助文档含「术语中英对照」条目', async () => {

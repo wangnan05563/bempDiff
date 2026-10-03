@@ -2,6 +2,9 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { state, setAiSelCategory, startAiAnalysis, stopAiAnalysis, restartAiAnalysis, selectAiTask, closeAiTask, openReportPreview, AI_CATEGORIES, toast, isUnpacking } from '../store'
 import { renderMarkdown } from '../lib/markdown'
+// tr 为 i18n 翻译函数别名：本组件多处用 t 作任务对象变量名（v-for/局部常量），
+// 函数体内需取译文时用 tr()，避免与任务变量覆蔽冲突；模板层仍用 t()
+import { t, t as tr } from '../lib/i18n'
 
 // 分析项选择提升到共享 state.aiSelCategory：与工具栏「生成报告(AI)」联动，
 // 使报告生成接口能拿到所选分析项（修复：此前报告生成永远走默认分析，内容不随选择变化）。
@@ -21,19 +24,24 @@ const runningCount = computed(() => state.aiTasks.filter(t => t.status === 'thin
 
 function newAnalysis() {
   if (!hasJob.value) return
-  if (unpacking.value) { toast('warning', '正在逐层解包，完成后方可发起 AI 分析'); return }  // 解包未完成禁止分析，避免漏判
+  if (unpacking.value) { toast('warning', t('ac.waitUnpack')); return }  // 解包未完成禁止分析，避免漏判
   if (selCategory.value === 'custom' && !customPrompt.value.trim()) {
-    toast('warning', '请输入自定义分析问题后再发起')
+    toast('warning', t('ac.customEmpty'))
     return
   }
   if (selCategory.value === 'custom') startAiAnalysis('custom', customPrompt.value.trim())
   else startAiAnalysis(selCategory.value)
 }
 
+// 思考步骤阶段标签：文案走 i18n（与 AiAnalysisDialog 同一套 key）
+const PHASE_KEY = { thinking: 'ai.phase.thinking', tool_call: 'ai.phase.tool_call', composing: 'ai.phase.composing' }
 function phaseLabel(p) {
-  const m = { thinking: '思考', tool_call: '调用', composing: '组织' }
-  return m[p] || '思考'
+  return t(PHASE_KEY[p] || 'ai.phase.thinking')
 }
+// 分析类别显示名：labelKey 渲染期求值（切语言即时刷新）
+const catLabel = (c) => (c && c.labelKey ? t(c.labelKey) : (c ? c.label : ''))
+// tab 关闭按钮 title：tab 的 v-for 以 t 命名任务变量，覆蔽 i18n 的 t，故用 computed 预求
+const closeTabTitle = computed(() => t('ac.closeTab'))
 function statusMeta(t) {
   switch (t.status) {
     case 'thinking':
@@ -123,7 +131,7 @@ function exportActive() {
   a.click()
   document.body.removeChild(a)
   setTimeout(() => URL.revokeObjectURL(url), 1000)
-  toast('success', 'AI 分析结果已导出为 Markdown')
+  toast('success', tr('ac.exportDone'))
 }
 function exportDisabled(t) { return !(t && t.answer && t.answer.length) }
 
@@ -142,9 +150,9 @@ async function copyActive() {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    toast('success', 'AI 分析结果已复制为 Markdown（' + t.answer.length + ' 字）')
+    toast('success', tr('ac.copyDone', { n: t.answer.length }))
   } catch (_) {
-    toast('danger', '复制失败（剪贴板不可用），可改用导出按钮下载 .md 文件')
+    toast('danger', tr('ac.copyFail'))
   }
 }
 function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
@@ -153,29 +161,29 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
 <template>
   <div class="ai-console">
     <div class="console-head">
-      <i class="bi bi-terminal"></i><span class="ms-1">AI 分析</span>
-      <span v-if="runningCount" class="badge text-bg-primary ms-2">{{ runningCount }} 进行中</span>
+      <i class="bi bi-terminal"></i><span class="ms-1">{{ t('ai.dialogTitle') }}</span>
+      <span v-if="runningCount" class="badge text-bg-primary ms-2">{{ t('ac.running', { n: runningCount }) }}</span>
     </div>
 
     <!-- 新建分析：类别选择 + 发起 -->
     <div class="console-new d-flex align-items-center gap-2 flex-wrap">
-      <select class="form-select form-select-sm" style="width:auto" v-model="selCategory" aria-label="分析类别">
-        <option v-for="c in AI_CATEGORIES" :key="c.key" :value="c.key">{{ c.label }}</option>
+      <select class="form-select form-select-sm" style="width:auto" v-model="selCategory" :aria-label="t('ac.category')">
+        <option v-for="c in AI_CATEGORIES" :key="c.key" :value="c.key">{{ catLabel(c) }}</option>
       </select>
       <input v-if="showCustom" class="form-control form-control-sm" style="max-width:220px"
-             v-model="customPrompt" placeholder="输入你的分析问题…" aria-label="自定义分析问题" :disabled="!hasJob">
+             v-model="customPrompt" :placeholder="t('ac.customPlaceholder')" :aria-label="t('ac.customAria')" :disabled="!hasJob">
       <button class="btn btn-sm btn-primary" @click="newAnalysis"
               :disabled="!hasJob || unpacking || (showCustom && !customPrompt.value.trim())"
-              aria-label="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面" title="正在逐层解包时禁发：须待解包完全完成、快照就绪后方可分析，否则分析不全面；否则并行发起，不阻塞界面">
-        <i class="bi bi-plus-lg"></i> 新建分析
+              :aria-label="t('ac.newTip')" :title="t('ac.newTip')">
+        <i class="bi bi-plus-lg"></i> {{ t('ac.newBtn') }}
       </button>
-      <span v-if="unpacking" class="text-warning" style="font-size:.75rem"><i class="bi bi-boxes"></i> 正在逐层解包，完成后方可分析</span>
-      <span v-else-if="!hasJob" class="text-secondary" style="font-size:.75rem">完成比对后可发起</span>
+      <span v-if="unpacking" class="text-warning" style="font-size:.75rem"><i class="bi bi-boxes"></i> {{ t('ac.unpacking') }}</span>
+      <span v-else-if="!hasJob" class="text-secondary" style="font-size:.75rem">{{ t('ac.needJob') }}</span>
     </div>
 
     <!-- 无任务占位 -->
     <div v-if="!hasTasks" class="console-empty text-secondary">
-      尚无 AI 分析任务。选择类别后点击「新建分析」，结果将在下方实时流式输出，可并行发起多类别分析。
+      {{ t('ac.empty') }}
     </div>
 
     <template v-else>
@@ -191,7 +199,7 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
                 @click="selectAiTask(t.id)">
           <i class="bi" :class="tabCls(t)"></i>
           <span class="tab-title">{{ t.title }}</span>
-          <i class="bi bi-x tab-close" @click.stop="closeAiTask(t.id)" title="关闭此分析"></i>
+          <i class="bi bi-x tab-close" @click.stop="closeAiTask(t.id)" :title="closeTabTitle"></i>
         </button>
       </div>
 
@@ -206,7 +214,7 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
           <div class="thinking-header" @click="active.thinkingCollapsed = !(active.thinkingCollapsed === true)">
             <i class="bi bi-lightbulb thinking-icon"></i>
             <span class="thinking-summary">
-              已思考 {{ active.thinking.length }} 步 · 点击{{ active.thinkingCollapsed === false ? '折叠' : '展开' }}查看思考过程
+              {{ t('ai.thoughtSteps', { n: active.thinking.length }) }} · {{ active.thinkingCollapsed === false ? t('ai.clickCollapse') : t('ai.clickExpand') }}
             </span>
             <i class="bi thinking-toggle" :class="active.thinkingCollapsed === false ? 'bi-chevron-down' : 'bi-chevron-right'"></i>
           </div>
@@ -221,12 +229,12 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
         <!-- 答案流式输出 -->
         <div class="ai-answer ai-md">
           <div v-if="!active.answer && active.status==='streaming'" class="loading-dots">
-            <span></span><span></span><span></span> AI 正在生成…
+            <span></span><span></span><span></span> {{ t('ai.generating') }}
           </div>
           <div v-else-if="!active.answer && active.status==='thinking'" class="text-secondary" style="font-size:.82rem">
-            正在准备分析…
+            {{ t('ai.thinking') }}
           </div>
-          <div v-else-if="!active.answer" class="text-secondary" style="font-size:.82rem">暂无输出</div>
+          <div v-else-if="!active.answer" class="text-secondary" style="font-size:.82rem">{{ t('ai.empty') }}</div>
           <div v-html="mdHtml"></div><span v-if="active.status==='streaming'" class="stream-cursor">▋</span>
         </div>
       </div>
@@ -234,34 +242,34 @@ function copyDisabled(t) { return !(t && t.answer && t.answer.length) }
       <!-- 操作：中断 / 重新分析 / 预览报告 / 导出 / 关闭（纯图标按钮，功能见悬浮提示） -->
       <div class="console-foot d-flex align-items-center gap-1">
         <span class="me-auto text-secondary" style="font-size:.75rem">
-          <span v-if="active.status==='streaming'"><i class="bi bi-arrow-repeat spin"></i> 分析中…</span>
-          <span v-else-if="active.status==='thinking'"><i class="bi bi-arrow-repeat spin"></i> 准备中…</span>
-          <span v-else-if="active.status==='done'"><i class="bi bi-check2-circle text-success"></i> 分析完成</span>
-          <span v-else-if="active.status==='aborted'"><i class="bi bi-stop-fill"></i> 已中断</span>
-          <span v-else-if="active.status==='error'"><i class="bi bi-exclamation-triangle text-danger"></i> 失败</span>
+          <span v-if="active.status==='streaming'"><i class="bi bi-arrow-repeat spin"></i> {{ t('ai.analyzing') }}</span>
+          <span v-else-if="active.status==='thinking'"><i class="bi bi-arrow-repeat spin"></i> {{ t('ac.preparingShort') }}</span>
+          <span v-else-if="active.status==='done'"><i class="bi bi-check2-circle text-success"></i> {{ t('ai.done') }}</span>
+          <span v-else-if="active.status==='aborted'"><i class="bi bi-stop-fill"></i> {{ t('ai.aborted') }}</span>
+          <span v-else-if="active.status==='error'"><i class="bi bi-exclamation-triangle text-danger"></i> {{ t('ai.failed') }}</span>
         </span>
         <button v-if="active.status==='thinking' || active.status==='streaming'"
-                class="btn btn-outline-secondary btn-sm icon-only" aria-label="中断当前分析" title="中断当前分析"
+                class="btn btn-outline-secondary btn-sm icon-only" :aria-label="t('ac.stop')" :title="t('ac.stop')"
                 @click="stopAiAnalysis(active.id)">
           <i class="bi bi-stop-fill"></i>
         </button>
-        <button v-else class="btn btn-outline-secondary btn-sm icon-only" aria-label="重新分析" title="重新分析"
+        <button v-else class="btn btn-outline-secondary btn-sm icon-only" :aria-label="t('ai.retry')" :title="t('ai.retry')"
                 @click="restartAiAnalysis(active.id)" :disabled="!hasJob">
           <i class="bi bi-arrow-clockwise"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm icon-only" aria-label="在新窗口预览完整 Markdown 报告" title="在新窗口预览完整 Markdown 报告"
+        <button class="btn btn-outline-primary btn-sm icon-only" :aria-label="t('ac.preview')" :title="t('ac.preview')"
                 :disabled="previewDisabled(active)" @click="previewReport">
           <i class="bi bi-filetype-md"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm icon-only" aria-label="复制 Markdown 结果（可直接粘贴进报告）" title="复制 Markdown 结果（可直接粘贴进报告）"
+        <button class="btn btn-outline-primary btn-sm icon-only" :aria-label="t('ac.copy')" :title="t('ac.copy')"
                 :disabled="copyDisabled(active)" @click="copyActive">
           <i class="bi bi-clipboard"></i>
         </button>
-        <button class="btn btn-outline-primary btn-sm icon-only" aria-label="导出分析结果为 Markdown 文件" title="导出分析结果为 Markdown 文件"
+        <button class="btn btn-outline-primary btn-sm icon-only" :aria-label="t('ac.export')" :title="t('ac.export')"
                 :disabled="exportDisabled(active)" @click="exportActive">
           <i class="bi bi-download"></i>
         </button>
-        <button class="btn btn-outline-secondary btn-sm icon-only" aria-label="关闭此分析" title="关闭此分析"
+        <button class="btn btn-outline-secondary btn-sm icon-only" :aria-label="t('ac.closeTab')" :title="t('ac.closeTab')"
                 @click="closeAiTask(active.id)">
           <i class="bi bi-x-lg"></i>
         </button>
