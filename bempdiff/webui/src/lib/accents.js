@@ -7,13 +7,14 @@
  *   btn-primary / outline-primary / progress-bar / text-primary / 表单焦点等关键元素；
  * - 持久化 localStorage（bempdiff-accent），与明暗主题（bempdiff-theme）正交叠加。
  */
+// name 保留中文原文（兼容既有单测 accentOf().name 断言）；nameKey 为 i18n 键（渲染侧优先）。
 export const ACCENTS = [
-  { key: 'blue',   name: '经典蓝', color: '#0d6efd', rgb: '13, 110, 253' },
-  { key: 'purple', name: '典雅紫', color: '#7c5cff', rgb: '124, 92, 255' },
-  { key: 'teal',   name: '青碧',   color: '#0f9d8f', rgb: '15, 157, 143' },
-  { key: 'green',  name: '沉稳绿', color: '#198754', rgb: '25, 135, 84' },
-  { key: 'orange', name: '活力橙', color: '#fd7e14', rgb: '253, 126, 20' },
-  { key: 'rose',   name: '玫瑰红', color: '#e83e8c', rgb: '232, 62, 140' }
+  { key: 'blue',   name: '经典蓝', nameKey: 'acc.blue',   color: '#0d6efd', rgb: '13, 110, 253' },
+  { key: 'purple', name: '典雅紫', nameKey: 'acc.purple', color: '#7c5cff', rgb: '124, 92, 255' },
+  { key: 'teal',   name: '青碧',   nameKey: 'acc.teal',   color: '#0f9d8f', rgb: '15, 157, 143' },
+  { key: 'green',  name: '沉稳绿', nameKey: 'acc.green',  color: '#198754', rgb: '25, 135, 84' },
+  { key: 'orange', name: '活力橙', nameKey: 'acc.orange', color: '#fd7e14', rgb: '253, 126, 20' },
+  { key: 'rose',   name: '玫瑰红', nameKey: 'acc.rose',   color: '#e83e8c', rgb: '232, 62, 140' }
 ]
 
 export const ACCENT_KEY = 'bempdiff-accent'

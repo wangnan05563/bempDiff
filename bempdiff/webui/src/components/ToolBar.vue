@@ -3,9 +3,19 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import { ACCENTS, loadAccentKey, applyAccent } from '../lib/accents'
-import { i18n, LOCALES, setLocale } from '../lib/i18n'
+import { i18n, LOCALES, setLocale, t } from '../lib/i18n'
 import PathBreadcrumb from './PathBreadcrumb.vue'
 import Downloads from './Downloads.vue'
+
+// 强调色名取 i18n：有 nameKey 走 t()，否则回退清单里的中文原文
+const accentName = (a) => (a && a.nameKey ? t(a.nameKey) : (a ? a.name : ''))
+// 侧别标签（老/新 × 包/目录）
+const sideLabel = (which) => {
+  const folder = state.leftType === 'folder'
+  if (which === 'old') return t(folder ? 'tb.side.oldDir' : 'tb.side.oldPkg')
+  return t(folder ? 'tb.side.newDir' : 'tb.side.newPkg')
+}
+const browseTip = (which) => t('tb.browse', { side: sideLabel(which) })
 
 const props = defineProps({
   onOpenConfig: { type: Function, required: true },
@@ -51,14 +61,14 @@ function histName(p) {
 function onRestoreHist(i) {
   if (restoreCompareHistory(i)) {
     showHistory.value = false
-    toast('success', '已回填历史比对路径，确认无误后点「开始比对」')
+    toast('success', t('tb.histRestored'))
   }
 }
 function onRemoveHist(i) {
-  if (window.confirm('删除这条比对历史？该操作不可恢复（仅移除记录的路径对，不影响任何本地文件）。')) removeCompareHistory(i)
+  if (window.confirm(t('tb.histRemoveConfirm'))) removeCompareHistory(i)
 }
 function onClearHist() {
-  if (window.confirm('清空全部比对历史？该操作不可恢复（仅移除记录的路径对，不影响任何本地文件）。')) {
+  if (window.confirm(t('tb.histClearConfirm'))) {
     clearCompareHistory()
     showHistory.value = false
   }
@@ -128,7 +138,7 @@ function upOneLevel(p) {
 }
 
 function toastRoot(which) {
-  toast('info', (which === 'old' ? '老' : '新') + '路径已位于最上层目录')
+  toast('info', t('tb.atTop', { side: t(which === 'old' ? 'tb.side.old' : 'tb.side.new') }))
 }
 
 /** 单侧向上一层（保留输入类型不变，避免静默切换 package/folder）。 */
@@ -148,7 +158,7 @@ function goUpBoth() {
   const o = upOneLevel(state.oldPath)
   const n = upOneLevel(state.newPath)
   if (o === state.oldPath && n === state.newPath) {
-    toast('info', '两侧路径均已位于最上层目录')
+    toast('info', t('tb.bothAtTop'))
     return
   }
   pushHist()
@@ -201,7 +211,7 @@ async function browse(which) {
     return
   }
   if (!isTauri() && !isElectron()) {
-    toast('info', '浏览器模式下请直接输入服务器本机绝对路径；打包桌面壳（Electron）后可点击此按钮用原生对话框选择')
+    toast('info', t('tb.browserHint'))
   }
 }
 
@@ -217,14 +227,14 @@ function onDragLeave(which) {
 function onDrop(which, e) {
   dragOver.value = null
   if (!isElectron()) {
-    toast('info', '浏览器模式不支持直接拖入文件，请使用桌面壳（Electron）或手填路径')
+    toast('info', t('tb.dropNoElectron'))
     return
   }
   e.preventDefault()
   const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]
   const p = file && file.path
   if (!p) {
-    toast('warning', '未能读取拖入的路径，请重试或手填')
+    toast('warning', t('tb.dropReadFail'))
     return
   }
   pushHist() // 记入历史：后退可回到拖拽前的路径
@@ -240,13 +250,13 @@ function doCompare() { triggerCompare() }
 <template>
   <div class="bg-body-tertiary border-bottom px-2 py-1 d-flex flex-wrap align-items-center gap-2">
     <!-- 输入类型切换：图标 btn-group 分段控件 -->
-    <div class="btn-group btn-group-sm" role="group" aria-label="输入类型">
+    <div class="btn-group btn-group-sm" role="group" :aria-label="t('tb.inputType')">
       <button type="button" class="btn" :class="state.leftType === 'package' ? 'btn-primary' : 'btn-outline-secondary'"
-              @click="state.leftType = 'package'" :disabled="aiBusy" aria-label="以单个 war/jar 包作为输入（默认）" title="以单个 war/jar 包作为输入（默认）">
+              @click="state.leftType = 'package'" :disabled="aiBusy" :aria-label="t('tb.typePkg')" :title="t('tb.typePkg')">
         <i class="bi bi-file-earmark-zip"></i>
       </button>
       <button type="button" class="btn" :class="state.leftType === 'folder' ? 'btn-primary' : 'btn-outline-secondary'"
-              @click="state.leftType = 'folder'" :disabled="aiBusy" aria-label="以解压后的目录作为输入，对比目录结构的差异" title="以解压后的目录作为输入，对比目录结构的差异">
+              @click="state.leftType = 'folder'" :disabled="aiBusy" :aria-label="t('tb.typeDir')" :title="t('tb.typeDir')">
         <i class="bi bi-folder"></i>
       </button>
     </div>
@@ -254,17 +264,17 @@ function doCompare() { triggerCompare() }
     <!-- R5 比对会话历史：跨启动持久化（仅路径元数据），点击恢复路径对，单项可删 -->
     <div class="position-relative" ref="historyWrap">
       <button class="btn btn-outline-secondary btn-sm" @click="toggleHistory" :disabled="aiBusy"
-              aria-label="最近比对会话：点击恢复路径对（仅记录路径与时间，不含差异内容与 AI 结果）" title="最近比对会话：点击恢复路径对（仅记录路径与时间，不含差异内容与 AI 结果）">
+              :aria-label="t('tb.histTitle')" :title="t('tb.histTitle')">
         <i class="bi bi-clock-history"></i>
       </button>
       <ul class="dropdown-menu show py-1" v-if="showHistory"
           style="position:absolute;left:0;top:100%;z-index:1000;min-width:22rem;max-height:24rem;overflow:auto">
         <li class="px-2 py-1 d-flex justify-content-between align-items-center" style="font-size:.72rem;color:var(--bs-secondary-color)">
-          <span>最近比对会话（{{ state.compareHistory.length }}）</span>
-          <a href="#" v-if="state.compareHistory.length" @click.prevent="onClearHist" style="font-size:.7rem">清空</a>
+          <span>{{ t('tb.histCount', { n: state.compareHistory.length }) }}</span>
+          <a href="#" v-if="state.compareHistory.length" @click.prevent="onClearHist" style="font-size:.7rem">{{ t('tb.clear') }}</a>
         </li>
         <li v-if="!state.compareHistory.length" class="px-2 py-2 text-secondary" style="font-size:.75rem">
-          暂无历史：发起比对后自动记录
+          {{ t('tb.histEmpty') }}
         </li>
         <li v-for="(h, i) in state.compareHistory" :key="h.oldPath + '|' + h.newPath + '|' + h.at"
             class="dropdown-item d-flex align-items-center gap-2 text-wrap" style="font-size:.75rem">
@@ -273,7 +283,7 @@ function doCompare() { triggerCompare() }
             {{ histName(h.oldPath) }} <i class="bi bi-arrow-left-right" style="font-size:.65rem"></i> {{ histName(h.newPath) }}
             <span class="text-secondary ms-1" style="font-size:.68rem">{{ histTime(h.at) }}</span>
           </span>
-          <i class="bi bi-x-lg" role="button" style="font-size:.7rem;opacity:.55" title="删除该条历史" @click.stop="onRemoveHist(i)"></i>
+          <i class="bi bi-x-lg" role="button" style="font-size:.7rem;opacity:.55" :title="t('tb.histRemove')" @click.stop="onRemoveHist(i)"></i>
         </li>
       </ul>
     </div>
@@ -283,68 +293,68 @@ function doCompare() { triggerCompare() }
          style="max-width:320px"
          @dragover="onDragOver('old', $event)" @dragenter="onDragOver('old', $event)"
          @dragleave="onDragLeave('old')" @drop="onDrop('old', $event)">
-      <span class="tb-label" :title="state.leftType === 'folder' ? '老目录：作为对比基准的目录' : '老包(生产)：当前生产环境运行的版本，作为对比基准'">{{ state.leftType === 'folder' ? '老目录' : '老' }}</span>
-      <PathBreadcrumb v-model="state.oldPath" class="tb-crumb" :label="state.leftType === 'folder' ? '老目录' : '老包'" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('old', v)" />
-      <button class="btn btn-outline-secondary btn-sm" @click="browse('old')" :disabled="aiBusy" :aria-label="state.leftType === 'folder' ? '浏览选择老目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择老包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'" :title="state.leftType === 'folder' ? '浏览选择老目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择老包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
-      <button class="btn btn-outline-secondary btn-sm" @click="goUp('old')" :disabled="aiBusy" aria-label="向上一层：老路径切换到其上级目录" title="向上一层：老路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
+      <span class="tb-label" :title="state.leftType === 'folder' ? t('tb.oldDirTip') : t('tb.oldPkgTip')">{{ state.leftType === 'folder' ? t('tb.side.oldDir') : t('tb.side.old') }}</span>
+      <PathBreadcrumb v-model="state.oldPath" class="tb-crumb" :label="state.leftType === 'folder' ? t('tb.side.oldDir') : t('tb.side.oldPkg')" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('old', v)" />
+      <button class="btn btn-outline-secondary btn-sm" @click="browse('old')" :disabled="aiBusy" :aria-label="browseTip('old')" :title="browseTip('old')"><i class="bi bi-folder2-open"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="goUp('old')" :disabled="aiBusy" :aria-label="t('tb.upOne', { side: t('tb.side.old') })" :title="t('tb.upOne', { side: t('tb.side.old') })"><i class="bi bi-arrow-up-circle"></i></button>
     </div>
     <!-- 新包/新目录：可拖入文件/目录（桌面壳）；面包屑点击层级即导航到该级目录 -->
     <div class="d-flex align-items-center gap-1 drop-zone" :class="{ 'drop-active': dragOver === 'new' }"
          style="max-width:320px"
          @dragover="onDragOver('new', $event)" @dragenter="onDragOver('new', $event)"
          @dragleave="onDragLeave('new')" @drop="onDrop('new', $event)">
-      <span class="tb-label" :title="state.leftType === 'folder' ? '新目录：本次要对比的目标目录' : '新包(下发)：本次要下发的版本，作为对比目标'">{{ state.leftType === 'folder' ? '新目录' : '新' }}</span>
-      <PathBreadcrumb v-model="state.newPath" class="tb-crumb" :label="state.leftType === 'folder' ? '新目录' : '新包'" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('new', v)" />
-      <button class="btn btn-outline-secondary btn-sm" @click="browse('new')" :disabled="aiBusy" :aria-label="state.leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'" :title="state.leftType === 'folder' ? '浏览选择新目录（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框' : '浏览选择新包（桌面壳可用原生对话框，浏览器模式请手填路径）；也可直接把文件拖入此框'"><i class="bi bi-folder2-open"></i></button>
-      <button class="btn btn-outline-secondary btn-sm" @click="goUp('new')" :disabled="aiBusy" aria-label="向上一层：新路径切换到其上级目录" title="向上一层：新路径切换到其上级目录"><i class="bi bi-arrow-up-circle"></i></button>
+      <span class="tb-label" :title="state.leftType === 'folder' ? t('tb.newDirTip') : t('tb.newPkgTip')">{{ state.leftType === 'folder' ? t('tb.side.newDir') : t('tb.side.new') }}</span>
+      <PathBreadcrumb v-model="state.newPath" class="tb-crumb" :label="state.leftType === 'folder' ? t('tb.side.newDir') : t('tb.side.newPkg')" :disabled="aiBusy" @update:model-value="(v) => onPathUpdate('new', v)" />
+      <button class="btn btn-outline-secondary btn-sm" @click="browse('new')" :disabled="aiBusy" :aria-label="browseTip('new')" :title="browseTip('new')"><i class="bi bi-folder2-open"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="goUp('new')" :disabled="aiBusy" :aria-label="t('tb.upOne', { side: t('tb.side.new') })" :title="t('tb.upOne', { side: t('tb.side.new') })"><i class="bi bi-arrow-up-circle"></i></button>
     </div>
 
     <!-- BCompare 风格路径导航：两侧同时向上 + 后退/前进历史 -->
-    <button class="btn btn-outline-secondary btn-sm" @click="goUpBoth" :disabled="aiBusy" aria-label="两侧同时向上一层：左右路径都切换到各自上级目录" title="两侧同时向上一层：左右路径都切换到各自上级目录">
+    <button class="btn btn-outline-secondary btn-sm" @click="goUpBoth" :disabled="aiBusy" :aria-label="t('tb.upBoth')" :title="t('tb.upBoth')">
       <i class="bi bi-arrow-up-square"></i>
     </button>
-    <div class="btn-group btn-group-sm" role="group" aria-label="路径导航历史">
-      <button class="btn btn-outline-secondary" @click="goBack" :disabled="!canBack || aiBusy" aria-label="返回：回到上一次浏览的路径（后退）" title="返回：回到上一次浏览的路径（后退）">
+    <div class="btn-group btn-group-sm" role="group" :aria-label="t('tb.navHist')">
+      <button class="btn btn-outline-secondary" @click="goBack" :disabled="!canBack || aiBusy" :aria-label="t('tb.back')" :title="t('tb.back')">
         <i class="bi bi-arrow-left"></i>
       </button>
-      <button class="btn btn-outline-secondary" @click="goForward" :disabled="!canForward || aiBusy" aria-label="前进：回到后退之前的路径" title="前进：回到后退之前的路径">
+      <button class="btn btn-outline-secondary" @click="goForward" :disabled="!canForward || aiBusy" :aria-label="t('tb.forward')" :title="t('tb.forward')">
         <i class="bi bi-arrow-right"></i>
       </button>
     </div>
 
-    <button class="btn btn-primary btn-sm" @click="doCompare" :disabled="aiBusy" aria-label="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）" title="加载两个包/目录，反编译并生成差异树（耗时与包大小相关）"><i class="bi bi-arrow-left-right"></i></button>
+    <button class="btn btn-primary btn-sm" @click="doCompare" :disabled="aiBusy" :aria-label="t('tb.compare')" :title="t('tb.compare')"><i class="bi bi-arrow-left-right"></i></button>
 
     <div class="ms-auto d-flex gap-2">
-      <button class="btn btn-outline-secondary btn-sm" @click="onOpenReport" :disabled="!state.reportMd" aria-label="查看最近一次生成的差异/AI 分析报告" title="查看最近一次生成的差异/AI 分析报告">
+      <button class="btn btn-outline-secondary btn-sm" @click="onOpenReport" :disabled="!state.reportMd" :aria-label="t('tb.reportBtn')" :title="t('tb.reportBtn')">
         <i class="bi bi-filetype-md"></i>
       </button>
       <button class="btn btn-outline-secondary btn-sm" @click="onAiAnalyze"
               :disabled="!state.job || aiBusy || unpacking"
-              :aria-label="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '一键摘要：发起整体风险分析，下方控制台流式输出，可一键复制 Markdown（也可并行多类别分析）')" :title="unpacking ? '正在自动迭代解包，解包对比完成后方可进行 AI 分析' : (aiBusy ? 'AI 分析进行中，已禁用以防干扰' : '一键摘要：发起整体风险分析，下方控制台流式输出，可一键复制 Markdown（也可并行多类别分析）')">
+              :aria-label="unpacking ? t('tb.aiUnpackBusy') : (aiBusy ? t('tb.aiBusy') : t('tb.aiIdle'))" :title="unpacking ? t('tb.aiUnpackBusy') : (aiBusy ? t('tb.aiBusy') : t('tb.aiIdle'))">
         <i class="bi bi-cpu"></i>
       </button>
       <!-- 与右侧「智能分析」一致：只保留图标，文字「智能分类」隐藏，避免工具栏被文字占宽；功能与悬停提示（title）不变。 -->
       <button class="btn btn-outline-secondary btn-sm" @click="onClassify"
               :disabled="!state.job || state.job.status !== 'DONE' || state.classifying || aiBusy"
-              :aria-label="state.classifying ? '智能分类中…' : (aiBusy ? 'AI 分析进行中，请稍候' : 'AI 自动对差异文件打标分类并评估风险等级，结果在左侧差异树展示')" :title="state.classifying ? '智能分类中…' : (aiBusy ? 'AI 分析进行中，请稍候' : 'AI 自动对差异文件打标分类并评估风险等级，结果在左侧差异树展示')">
-        <span v-if="state.classifying" class="spinner-border spinner-border-sm" role="status" aria-label="智能分类中"></span>
-        <i v-else class="bi bi-tags" role="img" aria-label="智能分类" title="智能分类"></i>
+              :aria-label="state.classifying ? t('tb.classifying') : (aiBusy ? t('tb.aiWait') : t('tb.classifyDesc'))" :title="state.classifying ? t('tb.classifying') : (aiBusy ? t('tb.aiWait') : t('tb.classifyDesc'))">
+        <span v-if="state.classifying" class="spinner-border spinner-border-sm" role="status" :aria-label="t('tb.classifying')"></span>
+        <i v-else class="bi bi-tags" role="img" :aria-label="t('term.smartClassify')" :title="t('term.smartClassify')"></i>
       </button>
       <div class="position-relative" ref="exportWrap">
-        <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job || state.exporting" :aria-label="state.exporting ? '导出进行中，完成前禁用' : '导出差异报告或差异资产'" :title="state.exporting ? '导出进行中，完成前禁用' : '导出差异报告或差异资产'">
+        <button class="btn btn-outline-secondary btn-sm" @click="showExport = !showExport" :disabled="!state.job || state.exporting" :aria-label="state.exporting ? t('tb.exportBusy') : t('tb.export')" :title="state.exporting ? t('tb.exportBusy') : t('tb.export')">
           <i class="bi bi-file-earmark-arrow-down"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end show py-1" v-if="showExport"
             style="position:absolute;right:0;top:100%;z-index:1000">
-          <li><a class="dropdown-item" href="#" :class="{ disabled: unpacking }" @click.prevent="!unpacking && onReport()" title="生成纯文本/Markdown 差异报告（不调用 AI）"><i class="bi bi-filetype-md"></i> 生成报告</a></li>
+          <li><a class="dropdown-item" href="#" :class="{ disabled: unpacking }" @click.prevent="!unpacking && onReport()" :title="t('tb.genReportTip')"><i class="bi bi-filetype-md"></i> {{ t('info.generate') }}</a></li>
           <!-- AI 分析入口统一收敛到右上角「发起新的 AI 分析」（onAiAnalyze），此处不再重复提供「生成报告(AI)」 -->
-          <li><a class="dropdown-item" href="#" :class="{ disabled: state.exporting || unpacking }" @click.prevent="!state.exporting && !unpacking && onExport()" title="导出过滤后的全部差异文件（class/jar、反编译源码）及差异清单，打包为 zip 供替换/提交参考">
+          <li><a class="dropdown-item" href="#" :class="{ disabled: state.exporting || unpacking }" @click.prevent="!state.exporting && !unpacking && onExport()" :title="t('tb.exportZipTip')">
             <span v-if="state.exporting" class="spinner-border spinner-border-sm align-middle me-1" role="status" aria-hidden="true"></span>
             <i v-else class="bi bi-box-seam"></i> {{ state.exporting
-              ? (state.exportProgress && state.exportProgress.percent != null ? `导出中 ${state.exportProgress.percent}%` : '导出中…')
-              : '导出差异资产(zip)' }}</a></li>
+              ? (state.exportProgress && state.exportProgress.percent != null ? t('tb.exportingPct', { n: state.exportProgress.percent }) : t('tb.exporting'))
+              : t('tb.exportZip') }}</a></li>
           <li><hr class="dropdown-divider"></li>
-          <li><a class="dropdown-item" href="#" @click.prevent="onExports()" title="查看/刷新/删除导出记录，下载已完成的大包导出文件"><i class="bi bi-download"></i> 下载管理<span v-if="runningExports" class="badge text-bg-primary ms-1 align-middle">{{ runningExports }}</span></a></li>
+          <li><a class="dropdown-item" href="#" @click.prevent="onExports()" :title="t('tb.dlManageTip')"><i class="bi bi-download"></i> {{ t('dl.title') }}<span v-if="runningExports" class="badge text-bg-primary ms-1 align-middle">{{ runningExports }}</span></a></li>
           </ul>
       </div>
       <div v-if="state.exportProgress && state.exportProgress.total > 0"
@@ -357,22 +367,22 @@ function doCompare() { triggerCompare() }
         <span class="text-secondary" style="font-size:.66rem">{{ state.exportProgress.percent }}% {{ state.exportProgress.etaText }}</span>
       </div>
       <button class="btn btn-outline-secondary btn-sm" @click="toggleTheme"
-              :aria-label="isDark ? '切换浅色' : '切换深色'" :title="isDark ? '切换浅色' : '切换深色'">
+              :aria-label="isDark ? t('tb.themeLight') : t('tb.themeDark')" :title="isDark ? t('tb.themeLight') : t('tb.themeDark')">
         <i class="bi" :class="isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
       </button>
       <!-- R10 强调色选择：色点下拉（明暗主题正交叠加） -->
       <div class="position-relative" ref="accentWrap">
         <button class="btn btn-outline-secondary btn-sm" @click="showAccent = !showAccent"
-                aria-label="选择主题强调色" title="主题强调色：改变按钮/链接/进度条等强调元素的色彩（明暗主题之上叠加）">
+                :aria-label="t('tb.accent')" :title="t('tb.accentTip')">
           <i class="bi bi-palette"></i>
         </button>
         <ul class="dropdown-menu show py-1" v-if="showAccent"
             style="position:absolute;right:0;top:100%;z-index:1000;min-width:9.5rem" role="menu">
           <li v-for="a in ACCENTS" :key="a.key">
             <a href="#" class="dropdown-item d-flex align-items-center gap-2" style="font-size:.78rem"
-               :aria-label="'强调色：' + a.name" @click.prevent="onPickAccent(a.key)">
+               :aria-label="t('tb.accentName', { name: accentName(a) })" @click.prevent="onPickAccent(a.key)">
               <span class="accent-dot" :class="{ active: state.accent === a.key }"
-                    :style="{ background: a.color }" :title="a.name"></span>{{ a.name }}
+                    :style="{ background: a.color }" :title="accentName(a)"></span>{{ accentName(a) }}
               <i v-if="state.accent === a.key" class="bi bi-check2 ms-auto text-success"></i>
             </a>
           </li>
@@ -380,10 +390,10 @@ function doCompare() { triggerCompare() }
       </div>
       <!-- R12 语言切换：中/EN（i18n 框架首批覆盖核心界面，渐进迁移） -->
       <button class="btn btn-outline-secondary btn-sm" @click="setLocale(i18n.locale === 'zh-CN' ? 'en-US' : 'zh-CN')"
-              :aria-label="i18n.locale === 'zh-CN' ? 'Switch to English' : '切换为中文'"
-              :title="i18n.locale === 'zh-CN' ? 'Switch to English' : '切换为中文'"
+              :aria-label="i18n.locale === 'zh-CN' ? t('tb.switchToEn') : t('tb.switchToZh')"
+              :title="i18n.locale === 'zh-CN' ? t('tb.switchToEn') : t('tb.switchToZh')"
               style="font-size:.72rem;font-weight:600">{{ i18n.locale === 'zh-CN' ? 'EN' : '中' }}</button>
-      <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" aria-label="打开配置中心：模型、解析与导出、差异树过滤、界面与高级" title="打开配置中心：模型、解析与导出、差异树过滤、界面与高级"><i class="bi bi-gear"></i></button>
+      <button class="btn btn-outline-secondary btn-sm" @click="onOpenConfig" :aria-label="t('tb.config')" :title="t('tb.config')"><i class="bi bi-gear"></i></button>
     </div>
     <!-- 下载管理面板：与导出按钮同级位置，集中展示导出记录（含异步大包导出） -->
     <Downloads v-if="state.exportsOpen" />

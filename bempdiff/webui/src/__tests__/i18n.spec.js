@@ -13,6 +13,8 @@ import PathBreadcrumb from '../components/PathBreadcrumb.vue'
 import InfoPanel from '../components/InfoPanel.vue'
 import GuideOverlay from '../components/GuideOverlay.vue'
 import ReportPreview from '../components/ReportPreview.vue'
+import ToolBar from '../components/ToolBar.vue'
+import { ACCENTS } from '../lib/accents'
 
 describe('R12 i18n 框架', () => {
   beforeEach(() => {
@@ -171,6 +173,29 @@ describe('R12 i18n 框架', () => {
     await gZh.vm.$nextTick()
     expect(gZh.text()).toContain('欢迎使用 BempDiff')
     gZh.unmount()
+  })
+
+  it('批次5 组件跟随语言：工具栏与强调色 EN 渲染', async () => {
+    setLocale('en-US')
+    expect(t('acc.purple')).toBe('Elegant Purple')
+    for (const a of ACCENTS) {
+      expect(t(a.nameKey), `强调色 ${a.key} EN 缺失`).not.toBe(a.nameKey)
+    }
+    state.leftType = 'package'
+    state.job = { status: 'DONE' }
+    state.reportMd = ''
+    state.compareHistory = []
+    state.exportRecords = []
+    const w = mount(ToolBar, { props: { onOpenConfig: () => {}, onOpenReport: () => {} }, attachTo: document.body })
+    expect(w.find('button[title="Use a single war/jar package as input (default)"]').exists()).toBe(true)
+    expect(w.find('button[title="Export diff report or diff assets"]').exists()).toBe(true)
+    expect(w.find('button[title="Export diff report or diff assets"]').attributes('aria-label')).toBe('Export diff report or diff assets')
+    w.unmount()
+
+    setLocale('zh-CN')
+    const wZh = mount(ToolBar, { props: { onOpenConfig: () => {}, onOpenReport: () => {} }, attachTo: document.body })
+    expect(wZh.find('button[title="以单个 war/jar 包作为输入（默认）"]').exists()).toBe(true)
+    wZh.unmount()
   })
 
   it('帮助文档含「术语中英对照」条目', async () => {
