@@ -2,6 +2,7 @@
 import { computed, ref, shallowRef, nextTick, onMounted, onUnmounted, onUpdated, watch } from 'vue'
 import { state, activeTab, closeTab, pinTab, closeOtherTabs, closeAllTabs, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL, fmtBytes } from '../store'
 import { toast } from '../store'
+import { t } from '../lib/i18n'
 import { inlineDiff } from '../lib/diff_inline'
 import { alignLines } from '../lib/diff_align'
 import { foldContext } from '../lib/diff_fold'
@@ -35,12 +36,16 @@ const granularity = ref('char')
 // 粒度图标按钮（无文字，悬浮提示当前粒度，点击循环切换）
 const GRAN_ORDER = ['line', 'word', 'char']
 const GRAN_META = {
-  line: { label: '整行', icon: 'bi-text-left' },
-  word: { label: '词级', icon: 'bi-text-indent-left' },
-  char: { label: '字符级', icon: 'bi-type' }
+  line: { labelKey: 'dv.gran.line', icon: 'bi-text-left' },
+  word: { labelKey: 'dv.gran.word', icon: 'bi-text-indent-left' },
+  char: { labelKey: 'dv.gran.char', icon: 'bi-type' }
 }
-const granularityLabel = computed(() => (GRAN_META[granularity.value] || GRAN_META.char).label)
+const granularityLabel = computed(() => t((GRAN_META[granularity.value] || GRAN_META.char).labelKey))
 const granularityIcon = computed(() => (GRAN_META[granularity.value] || GRAN_META.char).icon)
+// 模板用派生文案（渲染期求值，支持切语言即时刷新）
+const granTip = computed(() => t('dv.granTip', { label: granularityLabel.value }))
+const selCopyTitle = computed(() => t('dv.copySel', { n: selRows.value.size, side: t(selSide.value === 'left' ? 'dv.sideOld' : 'dv.sideNew') }))
+const degradeBanner = computed(() => t('dv.degradeBanner', { total: rows.value.length.toLocaleString(), unchanged: totalStats.value.unchanged.toLocaleString() }))
 function cycleGranularity() {
   const i = GRAN_ORDER.indexOf(granularity.value)
   granularity.value = GRAN_ORDER[(i + 1) % GRAN_ORDER.length]
@@ -65,8 +70,8 @@ function onFoldClick() {
 /** 折叠条文案（区分两种折叠来源）。 */
 function foldLabel(v) {
   return diffOnly.value
-    ? '⋯ 已隐藏 ' + v.count + ' 行未变更内容（点击查看全量）⋯'
-    : '⋯ 已折叠 ' + v.count + ' 行未变更内容（点击展开）⋯'
+    ? t('dv.foldHidden', { n: v.count })
+    : t('dv.foldCollapsed', { n: v.count })
 }
 
 // ---------- 超大文件降级：简洁视图 ----------
@@ -95,19 +100,21 @@ function statusDot(s) { return (STATUS_META[s] || STATUS_META.UNCHANGED).dot }
 // 颜色均为主题中性的「类型色」，仅作点缀，不与增删改高亮（红/绿/橙）冲突。
 // ======================================================================
 const FCLASS_META = {
-  CLASS:  { label: 'Java 类',  icon: 'bi-filetype-java',    accent: '#7c5cff' },
-  JAR:    { label: '依赖 JAR', icon: 'bi-archive',          accent: '#9c6ade' },
-  CONFIG: { label: '配置',     icon: 'bi-gear',             accent: '#d97706' },
+  CLASS:  { labelKey: 'dv.fc.CLASS',  icon: 'bi-filetype-java',    accent: '#7c5cff' },
+  JAR:    { labelKey: 'dv.fc.JAR',    icon: 'bi-archive',          accent: '#9c6ade' },
+  CONFIG: { labelKey: 'dv.fc.CONFIG', icon: 'bi-gear',             accent: '#d97706' },
   JS:     { label: 'JS',       icon: 'bi-filetype-js',      accent: '#c9930e' },
   HTML:   { label: 'HTML',     icon: 'bi-filetype-html',    accent: '#d9534f' },
   CSS:    { label: 'CSS',      icon: 'bi-filetype-css',     accent: '#1f7fc4' },
   JSP:    { label: 'JSP',      icon: 'bi-filetype-xml',     accent: '#c05621' },
   OFFICE: { label: 'Office',   icon: 'bi-file-earmark-easel', accent: '#0f9d8f' },
-  STATIC: { label: '资源',     icon: 'bi-image',            accent: '#6b7280' },
-  ARCHIVE:{ label: '归档',     icon: 'bi-file-earmark-zip', accent: '#8a94a6' },
-  OTHER:  { label: '其他',     icon: 'bi-file-earmark',     accent: '#6b7280' }
+  STATIC: { labelKey: 'dv.fc.STATIC', icon: 'bi-image',            accent: '#6b7280' },
+  ARCHIVE:{ labelKey: 'dv.fc.ARCHIVE', icon: 'bi-file-earmark-zip', accent: '#8a94a6' },
+  OTHER:  { labelKey: 'dv.fc.OTHER',  icon: 'bi-file-earmark',     accent: '#6b7280' }
 }
 function fclassMeta(fc) { return FCLASS_META[fc] || FCLASS_META.OTHER }
+// 文件类型显示名（FCLASS_META 存 labelKey，渲染期求值支持切语言）
+function fclassLabel(fc) { const m = fclassMeta(fc); return m.labelKey ? t(m.labelKey) : (m.label || '') }
 // 当前激活文件类型（tab 快照优先，回退节点）
 const currentFc = computed(() => {
   if (at.value && at.value.node && at.value.node.fileClass) return at.value.node.fileClass
@@ -667,23 +674,24 @@ function closeTabCtx() { tabCtx.value = { ...tabCtx.value, visible: false } }
 // 右键菜单项（BCompare 风格、含定界分组）：
 //   关闭类 / 路径复制（含资源管理器，仅桌面壳+有磁盘时可用）/ 固定。
 const tabMenuItems = computed(() => {
-  const t = tabCtxNode.value
-  if (!t) return []
-  const info = t ? tabDiskInfo(t) : null
+  // 注意：局部变量取名 tab（不用 t），避免与 i18n 的 t() 覆蔽
+  const tab = tabCtxNode.value
+  if (!tab) return []
+  const info = tab ? tabDiskInfo(tab) : null
   const hasDisk = !!(info && info.hasDisk)
-  const pinned = !!t.pinned
+  const pinned = !!tab.pinned
   const others = state.tabs.length > 1
-  const anyPinnedOther = state.tabs.some(x => x.pinned && x.key !== t.key)
+  const anyPinnedOther = state.tabs.some(x => x.pinned && x.key !== tab.key)
   return [
-    { id: 'close',       group: 'close', label: '关闭',              icon: 'bi-x-lg',   disabled: false, title: '关闭当前对比页' },
-    { id: 'closeOthers', group: 'close', label: '关闭其他',          icon: 'bi-collection', disabled: !others, title: !others ? '仅一个对比页，无可关闭的其它页' : '关闭除当前与已固定外的其它对比页' },
-    { id: 'closeAll',    group: 'close', label: '全部关闭',          icon: 'bi-x-square', disabled: !others && !anyPinnedOther, title: anyPinnedOther ? '已固定的对比页将被保留' : '关闭所有对比页（已固定的保留）' },
+    { id: 'close',       group: 'close', label: t('dv.tab.close'),   icon: 'bi-x-lg',   disabled: false, title: t('dv.tab.closeTitle') },
+    { id: 'closeOthers', group: 'close', label: t('dv.tab.closeOthers'), icon: 'bi-collection', disabled: !others, title: !others ? t('dv.tab.closeOthersTitleOne') : t('dv.tab.closeOthersTitle') },
+    { id: 'closeAll',    group: 'close', label: t('dv.tab.closeAll'), icon: 'bi-x-square', disabled: !others && !anyPinnedOther, title: anyPinnedOther ? t('dv.tab.closeAllPinnedTitle') : t('dv.tab.closeAllTitle') },
     { id: 'sep',         group: 'copy',  divider: true },
-    { id: 'copyPath',    group: 'copy',  label: '复制路径',          icon: 'bi-link-45deg', disabled: false, title: hasDisk ? '复制文件绝对路径' : '复制包内相对路径（无磁盘路径）' },
-    { id: 'copyRelPath', group: 'copy',  label: '复制相对路径',      icon: 'bi-subtract', disabled: false, title: '复制文件相对路径' },
-    { id: 'reveal',      group: 'copy',  label: '在资源管理器中显示', icon: 'bi-folder2-open', disabled: !hasDisk || !hasShell.value, title: !hasShell.value ? '浏览器模式无法调用资源管理器，请使用桌面壳' : (!hasDisk ? '包内条目无磁盘路径，无法在资源管理器中定位' : '在系统文件管理器中定位该文件') },
+    { id: 'copyPath',    group: 'copy',  label: t('dv.tab.copyPath'), icon: 'bi-link-45deg', disabled: false, title: hasDisk ? t('dv.tab.copyPathTitleAbs') : t('dv.tab.copyPathTitleRel') },
+    { id: 'copyRelPath', group: 'copy',  label: t('dv.tab.copyRelPath'), icon: 'bi-subtract', disabled: false, title: t('dv.tab.copyRelPathTitle') },
+    { id: 'reveal',      group: 'copy',  label: t('dv.tab.reveal'), icon: 'bi-folder2-open', disabled: !hasDisk || !hasShell.value, title: !hasShell.value ? t('dv.tab.revealTitleNoShell') : (!hasDisk ? t('dv.tab.revealTitleNoDisk') : t('dv.tab.revealTitle')) },
     { id: 'sep2',        group: 'pin',   divider: true },
-    { id: 'pin',         group: 'pin',   label: pinned ? '取消固定' : '固定', icon: pinned ? 'bi-pin-angle' : 'bi-pin', disabled: false, title: pinned ? '取消固定，该页将可被关闭/排序' : '固定该对比页，置顶且在关闭类操作中保留' }
+    { id: 'pin',         group: 'pin',   label: pinned ? t('dv.tab.unpin') : t('dv.tab.pin'), icon: pinned ? 'bi-pin-angle' : 'bi-pin', disabled: false, title: pinned ? t('dv.tab.unpinTitle') : t('dv.tab.pinTitle') }
   ]
 })
 
@@ -716,7 +724,7 @@ async function copyTabText(text, tip) {
     }
     toast('success', tip + (text && text.length > 60 ? '：' + text.slice(0, 60) + '…' : ''))
   } catch (_) {
-    toast('danger', '复制失败（剪贴板不可用）')
+    toast('danger', t('dt.copyFail'))
   }
   closeTabCtx()
 }
@@ -737,28 +745,28 @@ function tabDiskInfo(t) {
 }
 
 async function onTabCopyPath() {
-  const t = tabCtxNode.value
-  if (!t) return
-  const info = tabDiskInfo(t)
-  if (info.hasDisk) await copyTabText(info.absPath, '已复制绝对路径')
-  else await copyTabText(info.relPath || t.key, '已复制包内路径')
+  const tab = tabCtxNode.value
+  if (!tab) return
+  const info = tabDiskInfo(tab)
+  if (info.hasDisk) await copyTabText(info.absPath, t('dv.copiedAbsPath'))
+  else await copyTabText(info.relPath || tab.key, t('dv.copiedPkgPath'))
 }
 async function onTabCopyRelPath() {
-  const t = tabCtxNode.value
-  if (!t) return
-  const info = tabDiskInfo(t)
-  await copyTabText(info.relPath || t.key, '已复制相对路径')
+  const tab = tabCtxNode.value
+  if (!tab) return
+  const info = tabDiskInfo(tab)
+  await copyTabText(info.relPath || tab.key, t('dv.copiedRelPath'))
 }
 async function onTabRevealInFolder() {
-  const t = tabCtxNode.value
-  if (!t) return
-  const info = tabDiskInfo(t)
-  if (!info.hasDisk) { toast('warning', '包内条目无磁盘路径，无法在资源管理器中显示'); closeTabCtx(); return }
+  const tab = tabCtxNode.value
+  if (!tab) return
+  const info = tabDiskInfo(tab)
+  if (!info.hasDisk) { toast('warning', t('dv.revealNoDisk')); closeTabCtx(); return }
   try {
     const r = await window.bempdiff.showInFolder(info.absPath)
-    if (r && typeof r === 'object' && !r.ok) toast('danger', r.message || '资源管理器显示失败')
-    else toast('info', '已在资源管理器中定位')
-  } catch (e) { toast('danger', '资源管理器显示失败：' + e.message) }
+    if (r && typeof r === 'object' && !r.ok) toast('danger', r.message || t('dv.revealFailShort'))
+    else toast('info', t('dv.revealed'))
+  } catch (e) { toast('danger', t('dv.revealFail', { msg: e.message })) }
   closeTabCtx()
 }
 
@@ -920,7 +928,7 @@ const statusInfo = computed(() => {
   return {
     lineNo: lineNo || '—',
     col: c0 + 1,
-    side: sideLeft ? '左' : '右',
+    side: sideLeft ? t('dv.side.left') : t('dv.side.right'),
     tok,
     meta: TOKEN_META[tok.type] || TOKEN_META.other
   }
@@ -975,8 +983,8 @@ async function copySelRows() {
   const n = selRows.value.size
   if (!n) return
   const text = buildCopyText(rows.value, selRows.value, selSide.value, { withLineNo: copyWithLineNo.value })
-  if (!text) { toast('warning', '选中行在该侧无内容可复制'); return }
-  await copyTabText(text, '已复制 ' + n + ' 行（' + (selSide.value === 'left' ? '旧侧' : '新侧') + '）')
+  if (!text) { toast('warning', t('dv.selNoContent')); return }
+  await copyTabText(text, t('dv.copiedRows', { n, side: t(selSide.value === 'left' ? 'dv.sideOld' : 'dv.sideNew') }))
 }
 
 // ---------- Find：差异内容内查找 ----------
@@ -1112,33 +1120,33 @@ onUpdated(() => measureVisible())
     -->
     <div class="dvt-tabbar">
       <span class="dvt-count">
-        <i class="bi bi-files"></i> 已打开 <b>{{ tabs.length }}</b> 个对比
+        <i class="bi bi-files"></i> {{ t('dv.tabsOpen', { n: tabs.length }) }}
       </span>
       <ul class="nav nav-tabs dvt-tabs" role="tablist">
         <template v-if="tabs.length">
-          <li v-for="t in tabs" :key="t.key" class="nav-item dvt-tab" role="presentation">
+          <li v-for="tab in tabs" :key="tab.key" class="nav-item dvt-tab" role="presentation">
             <button class="nav-link d-flex align-items-center gap-1"
-                    :class="{active: state.activeKey === t.key}"
-                    :aria-label="fullKey(t)" :title="fullKey(t)"
+                    :class="{active: state.activeKey === tab.key}"
+                    :aria-label="fullKey(tab)" :title="fullKey(tab)"
                     role="tab"
-                    :aria-selected="state.activeKey === t.key"
-                    @click="onTabClick(t.key)"
-                    @mousedown="onTabMouseDown($event, t.key)"
-                    @contextmenu="openTabCtx($event, t)">
-              <i v-if="t.pinned" class="bi bi-pin-angle-fill" style="font-size:.6rem" :style="{color: 'var(--bs-secondary-color)'}" title="已固定（关闭类操作保留）"></i>
-              <i class="bi bi-circle-fill" style="font-size:.45rem" :style="{color: statusDot(t.node && t.node.status)}"></i>
-              <i class="bi dvt-fc-icon" :class="fclassMeta(fcOf(t)).icon"
-                 :style="{color: state.activeKey === t.key ? fclassMeta(fcOf(t)).accent : 'var(--bs-secondary-color)'}"
-                 :title="'文件类型：' + fclassMeta(fcOf(t)).label"></i>
-              <span class="dvt-title text-truncate">{{ tabTitle(t) }}</span>
-              <span v-if="t.busy && !t.decompile" class="spinner-border spinner-border-sm ms-1" role="status" aria-hidden="true" style="width:.7rem;height:.7rem"></span>
-              <i class="bi bi-x dvt-close" role="button" aria-label="关闭" @click="onTabClose($event, t.key)"></i>
+                    :aria-selected="state.activeKey === tab.key"
+                    @click="onTabClick(tab.key)"
+                    @mousedown="onTabMouseDown($event, tab.key)"
+                    @contextmenu="openTabCtx($event, tab)">
+              <i v-if="tab.pinned" class="bi bi-pin-angle-fill" style="font-size:.6rem" :style="{color: 'var(--bs-secondary-color)'}" :title="t('dv.pinnedFlag')"></i>
+              <i class="bi bi-circle-fill" style="font-size:.45rem" :style="{color: statusDot(tab.node && tab.node.status)}"></i>
+              <i class="bi dvt-fc-icon" :class="fclassMeta(fcOf(tab)).icon"
+                 :style="{color: state.activeKey === tab.key ? fclassMeta(fcOf(tab)).accent : 'var(--bs-secondary-color)'}"
+                 :title="t('dt.fileType', { fc: fclassLabel(fcOf(tab)) })"></i>
+              <span class="dvt-title text-truncate">{{ tabTitle(tab) }}</span>
+              <span v-if="tab.busy && !tab.decompile" class="spinner-border spinner-border-sm ms-1" role="status" aria-hidden="true" style="width:.7rem;height:.7rem"></span>
+              <i class="bi bi-x dvt-close" role="button" :aria-label="t('common.close')" @click="onTabClose($event, tab.key)"></i>
             </button>
           </li>
         </template>
         <li v-else class="nav-item dvt-tab-empty">
           <span class="nav-link disabled text-secondary" tabindex="-1">
-            <i class="bi bi-arrow-bar-left"></i> 未打开任何对比 · 从左侧差异树选择文件
+            <i class="bi bi-arrow-bar-left"></i> {{ t('dv.noTab') }}
           </span>
         </li>
       </ul>
@@ -1151,21 +1159,21 @@ onUpdated(() => measureVisible())
     <div class="filebar">
       <i class="bi filebar-icon" :class="currentFcMeta.icon"
          :style="{color: currentFcMeta.accent}"
-         :title="'文件类型：' + currentFcMeta.label"></i>
+         :title="t('dt.fileType', { fc: fclassLabel(currentFc) })"></i>
       <!-- 路径栏（Win10 地址栏交互）：面包屑导航 ↔ 完整路径编辑，悬浮显示完整路径 -->
       <PathBar v-if="pathKey" :path="pathKey" :root-path="diskRoot" :node="node" />
-      <span v-else class="path text-secondary">未选择文件</span>
+      <span v-else class="path text-secondary">{{ t('pb.empty') }}</span>
       <span v-if="node" class="badge" :class="STATUS_CLS[node.status]">{{ STATUS_LABEL[node.status] }}</span>
-      <span v-else-if="activeTab" class="badge text-bg-light border" :title="'内部条目（归档内文件）'">ARCHIVE-INNER</span>
+      <span v-else-if="activeTab" class="badge text-bg-light border" :title="t('dv.archiveInner')">ARCHIVE-INNER</span>
       <span class="badge fc-badge" v-if="node"
             :style="{ color: currentFcMeta.accent, borderColor: currentFcMeta.accent + '66', background: 'color-mix(in srgb, ' + currentFcMeta.accent + ' 12%, transparent)' }"
-            :title="'文件类型：' + currentFcMeta.label">
-        <i class="bi" :class="currentFcMeta.icon"></i>{{ currentFcMeta.label }}
+            :title="t('dt.fileType', { fc: fclassLabel(currentFc) })">
+        <i class="bi" :class="currentFcMeta.icon"></i>{{ fclassLabel(currentFc) }}
       </span>
       <!-- Git 短哈希徽标：左侧旧版（7 位 SHA-1 截断，缺失则 0000000 占位），右侧新版；
            类比 `git rev-parse --short=7`，两侧相同时合并为单色（说明此文件未变）。
            视觉上参照 IDE Git 插件：用等宽字体 + 淡底色 + 小徽标，方便扫读。 -->
-      <span class="hash-badge" v-if="dec && (dec.oldHash || dec.newHash)" :title="'Git 风格 7 位短哈希（基于文件字节 SHA-1）· 旧侧 ' + (dec.oldHash || '0000000') + ' / 新侧 ' + (dec.newHash || '0000000')">
+      <span class="hash-badge" v-if="dec && (dec.oldHash || dec.newHash)" :title="t('dv.hashTitle', { old: dec.oldHash || t('dv.hashNone'), new: dec.newHash || t('dv.hashNone') })">
         <span class="hash-side hash-old" :class="{ 'hash-empty': dec.oldHash === '0000000' }">
           <i class="bi bi-circle-fill hash-dot" :style="{ color: hashTone(dec.oldHash) }"></i>{{ dec.oldHash || '0000000' }}
         </span>
@@ -1177,85 +1185,85 @@ onUpdated(() => measureVisible())
       <!-- 右侧信息+操作区：包成整块 flex，窄屏触发 filebar 换行时整块跳到下一行并靠右，
            避免统计/按钮在第二行散落在左边、层级杂乱。 -->
       <div class="filebar-actions">
-      <span class="text-secondary" style="font-size:.75rem" title="当前文件使用的反编译引擎（默认 CFR）">
-        反编译引擎：{{ dec ? dec.engine : '—' }}
+      <span class="text-secondary" style="font-size:.75rem" :title="t('dv.engineTitle')">
+        {{ t('dv.engine', { engine: dec ? dec.engine : '—' }) }}
       </span>
       <!-- 差异统计（BCompare 风格）：+新增 / −删除 / ~修改 / =未变 -->
-      <span class="dvt-stats me-2" v-if="parseStatus === 'done' && rows.length" title="差异统计：新增 / 删除 / 修改 / 未变">
+      <span class="dvt-stats me-2" v-if="parseStatus === 'done' && rows.length" :title="t('dv.statsTitle')">
         <span class="text-success"><i class="bi bi-plus-circle"></i> {{ totalStats.added.toLocaleString() }}</span>
         <span class="text-danger"><i class="bi bi-dash-circle"></i> {{ totalStats.removed.toLocaleString() }}</span>
         <span class="text-warning"><i class="bi bi-pencil-square"></i> {{ totalStats.modified.toLocaleString() }}</span>
         <span class="text-secondary"><i class="bi bi-equals"></i> {{ totalStats.unchanged.toLocaleString() }}</span>
       </span>
       <!-- R2 行级选中操作条：复制选中行（可含行号前缀）/ 清除选择；Ctrl+C / Esc 同效 -->
-      <div class="btn-group btn-group-sm me-1" v-if="selRows.size" role="group" aria-label="选中行操作">
+      <div class="btn-group btn-group-sm me-1" v-if="selRows.size" role="group" :aria-label="t('dv.selGroup')">
         <span class="btn btn-outline-primary py-0 px-2 disabled d-flex align-items-center sel-chip-count" style="font-size:.72rem;pointer-events:none">
-          {{ selRows.size }} 行
+          {{ t('dv.rows', { n: selRows.size }) }}
         </span>
         <button class="btn btn-outline-primary py-0 px-2" @click="copySelRows"
-                :aria-label="'复制选中 ' + selRows.size + ' 行（' + (selSide === 'left' ? '旧侧' : '新侧') + '，点击行号列可切换侧）· Ctrl+C 同效'" :title="'复制选中 ' + selRows.size + ' 行（' + (selSide === 'left' ? '旧侧' : '新侧') + '，点击行号列可切换侧）· Ctrl+C 同效'">
+                :aria-label="selCopyTitle" :title="selCopyTitle">
           <i class="bi bi-clipboard"></i>
         </button>
         <button class="btn py-0 px-2" :class="copyWithLineNo ? 'btn-primary' : 'btn-outline-primary'"
                 @click="toggleCopyLineNo"
-                aria-label="复制时附带行号前缀（如 12: 内容），该偏好会被记忆" title="复制时附带行号前缀（如 12: 内容），该偏好会被记忆">
+                :aria-label="t('dv.withLineNo')" :title="t('dv.withLineNo')">
           <i class="bi bi-list-ol"></i>
         </button>
-        <button class="btn btn-outline-secondary py-0 px-2" @click="clearSelection" aria-label="清除选择（Esc）" title="清除选择（Esc）">
+        <button class="btn btn-outline-secondary py-0 px-2" @click="clearSelection" :aria-label="t('dv.clearSel')" :title="t('dv.clearSel')">
           <i class="bi bi-x"></i>
         </button>
       </div>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="openFind" aria-label="在差异内容中查找（Ctrl+F）" title="在差异内容中查找（Ctrl+F）">
+              @click="openFind" :aria-label="t('dv.findOpen')" :title="t('dv.findOpen')">
         <i class="bi bi-search"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="toggleAiPanel" :aria-label="state.aiPanelCollapsed ? '展开智能分析栏，查看单文件/全局分析' : '收起智能分析栏，扩大比对视野'" :title="state.aiPanelCollapsed ? '展开智能分析栏，查看单文件/全局分析' : '收起智能分析栏，扩大比对视野'">
+              @click="toggleAiPanel" :aria-label="state.aiPanelCollapsed ? t('dv.aiExpand') : t('dv.aiCollapse')" :title="state.aiPanelCollapsed ? t('dv.aiExpand') : t('dv.aiCollapse')">
         <i class="bi" :class="state.aiPanelCollapsed ? 'bi-layout-sidebar' : 'bi-layout-sidebar-inset-reverse'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="onToggleFocus" :aria-label="state.focusMode ? '退出专注模式（Esc）' : '专注对比：隐藏左右栏、放大视野（Esc 退出）'" :title="state.focusMode ? '退出专注模式（Esc）' : '专注对比：隐藏左右栏、放大视野（Esc 退出）'">
+              @click="onToggleFocus" :aria-label="state.focusMode ? t('dv.focusExit') : t('dv.focusEnter')" :title="state.focusMode ? t('dv.focusExit') : t('dv.focusEnter')">
         <i class="bi" :class="state.focusMode ? 'bi-fullscreen-exit' : 'bi-arrows-fullscreen'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="wrap = !wrap" :aria-label="wrap ? '当前：自动换行（单栏逐行对齐）· 点击切换为不换行（左右分栏 + 底部横向滚动同步）' : '当前：不换行（左右分栏 + 底部横向滚动同步）· 点击切换为自动换行'" :title="wrap ? '当前：自动换行（单栏逐行对齐）· 点击切换为不换行（左右分栏 + 底部横向滚动同步）' : '当前：不换行（左右分栏 + 底部横向滚动同步）· 点击切换为自动换行'">
+              @click="wrap = !wrap" :aria-label="wrap ? t('dv.wrapOn') : t('dv.wrapOff')" :title="wrap ? t('dv.wrapOn') : t('dv.wrapOff')">
         <i class="bi" :class="wrap ? 'bi-text-wrap' : 'bi-text-paragraph'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
               @click="gitMode = !gitMode"
-              :aria-label="gitMode ? '当前：Git 风格统一对比（左行号 + 后统一内容 + 热力地图）· 点击切换为双栏' : '切换为 Git 风格统一对比（左行号列固定，插除/新增分段展示 + 右侧热力差异地图）'" :title="gitMode ? '当前：Git 风格统一对比（左行号 + 后统一内容 + 热力地图）· 点击切换为双栏' : '切换为 Git 风格统一对比（左行号列固定，插除/新增分段展示 + 右侧热力差异地图）'">
+              :aria-label="gitMode ? t('dv.gitOn') : t('dv.gitOff')" :title="gitMode ? t('dv.gitOn') : t('dv.gitOff')">
         <i class="bi" :class="gitMode ? 'bi-file-diff' : 'bi-columns-gap'"></i>
       </button>
       <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-              @click="cycleGranularity" :aria-label="'行内差异粒度：' + granularityLabel + '（点击在 整行 / 词级 / 字符级 间循环切换）'" :title="'行内差异粒度：' + granularityLabel + '（点击在 整行 / 词级 / 字符级 间循环切换）'">
+              @click="cycleGranularity" :aria-label="granTip" :title="granTip">
         <i class="bi" :class="granularityIcon"></i>
       </button>
       <button class="btn btn-sm py-0 px-2" style="font-size:1.05rem"
               :class="collapse ? 'btn-primary' : 'btn-outline-secondary'"
               @click="collapse = !collapse"
-              :aria-label="collapse ? '已折叠未变更行，点击展开全部' : '折叠远离变化块的未变更行（对标 Beyond Compare）'" :title="collapse ? '已折叠未变更行，点击展开全部' : '折叠远离变化块的未变更行（对标 Beyond Compare）'">
+              :aria-label="collapse ? t('dv.collapseOn') : t('dv.collapseOff')" :title="collapse ? t('dv.collapseOn') : t('dv.collapseOff')">
         <i class="bi" :class="collapse ? 'bi-arrows-expand' : 'bi-arrows-collapse'"></i>
       </button>
       <!-- 查看模式：全量内容 / 仅差异内容 合并为单个动画图标，点击切换（图标随状态翻转淡入） -->
       <button class="btn btn-sm dvt-mode-btn ms-1 py-0 px-2" style="font-size:1.05rem"
               :class="diffOnly ? 'btn-primary' : 'btn-outline-secondary'"
               @click="diffOnly = !diffOnly; collapse = false"
-              :aria-label="diffOnly ? '当前：仅差异内容（隐藏未变更行）· 点击切换为全量内容' : '当前：全量内容（显示全部代码行，含未变更）· 点击切换为仅差异内容'" :title="diffOnly ? '当前：仅差异内容（隐藏未变更行）· 点击切换为全量内容' : '当前：全量内容（显示全部代码行，含未变更）· 点击切换为仅差异内容'">
+              :aria-label="diffOnly ? t('dv.diffOnlyOn') : t('dv.diffOnlyOff')" :title="diffOnly ? t('dv.diffOnlyOn') : t('dv.diffOnlyOff')">
         <i :key="diffOnly ? 'diff' : 'full'"
            class="bi dvt-mode-ic"
            :class="diffOnly ? 'bi-distribute-vertical' : 'bi-file-earmark-text'"></i>
       </button>
       <!-- 差异行快速定位：上一处 / 下一处（仅 add/del 算差异行） -->
-      <div class="btn-group btn-group-sm ms-1" role="group" aria-label="差异行定位">
+      <div class="btn-group btn-group-sm ms-1" role="group" :aria-label="t('dv.navGroup')">
         <button class="btn btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-                @click="gotoPrev" :disabled="!diffRows.length" aria-label="跳到上一处差异（Ctrl/Alt + ↑）" title="跳到上一处差异（Ctrl/Alt + ↑）">
+                @click="gotoPrev" :disabled="!diffRows.length" :aria-label="t('dv.gotoPrev')" :title="t('dv.gotoPrev')">
           <i class="bi bi-chevron-up"></i>
         </button>
         <span class="btn btn-outline-secondary py-0 px-2 disabled d-flex align-items-center justify-content-center" style="font-size:.72rem;pointer-events:none;min-width:3.2rem;flex-shrink:0;font-variant-numeric:tabular-nums">
           {{ diffCount ? curIdx + 1 : 0 }}/{{ diffCount }}
         </span>
         <button class="btn btn-outline-secondary py-0 px-2" style="font-size:1.05rem"
-                @click="gotoNext" :disabled="!diffRows.length" aria-label="跳到下一处差异（Ctrl/Alt + ↓）" title="跳到下一处差异（Ctrl/Alt + ↓）">
+                @click="gotoNext" :disabled="!diffRows.length" :aria-label="t('dv.gotoNext')" :title="t('dv.gotoNext')">
           <i class="bi bi-chevron-down"></i>
         </button>
       </div>
@@ -1267,27 +1275,23 @@ onUpdated(() => measureVisible())
       <!-- 超大文件降级横幅：简洁视图提示 + 手动展开完整差异 -->
       <div class="oversized-banner" v-if="oversized && !forceFull">
         <i class="bi bi-speedometer2"></i>
-        <span>大文件已降级为简洁视图：共 <b>{{ rows.length.toLocaleString() }}</b> 行
-          （<span class="text-success">+{{ totalStats.added.toLocaleString() }}</span> /
-           <span class="text-danger">-{{ totalStats.removed.toLocaleString() }}</span> /
-           <span class="text-warning">~{{ totalStats.modified.toLocaleString() }}</span> /
-           {{ totalStats.unchanged.toLocaleString() }} 未变），已关闭行内高亮并默认折叠未变更以保障流畅。</span>
-        <button class="btn btn-sm btn-outline-primary py-0 px-2 ms-2" @click="forceFull = true; collapse = false">展开完整差异（可能卡顿）</button>
+        <span v-html="degradeBanner"></span>
+        <button class="btn btn-sm btn-outline-primary py-0 px-2 ms-2" @click="forceFull = true; collapse = false">{{ t('dv.expandFull') }}</button>
       </div>
 
       <!-- R2 差异内容内查找（Ctrl+F）：行级命中高亮 + 上一个/下一个跳转；范围=当前视图（全量/仅差异） -->
       <div class="find-bar" v-if="findOpen">
         <i class="bi bi-search"></i>
         <input ref="findInputRef" v-model="findQuery" type="text" class="form-control form-control-sm find-input"
-               placeholder="在差异内容中查找（当前视图范围）…"
+               :placeholder="t('dv.findPlaceholder')"
                @keydown.esc.stop="closeFind"
                @keydown.enter="findQuery && ($event.shiftKey ? findPrev() : findNext())" />
-        <span class="find-count" :class="{ 'text-secondary': !findMatches.length }">{{ findMatches.length ? (findCurrent + 1) + ' / ' + findMatches.length : '无匹配' }}</span>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findPrev" :disabled="!findMatches.length" aria-label="上一个（Shift+Enter）" title="上一个（Shift+Enter）"><i class="bi bi-chevron-up"></i></button>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findNext" :disabled="!findMatches.length" aria-label="下一个（Enter）" title="下一个（Enter）"><i class="bi bi-chevron-down"></i></button>
+        <span class="find-count" :class="{ 'text-secondary': !findMatches.length }">{{ findMatches.length ? (findCurrent + 1) + ' / ' + findMatches.length : t('dv.noMatch') }}</span>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findPrev" :disabled="!findMatches.length" :aria-label="t('dv.findPrev')" :title="t('dv.findPrev')"><i class="bi bi-chevron-up"></i></button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="findNext" :disabled="!findMatches.length" :aria-label="t('dv.findNext')" :title="t('dv.findNext')"><i class="bi bi-chevron-down"></i></button>
         <button class="btn btn-sm py-0 px-1" :class="findCaseSensitive ? 'btn-primary' : 'btn-outline-secondary'"
-                @click="findCaseSensitive = !findCaseSensitive" aria-label="区分大小写" title="区分大小写">Aa</button>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="closeFind" aria-label="关闭（Esc）" title="关闭（Esc）"><i class="bi bi-x-lg"></i></button>
+                @click="findCaseSensitive = !findCaseSensitive" :aria-label="t('dv.caseSensitive')" :title="t('dv.caseSensitive')">Aa</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-1" @click="closeFind" :aria-label="t('dv.findClose')" :title="t('dv.findClose')"><i class="bi bi-x-lg"></i></button>
       </div>
 
       <!-- Git 风格 unified 视图：左「旧行号|新行号」列固定 + 后统一内容列（删/改/增段按 -/+ 区分），右侧热力差异地图 -->
@@ -1303,19 +1307,19 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="u-sign" :class="'u-sign-' + v.kind">{{ v.kind === 'd' ? '−' : (v.kind === 'a' ? '+' : ' ') }}</span>
-                <span class="u-ln-old ln-pick" :class="{ 'u-ln-d': v.oldLn && v.kind === 'd' }" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.src, 'left')">{{ v.oldLn }}</span>
-                <span class="u-ln-new ln-pick" :class="{ 'u-ln-a': v.newLn && v.kind === 'a' }" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.src, 'right')">{{ v.newLn }}</span>
+                <span class="u-ln-old ln-pick" :class="{ 'u-ln-d': v.oldLn && v.kind === 'd' }" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.src, 'left')">{{ v.oldLn }}</span>
+                <span class="u-ln-new ln-pick" :class="{ 'u-ln-a': v.newLn && v.kind === 'a' }" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.src, 'right')">{{ v.newLn }}</span>
                 <span class="u-code" data-side="uni"><span v-for="(s, si) in v.segs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span></span>
               </template>
             </div>
           </div>
         </div>
         <!-- 右侧热力差异地图：等比映射差异块位置，点击跳转定位（无内容/无差异时隐藏） -->
-        <div class="uni-heat" v-if="uniTotal > 0 && uniHeat.length" :title="'全局差异地图：深色块=删除、浅色=新增，点击跳转到对应位置'">
+        <div class="uni-heat" v-if="uniTotal > 0 && uniHeat.length" :title="t('dv.heatTitle')">
           <div v-for="(b, bi) in uniHeat" :key="'hb' + bi" class="uni-heat-bar"
                :class="{ 'uni-heat-del': b.del, 'uni-heat-add': b.add }"
                :style="{ top: (b.top / uniTotal * 100) + '%', height: (isNaN(b.h / uniTotal * 100) ? 1 : b.h / uniTotal * 100) + '%' }"
-               :title="'差异区域 ' + (b.start + 1) + '..' + (b.endAbs)"
+               :title="t('dv.regionTitle', { a: b.start + 1, b: b.endAbs })"
                @click="onUniHeatClick(b)"></div>
         </div>
       </div>
@@ -1336,10 +1340,10 @@ onUpdated(() => measureVisible())
             </template>
             <template v-else>
               <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
-              <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
+              <span class="ln ln-pick" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
               <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'right')" class="bi" :class="gtIcon(v, 'right')"></i></span>
-              <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
+              <span class="ln ln-pick" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
               <span class="code flex-1" data-side="right"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'right')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
             </template>
           </div>
@@ -1347,11 +1351,11 @@ onUpdated(() => measureVisible())
       </div>
 
         <!-- 换行模式右侧热力差异地图：等比映射差异块位置，点击跳转定位（与双栏一致） -->
-        <div class="uni-heat" v-if="splitHeat.length" :title="'全局差异地图：深色块=删除、浅色=新增，点击跳转到对应位置'">
+        <div class="uni-heat" v-if="splitHeat.length" :title="t('dv.heatTitle')">
           <div v-for="(b, bi) in splitHeat" :key="'wb' + bi" class="uni-heat-bar"
                :class="{ 'uni-heat-del': b.del, 'uni-heat-add': b.add }"
                :style="{ top: (b.top / totalHeight * 100) + '%', height: (isNaN(b.h / totalHeight * 100) ? 1 : b.h / totalHeight * 100) + '%' }"
-               :title="'差异区域 ' + (b.start + 1) + '..' + (b.endAbs)"
+               :title="t('dv.regionTitle', { a: b.start + 1, b: b.endAbs })"
                @click="onSplitHeatClick(b)"></div>
         </div>
       </div>
@@ -1372,14 +1376,14 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
-                <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
+                <span class="ln ln-pick" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
                 <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
           </div>
         </div>
 
-        <div class="diff-splitter" title="左 / 右 文件分栏"></div>
+        <div class="diff-splitter" :title="t('dv.splitterTitle')"></div>
 
         <div class="diff-pane right" ref="rightPaneRef" @scroll="onPaneScroll('right')">
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
@@ -1395,7 +1399,7 @@ onUpdated(() => measureVisible())
               </template>
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'right')" class="bi" :class="gtIcon(v, 'right')"></i></span>
-                <span class="ln ln-pick" title="点击选中该行（Shift 点击范围选择，再点取消）" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
+                <span class="ln ln-pick" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
                 <span class="code flex-1" data-side="right"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'right')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -1403,26 +1407,26 @@ onUpdated(() => measureVisible())
         </div>
 
         <!-- 双栏右侧热力差异地图：等比映射差异块位置，点击跳转定位（复用 unified 的色块样式） -->
-        <div class="uni-heat" v-if="splitHeat.length" :title="'全局差异地图：深色块=删除、浅色=新增，点击跳转到对应位置'">
+        <div class="uni-heat" v-if="splitHeat.length" :title="t('dv.heatTitle')">
           <div v-for="(b, bi) in splitHeat" :key="'sb' + bi" class="uni-heat-bar"
                :class="{ 'uni-heat-del': b.del, 'uni-heat-add': b.add }"
                :style="{ top: (b.top / totalHeight * 100) + '%', height: (isNaN(b.h / totalHeight * 100) ? 1 : b.h / totalHeight * 100) + '%' }"
-               :title="'差异区域 ' + (b.start + 1) + '..' + (b.endAbs)"
+               :title="t('dv.regionTitle', { a: b.start + 1, b: b.endAbs })"
                @click="onSplitHeatClick(b)"></div>
         </div>
       </div>
 
       <!-- 光标定位状态栏：实时行列坐标 + 元素类型（点击落下光标，悬停实时跟随） -->
-      <div class="diff-statusbar" :title="'光标定位：点击代码行落下闪烁光标，悬停实时跟随；类型为光标所在元素属性'">
+      <div class="diff-statusbar" :title="t('dv.cursorTitle')">
         <template v-if="statusInfo">
-          <span class="dsb-item"><i class="bi bi-cursor"></i> 行 <b>{{ statusInfo.lineNo }}</b> · 列 <b>{{ statusInfo.col }}</b>（{{ statusInfo.side }}侧）</span>
+          <span class="dsb-item"><i class="bi bi-cursor"></i> {{ t('dv.cursorPos', { line: statusInfo.lineNo, col: statusInfo.col, side: statusInfo.side }) }}</span>
           <span class="dsb-item" :style="{ color: statusInfo.meta.color }">
             <i class="bi bi-tag"></i> {{ statusInfo.meta.label }}
             <template v-if="statusInfo.tok.word">：<code class="dsb-word">{{ statusInfo.tok.word }}</code></template>
           </span>
         </template>
         <template v-else>
-          <span class="dsb-item text-secondary"><i class="bi bi-info-circle"></i> 将鼠标移到代码行查看行列与元素类型，点击可落下光标</span>
+          <span class="dsb-item text-secondary"><i class="bi bi-info-circle"></i> {{ t('dv.cursorHint') }}</span>
         </template>
       </div>
     </div>
@@ -1430,44 +1434,44 @@ onUpdated(() => measureVisible())
     <!-- 加载态：反编译中 或 差异解析中 -->
     <div class="diff-area center-empty" v-else-if="(node || dec) && (busy || (dec && dec.ok && parseStatus !== 'done'))">
       <div class="spinner-border text-secondary" role="status" aria-hidden="true"></div>
-      <div class="mt-2">{{ busy ? '正在反编译/美化源码…' : '正在解析差异…' }}</div>
+      <div class="mt-2">{{ busy ? t('dv.decompiling') : t('dv.parsingDiff') }}</div>
     </div>
 
     <div class="diff-area center-empty" v-else-if="(node || dec) && dec && !dec.ok">
       <div class="ico"><i class="bi bi-exclamation-triangle"></i></div>
       <!-- 失败时要展示后端返回的具体原因(dec.error)，而非只报引擎名——例如旧版二进制 .xls/.doc 会被明确提示「请另存为 .xlsx/.docx」 -->
-      <div v-if="dec.engine" class="text-secondary mb-1" style="font-size:.85rem">反编译引擎：{{ dec.engine }}</div>
-      <div>{{ dec.error || '该文件无法反编译' }}</div>
+      <div v-if="dec.engine" class="text-secondary mb-1" style="font-size:.85rem">{{ t('dv.engine', { engine: dec.engine }) }}</div>
+      <div>{{ dec.error || t('dv.decompileFail') }}</div>
       <div v-if="dec.diffText" class="text-start mt-2" style="white-space:pre-wrap;font-size:.8rem">{{ dec.diffText }}</div>
       <!-- R2 二进制条目摘要卡：类型 / 双端大小 / 内容等价判定（T01454） -->
       <div class="bin-card text-start mt-3" v-if="binaryInfo" :data-fc="currentFc">
-        <div class="bin-title"><i class="bi bi-file-earmark-binary"></i> 二进制条目摘要（不支持内容级对比）</div>
-        <div class="bin-row"><span class="bin-k">文件类型</span><span>{{ binaryInfo.fcLabel }}</span></div>
+        <div class="bin-title"><i class="bi bi-file-earmark-binary"></i> {{ t('dv.binTitle') }}</div>
+        <div class="bin-row"><span class="bin-k">{{ t('dv.binType') }}</span><span>{{ binaryInfo.fcLabel }}</span></div>
         <div class="bin-row">
-          <span class="bin-k">旧侧大小</span>
-          <span>{{ binaryInfo.hasOld ? fmtBytes(binaryInfo.oldSize || 0) : '不存在' }}</span>
+          <span class="bin-k">{{ t('dv.binOldSize') }}</span>
+          <span>{{ binaryInfo.hasOld ? fmtBytes(binaryInfo.oldSize || 0) : t('dv.binAbsent') }}</span>
         </div>
         <div class="bin-row">
-          <span class="bin-k">新侧大小</span>
-          <span>{{ binaryInfo.newSize != null ? fmtBytes(binaryInfo.newSize) : '不存在' }}</span>
+          <span class="bin-k">{{ t('dv.binNewSize') }}</span>
+          <span>{{ binaryInfo.newSize != null ? fmtBytes(binaryInfo.newSize) : t('dv.binAbsent') }}</span>
         </div>
         <div class="bin-row">
-          <span class="bin-k">内容判定</span>
-          <span v-if="binaryInfo.content === true" class="text-success"><i class="bi bi-check2-circle"></i> 内容一致（哈希相同）</span>
-          <span v-else-if="binaryInfo.content === false" class="text-warning"><i class="bi bi-arrow-repeat"></i> 内容已变化</span>
-          <span v-else class="text-secondary">无法判定（单侧存在或哈希缺失）</span>
+          <span class="bin-k">{{ t('dv.binVerdict') }}</span>
+          <span v-if="binaryInfo.content === true" class="text-success"><i class="bi bi-check2-circle"></i> {{ t('dv.binSame') }}</span>
+          <span v-else-if="binaryInfo.content === false" class="text-warning"><i class="bi bi-arrow-repeat"></i> {{ t('dv.binChanged') }}</span>
+          <span v-else class="text-secondary">{{ t('dv.binUnknown') }}</span>
         </div>
       </div>
     </div>
 
     <div class="diff-area center-empty" v-else-if="(node || dec) && tabErr">
       <div class="ico"><i class="bi bi-x-octagon text-danger"></i></div>
-      <div>反编译失败：{{ tabErr }}</div>
+      <div>{{ t('dv.decompileErr', { err: tabErr }) }}</div>
     </div>
 
     <div class="diff-area center-empty" v-else>
       <div class="ico"><i class="bi bi-columns-gap"></i></div>
-      <div>从左侧差异树选择一个 <b>修改 / 新增 / 删除</b> 的文件查看双栏源码比对</div>
+      <div>{{ t('dv.pickFile', { kinds: t('info.modified') + ' / ' + t('info.added') + ' / ' + t('info.deleted') }) }}</div>
     </div>
   </div>
 </template>
