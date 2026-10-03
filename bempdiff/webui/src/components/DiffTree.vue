@@ -1,13 +1,14 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import {
-  state, selectEntry, toggleArchive, STATUS_META, toast,
+  state, selectEntry, toggleArchive, STATUS_META, statusLabel, toast,
   excludeEntry, restoreAllExcluded, addIgnoreRule, removeIgnoreRule, clearIgnoreRules,
   setBaseFolder, showProperties, hideProperties, startFileAiSummary,
   setTreePanelCollapsed
 } from '../store'
 import { isIgnored, IGNORE_TYPES } from '../lib/ignore'
 import { menuItemsFor, buildCopyText } from '../lib/tree_actions'
+import { t } from '../lib/i18n'
 import { buildDirTree, flattenDirTree, dirLayersOf, flattenArchiveChildren } from '../lib/dir_tree'
 import { api } from '../api/client'
 import ContextMenu from './ContextMenu.vue'
@@ -16,12 +17,12 @@ import TipButton from './TipButton.vue'
 // 多个顶层根），无法靠 :style fallthrough 把宽度透传到唯一根元素。
 const props = defineProps({ panelWidth: { type: Number, default: null } })
 // STATUS_META 已迁到 store.js，与 DiffView/InfoPanel 共享
-const LAYER_LABEL = { L0: 'L0 包级', L1: 'L1 业务码', L2: 'L2 三方依赖', '?': '其他' }
+const LAYER_LABEL = { L0: 'dt.layer.L0', L1: 'dt.layer.L1', L2: 'dt.layer.L2', '?': 'dt.layer.?' }
 const LAYER_TITLE = {
-  L0: 'L0 包级：war/jar 顶层包的差异',
-  L1: 'L1 业务码：命中内部包前缀的内部业务类差异',
-  L2: 'L2 三方依赖：第三方库 class 的差异',
-  '?': '其他：未归类的差异项'
+  L0: 'dt.layerTitle.L0',
+  L1: 'dt.layerTitle.L1',
+  L2: 'dt.layerTitle.L2',
+  '?': 'dt.layerTitle.?'
 }
 
 const tree = computed(() => (state.job && state.job.tree) || [])
@@ -102,7 +103,7 @@ function clearAllFilters() {
   cfg.filterShowUnchanged = true
   if (Array.isArray(cfg.filterRisk)) cfg.filterRisk = ['HIGH', 'MEDIUM', 'LOW']
   else cfg.filterRisk = ['HIGH', 'MEDIUM', 'LOW']
-  toast('info', '已清除过滤条件（搜索/状态/风险），差异树已恢复')
+  toast('info', t('dt.filtersCleared'))
 }
 
 const filtered = computed(() => {
@@ -130,7 +131,7 @@ const groups = computed(() => {
     } else {
       nodes.sort((a, b) => a.key.localeCompare(b.key))
     }
-    out.push({ layer: L, label: LAYER_LABEL[L] || L, nodes })
+    out.push({ layer: L, label: LAYER_LABEL[L] ? t(LAYER_LABEL[L]) : L, nodes })
   }
   order.forEach(pushGroup)
   for (const L of map.keys()) if (!order.includes(L)) pushGroup(L)
@@ -139,11 +140,13 @@ const groups = computed(() => {
 
 const aiClassify = computed(() => state.aiClassify || {})
 const RISK_META = {
-  HIGH: { dot: 'var(--bs-danger)', label: '高', cls: 'text-bg-danger' },
-  MEDIUM: { dot: 'var(--bs-warning)', label: '中', cls: 'text-bg-warning' },
-  LOW: { dot: 'var(--bs-success)', label: '低', cls: 'text-bg-success' }
+  HIGH: { dot: 'var(--bs-danger)', labelKey: 'dt.risk.HIGH', cls: 'text-bg-danger' },
+  MEDIUM: { dot: 'var(--bs-warning)', labelKey: 'dt.risk.MEDIUM', cls: 'text-bg-warning' },
+  LOW: { dot: 'var(--bs-success)', labelKey: 'dt.risk.LOW', cls: 'text-bg-success' }
 }
 function riskMeta(r) { return RISK_META[r] || null }
+// 风险等级显示名（RISK_META 存 labelKey，渲染期求值支持切语言）
+function riskLabel(r) { const m = RISK_META[r]; return m ? t(m.labelKey) : '' }
 function riskRank(r) { return r === 'HIGH' ? 3 : r === 'MEDIUM' ? 2 : r === 'LOW' ? 1 : 0 }
 
 // 状态排序优先级（数值小=更靠前）：MODIFIED 最先审阅，其次 DELETED/ADDED，最后 UNCHANGED
@@ -274,8 +277,8 @@ function runDirAnim(layers, apply) {
 }
 
 // 工具栏按钮的悬浮提示文案：树视图下为功能说明；列表视图下提示需先切换（按钮禁用）。
-const expandTooltip = computed(() => viewMode.value === 'tree' ? '展开所有机构节点' : '切换至树结构查看后可用')
-const collapseTooltip = computed(() => viewMode.value === 'tree' ? '折叠所有机构节点' : '切换至树结构查看后可用')
+const expandTooltip = computed(() => (viewMode.value === 'tree' ? t('dt.expandAll') : t('dt.treeViewOnly')))
+const collapseTooltip = computed(() => (viewMode.value === 'tree' ? t('dt.collapseAll') : t('dt.treeViewOnly')))
 // 「...」菜单：菜单项高亮与排序选项同步（树视图下 effectiveSortMode = path）
 const sortMenuKey = computed(() => effectiveSortMode.value)
 const showViewMenu = ref(false)
@@ -489,7 +492,7 @@ watch(() => (state.treeLocate && state.treeLocate.seq), () => {
     const hit = rs.findIndex(r => (r.kind === 'node' || r.kind === 'dir') && (r.key === p || r.key.startsWith(p + '/')))
     idx = hit
   }
-  if (idx < 0) { toast('info', '差异树中未找到该路径（可能被过滤/忽略隐藏）'); return }
+  if (idx < 0) { toast('info', t('dt.locateMiss')); return }
   const el = scrollEl.value
   if (!el) return
   el.scrollTop = Math.max(0, idx * ROW_H - (viewportH.value - ROW_H) / 2) // 目标行居中
@@ -541,9 +544,9 @@ async function copyText(text, tip) {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    toast('success', tip + (text ? '：' + (text.length > 60 ? text.slice(0, 60) + '…' : text) : ''))
+    toast('success', t('dt.copyToast', { tip, text: text ? (text.length > 60 ? text.slice(0, 60) + '…' : text) : '' }))
   } catch (_) {
-    toast('danger', '复制失败（剪贴板不可用）')
+    toast('danger', t('dt.copyFail'))
   }
 }
 
@@ -575,8 +578,8 @@ async function runAction(item) {
   try {
     const node = ctxMenu.value.node
     if (!node) return
-    if (!item) { toast('danger', '菜单项无效（item 为空）'); return }
-    if (!item.id) { toast('danger', '菜单项缺少 id，请检查 menuItemsFor 返回结构'); return }
+    if (!item) { toast('danger', t('dt.menuInvalid')); return }
+    if (!item.id) { toast('danger', t('dt.menuMissingId')); return }
     const jobId = state.job && state.job.jobId
     const mode = (state.job && state.job.mode) || 'package'
     const disk = diskPathOf(node)
@@ -586,70 +589,70 @@ async function runAction(item) {
         // 桌面壳：系统默认程序打开文件 / 打开文件夹
         try {
           const r = await window.bempdiff.openPath(disk)
-          if (r !== undefined && r !== null && r !== '') toast('danger', '打开失败：' + r)
-        } catch (e) { toast('danger', '打开失败：' + e.message) }
+          if (r !== undefined && r !== null && r !== '') toast('danger', t('dt.openFail', { msg: r }))
+        } catch (e) { toast('danger', t('dt.openFail', { msg: e.message })) }
       } else if (mode === 'folder') {
-        toast('info', '浏览器模式无法调用系统打开，请使用桌面壳；已改为打开内容比对')
+        toast('info', t('dt.openBrowserFallback'))
         if (node.fileClass !== 'FOLDER') selectEntry(node.key)
       } else {
-        if (node.fileClass === 'FOLDER') toast('info', '文件夹不支持内容比对')
+        if (node.fileClass === 'FOLDER') toast('info', t('dt.folderNoCompare'))
         else selectEntry(node.key) // 包模式：打开反编译内容比对
       }
       break
     }
     case 'reveal': {
       if (hasShell.value && disk) {
-        try { await window.bempdiff.showInFolder(disk) } catch (e) { toast('danger', '定位失败：' + e.message) }
+        try { await window.bempdiff.showInFolder(disk) } catch (e) { toast('danger', t('dt.revealFail', { msg: e.message })) }
       } else {
-        toast('warning', '仅桌面壳支持「在文件资源管理器中显示」')
+        toast('warning', t('dt.revealShellOnly'))
       }
       break
     }
     case 'setBase': {
       if (node.fileClass === 'FOLDER') setBaseFolder(node.key)
-      else toast('warning', '仅文件夹对象可设为基准文件夹')
+      else toast('warning', t('dt.setBaseFolderOnly'))
       break
     }
     case 'rename': {
       const cur = (node.name || (node.key.split('/').pop())) || ''
-      const newName = window.prompt('输入新名称（仅文件名，不改变所在目录）：', cur)
+      const newName = window.prompt(t('dt.renamePrompt'), cur)
       if (newName === null || newName === '') return
       if (!jobId) return
       try {
         const r = await apiFileOps(jobId, 'rename', node.key, { newName })
-        if (!r.ok) { toast('warning', r.message || '重命名失败'); break }
+        if (!r.ok) { toast('warning', r.message || t('dt.renameFailShort')); break }
         toast('success', r.message)
-        toast('info', '已修改磁盘文件，如需刷新差异请重新比对')
-      } catch (e) { toast('danger', '重命名失败：' + e.message) }
+        toast('info', t('dt.diskChanged'))
+      } catch (e) { toast('danger', t('dt.renameFail', { msg: e.message })) }
       break
     }
     case 'delete': {
       const isDir = node.fileClass === 'FOLDER'
-      const ok = window.confirm(`确定删除「${node.key}」${isDir ? '（含其中全部内容，不可恢复）' : ''}？`)
+      const ok = window.confirm(t('dt.deleteConfirm', { key: node.key, dir: isDir ? t('dt.deleteDirSuffix') : '' }))
       if (!ok) return
       if (!jobId) return
       try {
         const r = await apiFileOps(jobId, 'delete', node.key)
-        if (!r.ok) { toast('warning', r.message || '删除失败'); break }
+        if (!r.ok) { toast('warning', r.message || t('dt.deleteFailShort')); break }
         toast('success', r.message)
         toast('info', '已修改磁盘文件，如需刷新差异请重新比对')
-      } catch (e) { toast('danger', '删除失败：' + e.message) }
+      } catch (e) { toast('danger', t('dt.deleteFail', { msg: e.message })) }
       break
     }
     case 'copyFile': {
-      if (mode !== 'folder') { toast('warning', '包内条目无磁盘路径，无法复制到另一侧'); break }
+      if (mode !== 'folder') { toast('warning', t('dt.copyFileNoDisk')); break }
       if (!jobId) return
       try {
         const r = await apiFileOps(jobId, 'copy', node.key)
-        if (!r.ok) { toast('warning', r.message || '复制失败'); break }
+        if (!r.ok) { toast('warning', r.message || t('dt.copyFileFailShort')); break }
         toast('success', r.message)
-        toast('info', '已复制到另一侧，重新比对后可确认差异消除')
-      } catch (e) { toast('danger', '复制失败：' + e.message) }
+        toast('info', t('dt.copiedToOther'))
+      } catch (e) { toast('danger', t('dt.copyFileFail', { msg: e.message })) }
       break
     }
     case 'exclude': {
       const n = excludeEntry(node.key)
-      toast('info', `已排除「${node.key}」${n > 1 ? `（共 ${n} 项，可在下方恢复）` : ''}`)
+      toast('info', t('dt.excluded', { key: node.key, more: n > 1 ? t('dt.excludedMore', { n }) : '' }))
       break
     }
     case 'ignore': {
@@ -659,19 +662,19 @@ async function runAction(item) {
     }
     case 'copyName': {
       const t = buildCopyText(node, { mode })
-      await copyText(t.name, '已复制文件名')
+      await copyText(t.name, t('dt.copiedName'))
       break
     }
     case 'copyPath': {
       // 用 diskRootOf（按状态选侧）而非固定的 rootPath，保证 ADDED 条目复制的是真实存在的右侧路径
       const t = buildCopyText(node, { mode, rootPath: diskRootOf(node) })
-      if (mode !== 'folder') toast('info', '包内条目无磁盘路径，已复制包内路径')
-      await copyText(t.absPath, '已复制路径')
+      if (mode !== 'folder') toast('info', t('dt.copiedPkgPath'))
+      await copyText(t.absPath, t('dt.copiedPath'))
       break
     }
     case 'copyRelPath': {
       const t = buildCopyText(node, { mode })
-      await copyText(t.relPath, '已复制相对路径')
+      await copyText(t.relPath, t('dt.copiedRelPath'))
       break
     }
     case 'props': {
@@ -683,11 +686,11 @@ async function runAction(item) {
       break
     }
     default:
-      toast('warning', '未实现的菜单操作：' + (item.id || '(无 id)'))
+      toast('warning', t('dt.menuUnknown', { id: item.id || '(no id)' }))
   }
   } catch (e) {
     console.error('[runAction]', e)
-    toast('danger', '执行菜单操作失败：' + (e && e.message || e))
+    toast('danger', t('dt.menuActionFail', { msg: (e && e.message) || e }))
   }
 }
 
@@ -699,7 +702,7 @@ async function apiFileOps(jobId, op, key, extra = {}) {
 // 点击节点：文件夹不支持内容比对（提示而非报错）
 function onNodeClick(node) {
   if (node.fileClass === 'FOLDER') {
-    toast('info', '文件夹不支持内容比对，请点击其中的文件')
+    toast('info', t('dt.folderNoComparePick'))
     return
   }
   selectEntry(node.key)
@@ -727,22 +730,22 @@ function ruleTypeLabel(t) {
 <template>
   <div class="col-tree" :class="{ collapsed: state.treePanelCollapsed }"
        :style="props.panelWidth != null && !state.treePanelCollapsed ? { width: props.panelWidth + 'px' } : undefined">
-    <div v-if="!state.treePanelCollapsed" class="pane-head" title="按层级展示两个包/目录的差异文件，点击任一文件打开双栏源码比对">
-      <i class="bi bi-diagram-3"></i> 差异文件树
+    <div v-if="!state.treePanelCollapsed" class="pane-head" :title="t('dt.paneTitle')">
+      <i class="bi bi-diagram-3"></i> {{ t('dt.treeTitle') }}
       <span class="fw-normal" style="font-size:.75rem;color:var(--bs-secondary-color)"
-            :title="filtersActive ? '当前过滤条件下的命中数 / 差异总数' : '差异条目总数'">
-        <template v-if="filtersActive">命中 {{ hitCount }} / {{ tree.length }} 项</template>
-        <template v-else>{{ tree.length }} 项</template>
+            :title="filtersActive ? t('dt.hitTitle') : t('dt.totalTitle')">
+        <template v-if="filtersActive">{{ t('dt.hitCount', { hit: hitCount, total: tree.length }) }}</template>
+        <template v-else>{{ t('dt.totalCount', { total: tree.length }) }}</template>
       </span>
       <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0"
-              type="button" title="收起差异文件树，扩大比对视野" @click="setTreePanelCollapsed(true)">
+              type="button" :title="t('dt.collapsePane')" @click="setTreePanelCollapsed(true)">
         <i class="bi bi-layout-sidebar-inset-reverse"></i>
       </button>
     </div>
     <!-- 收起态窄条：仅留竖排标题与展开入口，把横向空间让给比对窗口（与右侧智能分析栏对称） -->
-    <div v-else class="tree-collapsed-bar" title="展开差异文件树" @click="setTreePanelCollapsed(false)">
+    <div v-else class="tree-collapsed-bar" :title="t('dt.expandPane')" @click="setTreePanelCollapsed(false)">
       <i class="bi bi-chevron-right"></i>
-      <span class="tree-collapsed-label">差异文件树</span>
+      <span class="tree-collapsed-label">{{ t('dt.treeTitle') }}</span>
     </div>
 
     <!-- 搜索框 + 正则开关 + 「...」视图/排序菜单（过滤栏可通过菜单收起，偏好记忆于 localStorage） -->
@@ -751,10 +754,10 @@ function ruleTypeLabel(t) {
         <div class="input-group input-group-sm flex-1">
           <span class="input-group-text"><i class="bi bi-search"></i></span>
           <input ref="filterInputRef" class="form-control" type="text" v-model="state.config.filterSearch"
-                 placeholder="搜索文件名（模糊）" aria-label="搜索文件名">
+                 :placeholder="t('tree.filterPlaceholder')" :aria-label="t('dt.searchAria')">
           <button class="btn btn-outline-secondary" type="button" :class="{active: state.config.filterRegex}"
                   @click="state.config.filterRegex = !state.config.filterRegex"
-                  :title="state.config.filterRegex ? '正则模式：搜索框内容按正则表达式匹配' : '模糊模式：忽略大小写，包含即匹配'">
+                  :title="state.config.filterRegex ? t('dt.regexModeTip') : t('dt.fuzzyModeTip')">
             <i class="bi bi-regex"></i>
           </button>
         </div>
@@ -769,24 +772,24 @@ function ruleTypeLabel(t) {
           <button class="btn btn-outline-secondary btn-sm" type="button"
                   @click="showViewMenu = !showViewMenu"
                   :aria-expanded="showViewMenu"
-                  title="视图模式与排序方式">
+                  :title="t('dt.viewSortMenu')" :aria-label="t('dt.viewSortMenu')">
             <i class="bi bi-three-dots"></i>
           </button>
           <ul class="dropdown-menu dropdown-menu-end show py-1" v-if="showViewMenu"
               style="position:absolute;right:0;top:100%;z-index:1000;min-width:14rem">
-            <li><h6 class="dropdown-header" style="font-size:.72rem;padding:.25rem 1rem">视图模式</h6></li>
+            <li><h6 class="dropdown-header" style="font-size:.72rem;padding:.25rem 1rem">{{ t('dt.viewModeHeader') }}</h6></li>
             <li>
               <a class="dropdown-item d-flex align-items-center" href="#" @click.prevent="setViewMode('tree')"
-                 :class="{active: viewMode === 'tree'}" title="以目录树查看（VS Code 风格：按目录层级递归展开，节点仅显示当前层目录名/文件名）">
+                 :class="{active: viewMode === 'tree'}" :title="t('dt.viewTreeTip')">
                 <i class="bi me-2" :class="viewMode === 'tree' ? 'bi-check2' : 'bi-diagram-3'" style="width:1rem"></i>
-                树结构查看
+                {{ t('dt.viewTree') }}
               </a>
             </li>
             <li>
               <a class="dropdown-item d-flex align-items-center" href="#" @click.prevent="setViewMode('list')"
-                 :class="{active: viewMode === 'list'}" title="以单层列表查看，便于按需重新排序">
+                 :class="{active: viewMode === 'list'}" :title="t('dt.viewListTip')">
                 <i class="bi me-2" :class="viewMode === 'list' ? 'bi-check2' : 'bi-list-ul'" style="width:1rem"></i>
-                以列表形式查看
+                {{ t('dt.viewList') }}
               </a>
             </li>
             <li><hr class="dropdown-divider"></li>
@@ -794,62 +797,62 @@ function ruleTypeLabel(t) {
               <a class="dropdown-item d-flex align-items-center" href="#"
                  @click.prevent="setFilterBarVisible(!filterBarVisible)"
                  :class="{active: filterBarVisible}"
-                 :title="filterBarVisible ? '隐藏搜索与状态过滤栏（选择会被记忆）' : '显示搜索与状态过滤栏（选择会被记忆）'">
+                 :title="t('dt.filterBarTip')">
                 <i class="bi me-2" :class="filterBarVisible ? 'bi-check2' : 'bi-funnel'" style="width:1rem"></i>
-                显示过滤栏
+                {{ t('dt.showFilterBar') }}
               </a>
             </li>
             <li><hr class="dropdown-divider"></li>
-            <li><h6 class="dropdown-header" style="font-size:.72rem;padding:.25rem 1rem">排序方式</h6></li>
+            <li><h6 class="dropdown-header" style="font-size:.72rem;padding:.25rem 1rem">{{ t('dt.sortHeader') }}</h6></li>
             <li>
               <a class="dropdown-item d-flex align-items-center" href="#" @click.prevent="setSortMode('path')"
                  :class="{active: sortMenuKey === 'path', disabled: viewMode === 'tree'}"
-                 :title="viewMode === 'tree' ? '树视图下按路径排序（目录层次可读）' : '按完整路径排序（默认）'">
+                 :title="viewMode === 'tree' ? t('dt.sortPathTipTree') : t('dt.sortPathTipList')">
                 <i class="bi me-2" :class="sortMenuKey === 'path' ? 'bi-check2' : 'bi-sort-alpha-down'" style="width:1rem"></i>
-                按路径对更改进行排序
+                {{ t('dt.sortPath') }}
               </a>
             </li>
             <li>
               <a class="dropdown-item d-flex align-items-center" href="#" @click.prevent="setSortMode('name')"
                  :class="{active: sortMenuKey === 'name', disabled: viewMode === 'tree'}"
-                 :title="viewMode === 'tree' ? '树视图固定按路径排序，请先切到列表视图' : '按文件名（基名）排序'">
+                 :title="viewMode === 'tree' ? t('dt.treeSortLocked') : t('dt.sortNameTip')">
                 <i class="bi me-2" :class="sortMenuKey === 'name' ? 'bi-check2' : 'bi-sort-alpha-down'" style="width:1rem"></i>
-                按名称对更改进行排序
+                {{ t('dt.sortName') }}
               </a>
             </li>
             <li>
               <a class="dropdown-item d-flex align-items-center" href="#" @click.prevent="setSortMode('status')"
                  :class="{active: sortMenuKey === 'status', disabled: viewMode === 'tree'}"
-                 :title="viewMode === 'tree' ? '树视图固定按路径排序，请先切到列表视图' : '按状态排序（修改/删除/新增/未变）'">
+                 :title="viewMode === 'tree' ? t('dt.treeSortLocked') : t('dt.sortStatusTip')">
                 <i class="bi me-2" :class="sortMenuKey === 'status' ? 'bi-check2' : 'bi-flag'" style="width:1rem"></i>
-                按状态对更改进行排序
+                {{ t('dt.sortStatus') }}
               </a>
             </li>
           </ul>
         </div>
       </div>
       <div class="form-text mt-1" style="font-size:.72rem" v-if="state.config.filterRegex">
-        正则模式：在上方输入合法正则，如 <code>^com/</code> 或 <code>\.java$</code>
+        <span v-html="t('dt.regexHint')"></span>
       </div>
     </div>
 
     <!-- 状态过滤：可直接勾选显示/隐藏差异文件（收起时随过滤栏一并隐藏，命中计数保留在标题行） -->
     <div class="dt-filters px-2 py-1 d-flex flex-wrap gap-2" v-if="state.config && filterBarVisible">
       <div class="form-check form-check-inline mb-0">
-        <input class="form-check-input" type="checkbox" id="ftMod" v-model="state.config.filterShowModified" title="显示内容发生变化的文件">
-        <label class="form-check-label" for="ftMod" title="显示内容发生变化的文件"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-warning)"></i>修改 {{ counts.MODIFIED }}</label>
+        <input class="form-check-input" type="checkbox" id="ftMod" v-model="state.config.filterShowModified" :title="t('dt.showModifiedTip')">
+        <label class="form-check-label" for="ftMod" :title="t('dt.showModifiedTip')"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-warning)"></i>{{ t('info.modified') }} {{ counts.MODIFIED }}</label>
       </div>
       <div class="form-check form-check-inline mb-0">
-        <input class="form-check-input" type="checkbox" id="ftAdd" v-model="state.config.filterShowAdded" title="显示新出现的文件">
-        <label class="form-check-label" for="ftAdd" title="显示新出现的文件"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-success)"></i>新增 {{ counts.ADDED }}</label>
+        <input class="form-check-input" type="checkbox" id="ftAdd" v-model="state.config.filterShowAdded" :title="t('dt.showAddedTip')">
+        <label class="form-check-label" for="ftAdd" :title="t('dt.showAddedTip')"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-success)"></i>{{ t('info.added') }} {{ counts.ADDED }}</label>
       </div>
       <div class="form-check form-check-inline mb-0">
-        <input class="form-check-input" type="checkbox" id="ftDel" v-model="state.config.filterShowDeleted" title="显示被移除的文件">
-        <label class="form-check-label" for="ftDel" title="显示被移除的文件"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-danger)"></i>删除 {{ counts.DELETED }}</label>
+        <input class="form-check-input" type="checkbox" id="ftDel" v-model="state.config.filterShowDeleted" :title="t('dt.showDeletedTip')">
+        <label class="form-check-label" for="ftDel" :title="t('dt.showDeletedTip')"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-danger)"></i>{{ t('info.deleted') }} {{ counts.DELETED }}</label>
       </div>
       <div class="form-check form-check-inline mb-0">
-        <input class="form-check-input" type="checkbox" id="ftUnc" v-model="state.config.filterShowUnchanged" title="显示内容一致的文件；关闭可显著缩短差异树长度">
-        <label class="form-check-label" for="ftUnc" title="显示内容一致的文件；关闭可显著缩短差异树长度"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-secondary)"></i>未变 {{ counts.UNCHANGED }}</label>
+        <input class="form-check-input" type="checkbox" id="ftUnc" v-model="state.config.filterShowUnchanged" :title="t('dt.showUnchangedTip')">
+        <label class="form-check-label" for="ftUnc" :title="t('dt.showUnchangedTip')"><i class="bi bi-circle-fill me-1" style="font-size:.5rem;color:var(--bs-secondary)"></i>{{ t('info.unchanged') }} {{ counts.UNCHANGED }}</label>
       </div>
     </div>
 
@@ -857,15 +860,15 @@ function ruleTypeLabel(t) {
     <div class="dt-ai px-2 py-1 d-flex align-items-center gap-2 flex-wrap" v-if="Object.keys(aiClassify).length">
       <button class="btn btn-sm btn-outline-secondary py-0" :class="{active: state.config.sortByRisk}"
               @click="state.config.sortByRisk = !state.config.sortByRisk"
-              title="按 AI 风险等级排序（高→低），优先审阅高风险变更">
+              :title="t('dt.sortByRiskTip')">
         <i class="bi bi-sort-down"></i>
       </button>
-      <div class="btn-group btn-group-sm" role="group" title="按风险等级过滤">
+      <div class="btn-group btn-group-sm" role="group" :title="t('dt.riskFilterGroup')">
         <button v-for="r in ['HIGH','MEDIUM','LOW']" :key="r" type="button"
                 class="btn" :class="(state.config.filterRisk||[]).includes(r) ? 'btn-secondary' : 'btn-outline-secondary'"
-                @click="toggleRisk(r)">{{ riskMeta(r).label }}</button>
+                @click="toggleRisk(r)">{{ riskLabel(r) }}</button>
       </div>
-      <span class="text-secondary" style="font-size:.72rem">已标注 {{ Object.keys(aiClassify).length }} 项</span>
+      <span class="text-secondary" style="font-size:.72rem">{{ t('dt.aiMarked', { n: Object.keys(aiClassify).length }) }}</span>
     </div>
 
     <!-- 虚拟滚动容器：仅渲染可视行，数千节点也不卡顿 -->
@@ -876,7 +879,7 @@ function ruleTypeLabel(t) {
                     :key="row.kind === 'header' ? ('h-' + row.layer)
                          : (row.kind === 'dir' ? ('d-' + row.layer + ':' + row.key) : (row.key || ('l-' + row.parentKey)))">
             <div v-if="row.kind === 'header'" class="list-group-item grp-head py-0 px-2 d-flex align-items-center"
-                 :style="rowStyle" :title="LAYER_TITLE[row.layer] || row.label">
+                 :style="rowStyle" :title="(LAYER_TITLE[row.layer] ? t(LAYER_TITLE[row.layer]) : '') || row.label">
               {{ row.label }}（{{ row.count }}）
             </div>
             <!-- 归档展开加载占位 -->
@@ -884,7 +887,7 @@ function ruleTypeLabel(t) {
                  :style="rowStyleFor(row)">
               <span class="caret-slot"></span>
               <span class="spinner-border spinner-border-sm" style="width:.6rem;height:.6rem"></span>
-              <span class="node-key text-truncate flex-1" style="font-size:.78rem">正在展开内部条目…</span>
+              <span class="node-key text-truncate flex-1" style="font-size:.78rem">{{ t('dt.expandingItems') }}</span>
             </div>
             <!-- 目录节点：点击展开/折叠（VS Code 风格，仅显示当前层级目录名） -->
             <button v-else-if="row.kind === 'dir'" type="button"
@@ -897,17 +900,17 @@ function ruleTypeLabel(t) {
               <span class="caret-slot">
                 <i class="bi tree-caret"
                    :class="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? 'bi-chevron-right' : 'bi-chevron-down'"
-                   :title="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? '展开目录' : '折叠目录'"></i>
+                   :title="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? t('dt.expandDir') : t('dt.collapseDir')"></i>
               </span>
               <i v-if="row.node" class="bi bi-circle-fill" style="font-size:.5rem" :style="{color: statusMeta(row.node.status).dot}"></i>
               <i class="bi" :class="expandedDirs[zoneDirKey(row.layer, row.dirKey)] === false ? 'bi-folder' : 'bi-folder2-open'"
                  style="color:var(--bs-warning)"></i>
               <span class="node-key text-truncate flex-1">{{ row.name }}</span>
               <span v-if="row.node" class="badge text-bg-light badge-fc border"
-                    :title="'文件类型：' + row.node.fileClass">{{ row.node.fileClass }}</span>
+                    :title="t('dt.fileType', { fc: row.node.fileClass })">{{ row.node.fileClass }}</span>
               <template v-if="row.node && aiClassify[row.node.key]">
                 <span class="badge" :class="riskMeta(aiClassify[row.node.key].risk).cls"
-                      :title="'AI 风险等级：' + riskMeta(aiClassify[row.node.key].risk).label">{{ riskMeta(aiClassify[row.node.key].risk).label }}</span>
+                      :title="t('dt.aiRisk', { label: riskLabel(aiClassify[row.node.key].risk) })">{{ riskLabel(aiClassify[row.node.key].risk) }}</span>
               </template>
             </button>
             <!-- jar 包内目录节点：按内部路径层级显示，可折叠/展开 -->
@@ -919,13 +922,13 @@ function ruleTypeLabel(t) {
               <span class="caret-slot">
                 <i class="bi tree-caret"
                    :class="expandedArchiveDirs[row.key] === false ? 'bi-chevron-right' : 'bi-chevron-down'"
-                   :title="expandedArchiveDirs[row.key] === false ? '展开目录' : '折叠目录'"></i>
+                   :title="expandedArchiveDirs[row.key] === false ? t('dt.expandDir') : t('dt.collapseDir')"></i>
               </span>
               <i class="bi" :class="expandedArchiveDirs[row.key] === false ? 'bi-folder' : 'bi-folder2-open'"
                  style="color:var(--bs-warning)"></i>
               <span class="node-key text-truncate flex-1">{{ row.name }}</span>
               <span v-if="row.node" class="badge text-bg-light badge-fc border"
-                    :title="'状态：' + row.node.status">{{ row.node.fileClass }}</span>
+                    :title="t('dt.statusOf', { status: row.node.status })">{{ row.node.fileClass }}</span>
             </button>
             <!-- 文件节点：点击打开内容比对；按目录深度缩进 + 类型图标 -->
             <button v-else type="button"
@@ -941,41 +944,41 @@ function ruleTypeLabel(t) {
                    class="bi tree-caret"
                    :class="state.expandedArchives[row.node.key] ? 'bi-chevron-down' : 'bi-chevron-right'"
                    @click.stop="toggleArchive(row.node.key)"
-                   :title="state.expandedArchives[row.node.key] ? '折叠内部条目' : '展开内部条目'"></i>
+                   :title="state.expandedArchives[row.node.key] ? t('dt.collapseInner') : t('dt.expandInner')"></i>
               </span>
               <i class="bi bi-circle-fill" style="font-size:.5rem" :style="{color: statusMeta(row.node.status).dot}"></i>
               <i class="bi" :class="fileIcon(row.node.fileClass)" style="color:var(--bs-secondary-color)"></i>
               <span class="node-key text-truncate flex-1" :class="{'child-name': row.kind === 'archiveChild'}">{{ row.name || row.node.name || basenameOf(row.node.key) }}</span>
-              <span class="badge text-bg-light badge-fc border" :title="'文件类型：' + (row.node.fileClass || '未知')">{{ row.node.fileClass }}</span>
+              <span class="badge text-bg-light badge-fc border" :title="t('dt.fileType', { fc: row.node.fileClass || t('dt.unknown') })">{{ row.node.fileClass }}</span>
               <template v-if="aiClassify[row.node.key] && row.kind !== 'archiveChild'">
                 <span class="badge" :class="riskMeta(aiClassify[row.node.key].risk).cls"
-                      :title="'AI 风险等级：' + riskMeta(aiClassify[row.node.key].risk).label">{{ riskMeta(aiClassify[row.node.key].risk).label }}</span>
+                      :title="t('dt.aiRisk', { label: riskLabel(aiClassify[row.node.key].risk) })">{{ riskLabel(aiClassify[row.node.key].risk) }}</span>
                 <span class="badge text-bg-light badge-fc border"
-                      :title="'AI 自动分类：' + aiClassify[row.node.key].category + '；' + (aiClassify[row.node.key].reason || '')">{{ aiClassify[row.node.key].category }}</span>
+                      :title="t('dt.aiClassified', { cat: aiClassify[row.node.key].category, reason: aiClassify[row.node.key].reason || '' })">{{ aiClassify[row.node.key].category }}</span>
               </template>
             </button>
           </template>
         </div>
       </div>
       <div v-if="!tree.length" class="text-center text-secondary py-4" style="font-size:.8rem">
-        暂无差异，请先「开始比对」
+        {{ t('dt.empty') }}
       </div>
       <!-- 修复「勾选过滤条件后机构树消失」：tree 非空但 filtered 全被过滤掉时，给出明确提示
            （避免渲染区空白用户无所适从）。常见诱因：4 个过滤全未勾选 / 搜索/风险过滤过严。 -->
       <div v-else-if="!filtered.length" class="text-center text-secondary py-4" style="font-size:.8rem">
         <i class="bi bi-funnel d-block mb-1" style="font-size:1.2rem"></i>
-        当前过滤条件下没有匹配的条目
+        {{ t('dt.noMatch') }}
         <div class="mt-2">
           <button type="button" class="btn btn-sm btn-outline-secondary py-0" style="font-size:.72rem"
-                  @click="clearAllFilters()" title="一键清除搜索/状态/风险过滤">清除过滤条件</button>
+                  @click="clearAllFilters()" :title="t('dt.clearFiltersTip')">{{ t('dt.clearFilters') }}</button>
         </div>
       </div>
       <!-- 排除恢复条：右键「排除」的条目集中在这里一键恢复 -->
       <div v-if="excludedCount > 0" class="dt-excluded-bar d-flex align-items-center gap-2 px-2 py-1">
         <i class="bi bi-eye-slash text-warning"></i>
-        <span class="flex-1 text-truncate" style="font-size:.75rem">已排除 {{ excludedCount }} 项（视图临时隐藏）</span>
+        <span class="flex-1 text-truncate" style="font-size:.75rem">{{ t('dt.excludedBar', { n: excludedCount }) }}</span>
         <button type="button" class="btn btn-sm btn-outline-secondary py-0" style="font-size:.72rem"
-                @click="restoreAllExcluded()" title="恢复全部被排除的条目">恢复</button>
+                @click="restoreAllExcluded()" :title="t('dt.restoreAllTip')">{{ t('dt.restore') }}</button>
       </div>
     </div>
   </div>
@@ -990,36 +993,36 @@ function ruleTypeLabel(t) {
     <div class="modal-dialog modal-dialog-centered" role="document" @keydown.esc="hideProperties()">
       <div class="modal-content">
         <div class="modal-header py-2">
-          <h6 class="modal-title"><i class="bi bi-info-circle me-1"></i> 属性</h6>
-          <button type="button" class="btn-close" aria-label="关闭" @click="hideProperties()"></button>
+          <h6 class="modal-title"><i class="bi bi-info-circle me-1"></i> {{ t('dt.props') }}</h6>
+          <button type="button" class="btn-close" :aria-label="t('common.close')" @click="hideProperties()"></button>
         </div>
         <div class="modal-body" style="font-size:.82rem">
           <table class="table table-sm table-striped mb-0">
             <tbody>
-              <tr><th class="text-nowrap" style="width:9rem">路径（相对）</th><td class="text-break">{{ state.propertyNode.key }}</td></tr>
-              <tr><th>状态</th><td><span class="badge" :class="statusMeta(state.propertyNode.status).cls">{{ STATUS_META[state.propertyNode.status].label }}</span></td></tr>
-              <tr><th>类型</th><td>{{ state.propertyNode.fileClass || '未知' }}</td></tr>
-              <tr><th>大小</th><td>{{ fmtSize(state.propertyNode.size) }}</td></tr>
-              <tr v-if="aiClassify[state.propertyNode.key]"><th>AI 分类</th><td>{{ aiClassify[state.propertyNode.key].category }}（风险 {{ riskMeta(aiClassify[state.propertyNode.key].risk).label }}）</td></tr>
-              <tr><th>磁盘路径</th><td class="text-break">{{ propDiskPath || '包内条目（无磁盘路径）' }}</td></tr>
+              <tr><th class="text-nowrap" style="width:9rem">{{ t('dt.propPath') }}</th><td class="text-break">{{ state.propertyNode.key }}</td></tr>
+              <tr><th>{{ t('dt.propStatus') }}</th><td><span class="badge" :class="statusMeta(state.propertyNode.status).cls">{{ statusLabel(state.propertyNode.status) }}</span></td></tr>
+              <tr><th>{{ t('dt.propType') }}</th><td>{{ state.propertyNode.fileClass || t('dt.unknown') }}</td></tr>
+              <tr><th>{{ t('dt.propSize') }}</th><td>{{ fmtSize(state.propertyNode.size) }}</td></tr>
+              <tr v-if="aiClassify[state.propertyNode.key]"><th>{{ t('dt.propAi') }}</th><td>{{ aiClassify[state.propertyNode.key].category }}{{ t('dt.propRisk', { label: riskLabel(aiClassify[state.propertyNode.key].risk) }) }}</td></tr>
+              <tr><th>{{ t('dt.propDisk') }}</th><td class="text-break">{{ propDiskPath || t('dt.propNoDisk') }}</td></tr>
             </tbody>
           </table>
           <div class="mt-2" v-if="state.ignoreRules.length">
             <div class="d-flex align-items-center gap-2">
-              <span class="text-secondary" style="font-size:.75rem">忽略规则（匹配的条目已在树中隐藏）</span>
-              <button type="button" class="btn btn-sm btn-outline-secondary py-0 ms-auto" style="font-size:.7rem" @click="clearIgnoreRules()">清空</button>
+              <span class="text-secondary" style="font-size:.75rem">{{ t('dt.ignoreTitle') }}</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary py-0 ms-auto" style="font-size:.7rem" @click="clearIgnoreRules()">{{ t('dt.ignoreClear') }}</button>
             </div>
             <ul class="list-unstyled mb-0 mt-1" style="max-height:8rem;overflow:auto">
               <li v-for="(r, i) in state.ignoreRules" :key="i" class="d-flex align-items-center gap-2" style="font-size:.75rem">
                 <span class="badge text-bg-light border">{{ ruleTypeLabel(r.type) }}</span>
                 <span class="flex-1 text-truncate">{{ r.value }}</span>
-                <button type="button" class="btn btn-sm btn-outline-danger py-0" style="font-size:.65rem" @click="removeIgnoreRule(i)">删除</button>
+                <button type="button" class="btn btn-sm btn-outline-danger py-0" style="font-size:.65rem" @click="removeIgnoreRule(i)">{{ t('common.delete') }}</button>
               </li>
             </ul>
           </div>
         </div>
         <div class="modal-footer py-1">
-          <button type="button" class="btn btn-sm btn-secondary" @click="hideProperties()">关闭</button>
+          <button type="button" class="btn btn-sm btn-secondary" @click="hideProperties()">{{ t('common.close') }}</button>
         </div>
       </div>
     </div>

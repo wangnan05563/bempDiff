@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { t, setLocale, i18n, tTerm, TERM_TABLE, LOCALES, LANG_KEY, allKeys } from '../lib/i18n'
-import { state } from '../store'
+import { state, defaultConfig } from '../store'
 import CompareOverlay from '../components/CompareOverlay.vue'
 import HelpDoc from '../components/HelpDoc.vue'
 import ShortcutHelp from '../components/ShortcutHelp.vue'
@@ -17,6 +17,7 @@ import ToolBar from '../components/ToolBar.vue'
 import About from '../components/About.vue'
 import StatusBar from '../components/StatusBar.vue'
 import AiConsole from '../components/AiConsole.vue'
+import DiffTree from '../components/DiffTree.vue'
 import { ACCENTS } from '../lib/accents'
 
 describe('R12 i18n 框架', () => {
@@ -259,6 +260,42 @@ describe('R12 i18n 框架', () => {
     const wZh = mount(HelpDoc, { attachTo: document.body })
     expect(wZh.text()).toContain('帮助文档')
     expect(wZh.text()).toContain('基础功能')
+    wZh.unmount()
+  })
+
+  it('批次9 差异树/右键菜单 EN 渲染', async () => {
+    setLocale('en-US')
+    state.config = defaultConfig()
+    state.job = {
+      jobId: 'j1',
+      mode: 'package',
+      stats: { added: 1, deleted: 2, modified: 3, unchanged: 4, bizChanged: 0, jarChanged: 0, total: 10 },
+      tree: [{ key: 'a/B.class', status: 'MODIFIED', fileClass: 'CLASS', layer: 'L1', size: 10, sha: 'x' }]
+    }
+    state.aiClassify = {}
+    state.excludedKeys = {}
+    state.ignoreRules = []
+    state.archiveChildren = {}
+    state.expandedArchives = {}
+    state.treeLocate = null
+    state.propertyNode = null
+    state.baseFolder = null
+    state.activeKey = null
+    state.treePanelCollapsed = false
+    const w = mount(DiffTree, { props: { panelWidth: null }, attachTo: document.body })
+    expect(w.text()).toContain('Diff Tree')
+    expect(w.text()).toContain('L1 Business Code')
+    expect(w.find('button[title="View mode and sorting"]').exists()).toBe(true)
+    // 视图/排序下拉为点击展开，展开后校验 EN 文案
+    await w.find('button[title="View mode and sorting"]').trigger('click')
+    expect(w.text()).toContain('View mode')
+    expect(w.text()).toContain('Tree view')
+    w.unmount()
+
+    setLocale('zh-CN')
+    const wZh = mount(DiffTree, { props: { panelWidth: null }, attachTo: document.body })
+    expect(wZh.text()).toContain('差异文件树')
+    expect(wZh.text()).toContain('L1 业务码')
     wZh.unmount()
   })
 

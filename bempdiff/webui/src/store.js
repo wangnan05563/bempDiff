@@ -11,13 +11,19 @@ import { t } from './lib/i18n'
 import { t as tr } from './lib/i18n'
 
 // 状态相关展示常量，集中维护，DiffTree/DiffView/InfoPanel 共享，避免重复定义
+// label 保留中文原文（兼容既有单测断言）；labelKey 为 i18n 键（渲染侧优先 t(labelKey)）
 export const STATUS_META = {
-  ADDED:     { cls: 'text-bg-success', label: '新增', dot: 'var(--bs-success)' },
-  DELETED:   { cls: 'text-bg-danger',  label: '删除', dot: 'var(--bs-danger)' },
-  MODIFIED:  { cls: 'text-bg-warning', label: '修改', dot: 'var(--bs-warning)' },
-  UNCHANGED: { cls: 'text-bg-secondary', label: '未变', dot: 'var(--bs-secondary)' }
+  ADDED:     { cls: 'text-bg-success', label: '新增', labelKey: 'info.status.ADDED', dot: 'var(--bs-success)' },
+  DELETED:   { cls: 'text-bg-danger',  label: '删除', labelKey: 'info.status.DELETED', dot: 'var(--bs-danger)' },
+  MODIFIED:  { cls: 'text-bg-warning', label: '修改', labelKey: 'info.status.MODIFIED', dot: 'var(--bs-warning)' },
+  UNCHANGED: { cls: 'text-bg-secondary', label: '未变', labelKey: 'info.status.UNCHANGED', dot: 'var(--bs-secondary)' }
 }
 export const STATUS_LABEL = { ADDED: '新增', DELETED: '删除', MODIFIED: '修改', UNCHANGED: '未变' }
+/** 状态显示名（渲染期求值，支持切语言即时刷新）。 */
+export function statusLabel(s) {
+  const m = STATUS_META[s]
+  return m ? (m.labelKey ? t(m.labelKey) : m.label) : String(s || '')
+}
 
 // tabs 中每项的形状：{ key, node, decompile, busy, error }
 //   key       - 节点的全局 key（state.job.tree 中唯一）
