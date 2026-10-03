@@ -16,6 +16,7 @@ import { ref, onMounted } from 'vue'
 import { resolveAppVersion } from '../lib/helpContent'
 import { api } from '../api/client'
 import { state, toast } from '../store'
+import { t } from '../lib/i18n'
 
 const currentVersion = resolveAppVersion()
 const checking = ref(false)      // 检查请求进行中（true 时按钮转圈并禁用，防重复请求）
@@ -23,6 +24,7 @@ const result = ref(null)         // 后端统一响应；null=未检查
 const showGuide = ref(false)     // 「手动手工更新指引」折叠面板开关
 const updating = ref(false)      // 一键下载更新进行中（true 时按钮转圈并禁用）
 const updateMsg = ref('')        // 一键更新结果提示
+const updateMsgOk = ref(null)    // 结果语义位（true=成功/false=失败），替代 startsWith 语言耦合判断
 
 // 一键更新是否可用：桌面壳（Electron）具备 downloadInstall 能力时才显示/启用。
 const canOneClick = () => !!(typeof window !== 'undefined' && window.bempdiff &&
@@ -37,14 +39,17 @@ async function oneClickUpdate() {
   try {
     const r = await window.bempdiff.downloadInstall(dl)
     if (r && r.ok) {
-      updateMsg.value = '安装包已下载到 ' + r.file + '，已启动安装向导（请完成后续安装步骤）'
-      toast('success', '更新包下载完成')
+      updateMsg.value = t('ab.dlDone', { file: r.file })
+      updateMsgOk.value = true
+      toast('success', t('ab.dlDoneToast'))
     } else {
-      updateMsg.value = '下载失败：' + ((r && r.message) || '未知错误')
+      updateMsg.value = t('ab.dlFail', { msg: (r && r.message) || t('ab.unknownErr') })
+      updateMsgOk.value = false
       toast('danger', updateMsg.value)
     }
   } catch (e) {
-    updateMsg.value = '下载失败：' + ((e && e.message) || String(e))
+    updateMsg.value = t('ab.dlFail', { msg: (e && e.message) || String(e) })
+    updateMsgOk.value = false
     toast('danger', updateMsg.value)
   } finally {
     updating.value = false
@@ -59,6 +64,7 @@ const tokenVisible = ref(false)  // 明文/掩码切换
 const persistToken = ref(false)  // 是否明文落盘
 const savingToken = ref(false)   // 保存中（禁用按钮防重复提交）
 const tokenMsg = ref('')         // 保存结果提示
+const tokenMsgOk = ref(null)     // 结果语义位（true=成功/false=失败）
 // 会话内是否已有令牌（后端 GET 返回 hasGithubToken）
 const hasToken = () => !!(state.config && (state.config.hasGithubToken || state.config.githubToken))
 
@@ -81,10 +87,12 @@ async function onSaveToken() {
   try {
     const resp = await api.putConfig(patch)
     state.config = resp
-    tokenMsg.value = 'GitHub 令牌已保存；此后检查更新将携带该令牌（提升限流额度）。'
-    toast('success', 'GitHub 令牌已保存')
+    tokenMsg.value = t('ab.tokenSaved')
+    tokenMsgOk.value = true
+    toast('success', t('ab.tokenSavedToast'))
   } catch (e) {
-    tokenMsg.value = '保存失败：' + ((e && e.message) || String(e))
+    tokenMsg.value = t('ab.saveFail', { msg: (e && e.message) || String(e) })
+    tokenMsgOk.value = false
     toast('danger', tokenMsg.value)
   } finally {
     savingToken.value = false
@@ -111,10 +119,10 @@ async function doCheck() {
   try {
     const r = await api.checkUpdate({ current: currentVersion })
     result.value = r
-    toast('info', (r && r.message) || '检查完成')
+    toast('info', (r && r.message) || t('ab.checkDone'))
   } catch (e) {
     // 网络层/后端 500 兜底：展示通用失败，不抛出打断交互
-    result.value = { ok: false, message: '检查更新失败：' + ((e && e.message) || String(e)) }
+    result.value = { ok: false, message: t('ab.checkFail', { msg: (e && e.message) || String(e) }) }
     toast('danger', result.value.message)
   } finally {
     checking.value = false
@@ -130,20 +138,20 @@ onMounted(() => { seedToken(); doCheck() })
     <!-- 顶部：产品名 + 当前版本号显示区域（与 GitHub 比较的基准） -->
     <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
       <i class="bi bi-info-circle-fill text-primary"></i>
-      <span class="fw-semibold">关于</span>
-      <span class="badge text-bg-light border" title="当前产品版本">当前版本 v{{ currentVersion }}</span>
-      <span class="text-secondary" style="font-size:.75rem">BempDiff 包/目录差异对比工具</span>
+      <span class="fw-semibold">{{ t('ab.title') }}</span>
+      <span class="badge text-bg-light border" :title="t('ab.currentVer')">{{ t('ab.currentVer') }} v{{ currentVersion }}</span>
+      <span class="text-secondary" style="font-size:.75rem">{{ t('ab.tagline') }}</span>
     </div>
 
     <!-- 检查更新：自动检测 + 手动触发按钮 -->
     <div class="card card-body py-2 mb-2" style="font-size:.78rem">
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <span class="fw-semibold"><i class="bi bi-arrow-repeat"></i> 检查更新</span>
-        <span class="text-secondary">连接 GitHub 获取最新 Release 版本并与之对比（HTTPS）</span>
+        <span class="fw-semibold"><i class="bi bi-arrow-repeat"></i> {{ t('ab.checkSection') }}</span>
+        <span class="text-secondary">{{ t('ab.checkDesc') }}</span>
         <button class="btn btn-primary btn-sm ms-auto" type="button" :disabled="checking" @click="doCheck"
-                title="立即连接 GitHub 查询最新版本并对比；失败可重试">
+                :title="t('ab.checkBtnTip')">
           <i class="bi" :class="checking ? 'bi-arrow-repeat spinning' : 'bi-search'"></i>
-          {{ checking ? '检查中…' : '检查更新' }}
+          {{ checking ? t('ab.checking') : t('ab.checkBtn') }}
         </button>
       </div>
 
@@ -162,111 +170,111 @@ onMounted(() => { seedToken(); doCheck() })
           <!-- 既有新版（需更新） -->
           <div v-if="result.upToDate === false"
                class="alert alert-warning py-2 mt-2 mb-2 about-result" role="alert">
-            <i class="bi bi-exclamation-triangle-fill me-1"></i>发现新版本，建议立即更新
+            <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ t('ab.newFound') }}
           </div>
           <!-- 已最新 / 当前未知 -->
           <div v-else class="alert alert-success py-2 mt-2 mb-2 about-result" role="alert">
-            <i class="bi bi-check-circle-fill me-1"></i>当前已是最新版本，无需更新
+            <i class="bi bi-check-circle-fill me-1"></i>{{ t('ab.upToDate') }}
           </div>
 
           <!-- 版本对比：当前 vs 最新 -->
-          <div class="d-flex align-items-center gap-2 flex-wrap mb-2 about-compare" aria-label="版本对比">
-            <span class="badge text-bg-light border about-ver">当前 v{{ currentVersion }}</span>
+          <div class="d-flex align-items-center gap-2 flex-wrap mb-2 about-compare" :aria-label="t('ab.verCompare')">
+            <span class="badge text-bg-light border about-ver">{{ t('ab.currentShort') }} v{{ currentVersion }}</span>
             <i class="bi bi-arrow-right text-secondary"></i>
-            <span class="badge text-bg-primary border about-ver">{{ result.latest.tag || '最新版本' }}</span>
+            <span class="badge text-bg-primary border about-ver">{{ result.latest.tag || t('ab.latest') }}</span>
             <button v-if="result.latest.downloadUrl && canOneClick()" class="btn btn-primary btn-sm"
                     type="button" :disabled="updating" @click="oneClickUpdate"
-                    title="下载最新安装包并启动安装向导（需桌面壳 Electron 环境）">
+                    :title="t('ab.oneClickTip')">
               <i class="bi" :class="updating ? 'bi-arrow-repeat spinning' : 'bi-cloud-arrow-down'"></i>
-              {{ updating ? '下载中…' : '立即更新' }}
+              {{ updating ? t('ab.downloading') : t('ab.oneClick') }}
             </button>
             <a v-if="result.latest.url" class="btn btn-outline-primary btn-sm" :href="result.latest.url"
                target="_blank" rel="noopener"
-               title="前往 GitHub Release 页查看/下载安装包">
-              <i class="bi bi-box-arrow-up-right"></i> 前往下载页
+               :title="t('ab.goReleaseTip')">
+              <i class="bi bi-box-arrow-up-right"></i> {{ t('app.updateGo') }}
             </a>
           </div>
           <div v-if="result.latest.name || result.latest.publishedAt" class="text-secondary mb-1"
                style="font-size:.74rem">
-            {{ result.latest.name }} · 发布于 {{ fmtDate(result.latest.publishedAt) }}
+            {{ result.latest.name }} · {{ t('ab.published', { time: fmtDate(result.latest.publishedAt) }) }}
           </div>
           <div v-if="updateMsg" class="mb-1 p-2 rounded"
-               :class="updateMsg.startsWith('下载失败') ? 'text-danger border border-danger-subtle' : 'text-success border border-success-subtle'"
+               :class="updateMsgOk === false ? 'text-danger border border-danger-subtle' : 'text-success border border-success-subtle'"
                style="font-size:.74rem">
-            <i class="bi" :class="updateMsg.startsWith('下载失败') ? 'bi-exclamation-triangle-fill' : 'bi-check-circle-fill'"></i>
+            <i class="bi" :class="updateMsgOk === false ? 'bi-exclamation-triangle-fill' : 'bi-check-circle-fill'"></i>
             {{ updateMsg }}
           </div>
           <!-- Release 说明（更新说明）预览 -->
           <div v-if="result.latest.body" class="border rounded p-2 mb-0 about-body" style="max-height:9rem;overflow:auto">
-            <div class="text-secondary mb-1" style="font-size:.72rem">发布说明：</div>
+            <div class="text-secondary mb-1" style="font-size:.72rem">{{ t('ab.releaseNotes') }}</div>
             <pre class="mb-0" style="font-size:.74rem;white-space:pre-wrap;word-break:break-word">{{ result.latest.body }}</pre>
           </div>
         </template>
       </template>
       <!-- 进程内短缓存命中提示：避免反复检查触达 GitHub 匿名限流 -->
       <div v-if="result && result.cached" class="mt-2 text-secondary" style="font-size:.72rem">
-        <i class="bi bi-database me-1"></i>最近 5 分钟内已检查过，本次为缓存结果（点「检查更新」可强制刷新）
+        <i class="bi bi-database me-1"></i>{{ t('ab.cached') }}
       </div>
     </div>
 
     <!-- GitHub 访问令牌（配置中心可填）：规避匿名限流 / 支持私有仓库 -->
     <div class="card card-body py-2 mb-2" style="font-size:.78rem">
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <span class="fw-semibold"><i class="bi bi-key"></i> GitHub 访问令牌</span>
+        <span class="fw-semibold"><i class="bi bi-key"></i> {{ t('ab.tokenSection') }}</span>
         <span class="text-secondary">
-          <template v-if="hasToken()">已配置</template>
-          <template v-else>未配置（匿名，60 次/小时限流）</template>
+          <template v-if="hasToken()">{{ t('ab.tokenSet') }}</template>
+          <template v-else>{{ t('ab.tokenUnset') }}</template>
         </span>
         <button class="btn btn-outline-secondary btn-sm ms-auto" type="button"
                 :disabled="savingToken" @click="onSaveToken"
-                title="保存后检查更新将携带该令牌（提升限流额度）；私有仓库必须配置只读令牌">
+                :title="t('ab.tokenSaveTip')">
           <i class="bi" :class="savingToken ? 'bi-arrow-repeat spinning' : 'bi-check2'"></i>
-          {{ savingToken ? '保存中…' : '保存' }}
+          {{ savingToken ? t('ab.saving') : t('ab.save') }}
         </button>
       </div>
       <div class="input-group input-group-sm mt-2">
         <input class="form-control" :type="tokenVisible ? 'text' : 'password'" v-model="tokenInput"
-               placeholder="留空则不修改；本次会话已配置的令牌默认不回显" title="GitHub Personal Access Token（只读范围即可）">
+               :placeholder="t('ab.tokenPlaceholder')" :title="t('ab.tokenInputTitle')">
         <button class="btn btn-outline-secondary" type="button" @click="tokenVisible = !tokenVisible"
-                title="显示/隐藏令牌">
+                :title="t('ab.toggleToken')">
           <i class="bi" :class="tokenVisible ? 'bi-eye-slash' : 'bi-eye'"></i>
         </button>
       </div>
       <div class="form-check form-check-inline mt-2 mb-0">
         <input class="form-check-input" type="checkbox" id="aboutPersistToken" v-model="persistToken"
-               title="勾选后令牌明文写入本地配置（重启后仍保留）；默认不落盘，仅存后端进程内存">
-        <label class="form-check-label" for="aboutPersistToken">记住令牌（明文落盘，默认不选）</label>
+               :title="t('ab.persistTip')">
+        <label class="form-check-label" for="aboutPersistToken">{{ t('ab.persist') }}</label>
       </div>
       <div v-if="tokenMsg" class="mt-2 mb-0" style="font-size:.72rem"
-           :class="tokenMsg.startsWith('保存失败') ? 'text-danger' : 'text-success'">
-        <i class="bi" :class="tokenMsg.startsWith('保存失败') ? 'bi-exclamation-triangle' : 'bi-check-circle'"></i> {{ tokenMsg }}
+           :class="tokenMsgOk === false ? 'text-danger' : 'text-success'">
+        <i class="bi" :class="tokenMsgOk === false ? 'bi-exclamation-triangle' : 'bi-check-circle'"></i> {{ tokenMsg }}
       </div>
     </div>
 
     <!-- 手动更新提示区域：GitHub 仓库地址 + 人工设置操作指引 -->
     <div class="card card-body py-2" style="font-size:.78rem">
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <span class="fw-semibold"><i class="bi bi-github"></i> 手动更新</span>
-        <span class="text-secondary ms-auto">GitHub 仓库：<a :href="repoUrl()" target="_blank" rel="noopener">{{ result && result.repo ? result.repo : '设置中…' }}</a></span>
+        <span class="fw-semibold"><i class="bi bi-github"></i> {{ t('ab.manual') }}</span>
+        <span class="text-secondary ms-auto">GitHub 仓库：<a :href="repoUrl()" target="_blank" rel="noopener">{{ result && result.repo ? result.repo : t('ab.repoPending') }}</a></span>
         <button class="btn btn-outline-secondary btn-sm" type="button" @click="showGuide = !showGuide"
-                :title="showGuide ? '收起操作指引' : '展开 GitHub 人工设置操作指引'">
+                :title="showGuide ? t('ab.guideHideTip') : t('ab.guideShowTip')">
           <i class="bi" :class="showGuide ? 'bi-chevron-up' : 'bi-chevron-down'"></i>
-          {{ showGuide ? '收起指引' : '人工设置指引' }}
+          {{ showGuide ? t('ab.guideHide') : t('ab.guideShow') }}
         </button>
       </div>
 
       <template v-if="showGuide">
         <hr class="my-2">
         <ol class="mb-2 about-guide">
-          <li>在 GitHub 上创建 <code>Settings → Releases</code> 发布记录（tag 建议形如 <code>v1.2.3</code>），本工具通过 Releases API 读取最新一条。</li>
-          <li>仓库地址默认内置，可用环境变量 <code>BEMPDIFF_GITHUB_REPO</code>（格式 <code>owner/repo</code>）覆盖，前端无需改动。</li>
+          <li v-html="t('ab.guide1')"></li>
+          <li v-html="t('ab.guide2')"></li>
           <!-- 令牌配置：可在本页「GitHub 访问令牌」内填写保存（建议勾选「记住令牌」以便重启后保留），
                也可用环境变量 GITHUB_TOKEN；私有仓库必须配置只读令牌，令牌仅后端内存使用、默认不落盘。 -->
-          <li>私有仓库或规避匿名限流：在本页「GitHub 访问令牌」填写保存，或用环境变量 <code>GITHUB_TOKEN</code>（只读范围）；令牌仅后端内存使用。</li>
-          <li>版本对比采用同一语义：去掉 tag 前导 <code>v/</code> 后按语义化数字比较，当前版本由安装包 <code>appVersion</code> 提供。</li>
-          <li>更新安装包：请在 Releases 页下载对应平台的安装包并覆盖安装，本工具不自动下载/执行安装程序。</li>
+          <li v-html="t('ab.guide3')"></li>
+          <li v-html="t('ab.guide4')"></li>
+          <li v-html="t('ab.guide5')"></li>
         </ol>
-        <div class="alert alert-info py-2 mb-0"><i class="bi bi-info-circle-fill me-1"></i>完整的仓库权限 / Webhook / 版本校验与故障排查步骤，见随包附带的《GitHub 更新-人工操作手册》。</div>
+        <div class="alert alert-info py-2 mb-0"><i class="bi bi-info-circle-fill me-1"></i>{{ t('ab.guideNote') }}</div>
       </template>
     </div>
   </div>

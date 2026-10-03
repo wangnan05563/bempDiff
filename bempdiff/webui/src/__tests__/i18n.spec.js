@@ -1,5 +1,5 @@
 // R12 i18n（二期 T01477）——框架与首批覆盖验收。
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { t, setLocale, i18n, tTerm, TERM_TABLE, LOCALES, LANG_KEY, allKeys } from '../lib/i18n'
 import { state } from '../store'
@@ -14,6 +14,8 @@ import InfoPanel from '../components/InfoPanel.vue'
 import GuideOverlay from '../components/GuideOverlay.vue'
 import ReportPreview from '../components/ReportPreview.vue'
 import ToolBar from '../components/ToolBar.vue'
+import About from '../components/About.vue'
+import StatusBar from '../components/StatusBar.vue'
 import { ACCENTS } from '../lib/accents'
 
 describe('R12 i18n 框架', () => {
@@ -196,6 +198,33 @@ describe('R12 i18n 框架', () => {
     const wZh = mount(ToolBar, { props: { onOpenConfig: () => {}, onOpenReport: () => {} }, attachTo: document.body })
     expect(wZh.find('button[title="以单个 war/jar 包作为输入（默认）"]').exists()).toBe(true)
     wZh.unmount()
+  })
+
+  it('批次6 组件跟随语言：关于/状态栏 EN 渲染', async () => {
+    setLocale('en-US')
+    const { api } = await import('../api/client')
+    const spy = vi.spyOn(api, 'checkUpdate').mockResolvedValue({
+      ok: true, current: '1.0.0', upToDate: true,
+      latest: { tag: 'v1.0.0', url: '' }, repo: 'acme/bempDiff', message: 'ok'
+    })
+    const ab = mount(About, { attachTo: document.body })
+    await new Promise(r => setTimeout(r, 0))
+    expect(ab.text()).toContain('Check for Updates')
+    expect(ab.text()).toContain('Already up to date - no update needed')
+    expect(ab.text()).toContain('GitHub Access Token')
+    ab.unmount()
+    spy.mockRestore()
+
+    state.exporting = true
+    const sb = mount(StatusBar, { attachTo: document.body })
+    expect(sb.text()).toContain('Exporting')
+    sb.unmount()
+    state.exporting = false
+
+    setLocale('zh-CN')
+    const sbZh = mount(StatusBar, { attachTo: document.body })
+    expect(sbZh.text()).toContain('反编译引擎')
+    sbZh.unmount()
   })
 
   it('帮助文档含「术语中英对照」条目', async () => {

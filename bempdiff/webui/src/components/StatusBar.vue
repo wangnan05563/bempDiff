@@ -34,21 +34,21 @@ const versions = computed(() => {
       <span class="text-danger fw-normal">{{ t('phase.aiWait') }}</span>
     </span>
     <!-- 导出进行中：从点击「导出差异资产」直至本地保存完成前，底部固定提示「导出中」（可取消，恢复按钮） -->
-    <span v-if="state.exporting" class="text-primary fw-semibold" title="正在导出差异资产，请稍候">
-      <i class="bi bi-arrow-repeat" style="animation:spinner-border .75s linear infinite"></i> 导出中
-      <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" @click="cancelExport()" aria-label="取消导出" title="取消导出">取消</button>
+    <span v-if="state.exporting" class="text-primary fw-semibold" :title="t('sb.exportingTip')">
+      <i class="bi bi-arrow-repeat" style="animation:spinner-border .75s linear infinite"></i> {{ t('sb.exporting') }}
+      <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" @click="cancelExport()" :aria-label="t('sb.cancelExport')" :title="t('sb.cancelExport')">{{ t('common.cancel') }}</button>
     </span>
     <!-- 比对超时提醒：RUNNING 超过阈值仍未结束 -->
     <span v-if="state.compareStalled" class="text-danger fw-semibold">
       <i class="bi bi-exclamation-triangle"></i> {{ t('phase.timeout') }}
     </span>
-    <span v-if="s" title="当前生效统计：随归档逐层解包展开数字逐档增长（解包完成后即等于最终差异数量）">
-      统计：新增 <b class="text-body">{{ s.added }}</b> · 删除 <b class="text-body">{{ s.deleted }}</b> ·
-      修改 <b class="text-body">{{ s.modified }}</b> · 未变 <b class="text-body">{{ s.unchanged }}</b>
+    <span v-if="s" :title="t('sb.statsTip')">
+      {{ t('sb.statsPrefix') }}{{ t('info.added') }} <b class="text-body">{{ s.added }}</b> · {{ t('info.deleted') }} <b class="text-body">{{ s.deleted }}</b> ·
+      {{ t('info.modified') }} <b class="text-body">{{ s.modified }}</b> · {{ t('info.unchanged') }} <b class="text-body">{{ s.unchanged }}</b>
     </span>
-    <span v-if="fullStats" title="业务码变更：涉及 L1 内部业务类的变更数量；jar 级变更：整个 jar 包级别发生变更的数量">业务码变更 <b class="text-body">{{ fullStats.bizChanged }}</b> · jar 级变更 <b class="text-body">{{ fullStats.jarChanged }}</b></span>
-    <span title="老版本 → 新版本；未比对时显示填入的两个包/目录名">{{ t('status.version') }}：<b class="text-body">{{ versions }}</b></span>
-    <span v-if="state.analyzing" class="text-primary"><i class="bi bi-cpu"></i> AI 报告中…</span>
-    <span class="ms-auto" title="反编译引擎：CFR；分析方式：AI 模型 或 纯本地规则（取决于是否启用 AI 分析）">反编译引擎 <b class="text-body">CFR</b> · 分析 <b class="text-body">{{ state.config && state.config.aiEnabled ? 'AI' : '本地' }}</b></span>
+    <span v-if="fullStats" :title="t('sb.bizTip')">{{ t('info.bizChanged') }} <b class="text-body">{{ fullStats.bizChanged }}</b> · {{ t('info.jarChanged') }} <b class="text-body">{{ fullStats.jarChanged }}</b></span>
+    <span :title="t('sb.verTip')">{{ t('status.version') }}：<b class="text-body">{{ versions }}</b></span>
+    <span v-if="state.analyzing" class="text-primary"><i class="bi bi-cpu"></i> {{ t('sb.aiReporting') }}</span>
+    <span class="ms-auto" :title="t('sb.engineTip')">{{ t('sb.engine') }} <b class="text-body">CFR</b> · {{ t('sb.analysis') }} <b class="text-body">{{ state.config && state.config.aiEnabled ? 'AI' : t('sb.local') }}</b></span>
   </footer>
 </template>
