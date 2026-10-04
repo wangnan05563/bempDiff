@@ -17,15 +17,26 @@
  *   本脚本产物仅用于「arm64 链路是否正确」的结构核对，不可对外发布。
  *
  * 用法：
- *   node tooling/scripts/eb-alllang-config.mjs                    # 写临时配置并打印路径
+ *   node tooling/scripts/eb-alllang-config.mjs                    # 写临时配置并打印后续命令
  *   node tooling/scripts/eb-alllang-config.mjs --out <path>      # 指定输出
  *   node tooling/scripts/eb-alllang-config.mjs --electron 31.7.7  # 指定 Electron 版本
  *
- * 产物用法（注意 -c 传的是 build 段本身，不是整包 package.json）：
+ * 后续命令（注意 -c 传的是 build 段本身，不是整包 package.json）：
  *   cd bempdiff
+ *   # 解包目录（结构核对用，14s）
  *   npx electron-builder --arm64 --dir \
- *     -c ../<上面打印的配置路径> \
- *     --config.directories.output=../release/_arm64_verify
+ *     -c ../<配置路径> --config.directories.output=../release/_arm64_verify
+ *   # NSIS 安装包（实测 2m52s，113.5MB —— makensis 不受守卫限制，NSIS 目标可在沙箱内跑通）
+ *   npx electron-builder --arm64 \
+ *     -c ../<配置路径> --config.directories.output=../release/_arm64_nsis \
+ *     --config.nsis.artifactName='BempDiff-${version}-arm64-setup.${ext}'
+ *
+ * 校验产物内架构（NSIS 是压缩包，需两层解开）：
+ *   7z l -t# setup.exe          # 见 3.7z 载荷
+ *   7z e -t# setup.exe 3.7z     # 抽出载荷
+ *   7z e payload.7z BempDiff.exe "resources\\...\\jre\\bin\\java.exe"
+ *   然后读 PE 头 machine 字段：0xaa64=ARM64 / 0x8664=x64
+ *   （注意 setup.exe 本体是 0x014c 的 NSIS x86 引导桩，属正常，不是架构错）
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -99,13 +110,25 @@ fs.mkdirSync(path.dirname(outPath), { recursive: true })
 fs.writeFileSync(outPath, JSON.stringify(build, null, 2), 'utf8')
 
 const origLangs = pkg.build?.electronLanguages || []
+const cfgRel = path.relative(REPO, outPath).replace(/\\/g, '/')
 console.log(`[eb-alllang] Electron ${electronVersion}`)
 console.log(`  原 electronLanguages（${origLangs.length}）: ${origLangs.join(',')}`)
 console.log(`  新 electronLanguages（${langs.length}）: 全部保留 → 待删集合为空，绕开 safe-delete threshold=50`)
-console.log(`  配置已写入: ${path.relative(REPO, outPath)}`)
+console.log(`  配置已写入: ${cfgRel}`)
 console.log('')
 console.log('用法（cd bempdiff 后执行；-c 传 build 段本身，不是整包 package.json）：')
-console.log(`  npx electron-builder --arm64 --dir -c ../${path.relative(REPO, outPath).replace(/\\/g, '/')} \\`)
+console.log('')
+console.log('  # 1) 解包目录（结构核对，约 14s）')
+console.log(`  npx electron-builder --arm64 --dir -c ../${cfgRel} \\`)
 console.log('    --config.directories.output=../release/_arm64_verify')
 console.log('')
-console.log('提醒：本产物仅供 arm64 链路结构核对，勿对外发布（多带语言包）。')
+console.log('  # 2) NSIS 安装包（约 3min，实测 113.5MB + blockmap）')
+console.log(`  npx electron-builder --arm64 -c ../${cfgRel} \\`)
+console.log('    --config.directories.output=../release/_arm64_nsis \\')
+console.log('    --config.nsis.artifactName=\'BempDiff-${version}-arm64-setup.${ext}\'')
+console.log('')
+console.log('  # 前提：现役 dist_input/jre 必须是 arm64 —— 先跑')
+console.log('  node tooling/scripts/switch-jre.mjs --arch arm64')
+console.log('')
+console.log('提醒：本产物多带 ~10MB 语言包，仅供 arm64 链路核对，勿对外发布；')
+console.log('     正式产线打包请走 tooling/scripts/构建打包.bat（用仓库原配置）。')
