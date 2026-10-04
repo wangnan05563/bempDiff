@@ -1,7 +1,10 @@
 # arm64 平台产物形态与适配方案评估
 
-> 对应任务：[PRD] 3.4 arm64 平台评估（二期 R 附加 / T01478）。
-> 结论先行：**技术上可行，成本集中在 JRE 分架构供给与 macOS 签名公证；建议按「Windows x64 存量为主、arm64 按需启用」策略，CI 矩阵配置草案已就绪，未实测前不启用产线打包。**
+> 对应任务：[PRD] 3.4 arm64 平台评估（二期 R 附加 / T01478）；实施：T01509。
+> 结论先行：**技术上可行，成本集中在 JRE 分架构供给与 macOS 签名公证。**
+> **2026-10-04 更新**：Windows arm64 已实际落地（JRE 架构矩阵 + 打包 + CI 流水线就绪，
+> arm64 安装包已产出并通过包内架构校验），进展见 §5；唯一未完成项是启动实测（需原生
+> ARM64 机器，`windows-11-arm` runner 已 GA）。macOS/Linux arm64 仍挂起。
 
 ## 1. 现状基线（bempdiff/package.json `build` 段）
 
@@ -48,7 +51,7 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, arch: x64 }      # 存量主产物
-          - { os: windows-11-arm, arch: arm64 }    # 实验性（runner 就绪后）
+          - { os: windows-11-arm, arch: arm64 }    # **已 GA（2026-10 核实，非实验性）**
           - { os: macos-14,       arch: arm64 }    # M 系原生 runner
           - { os: ubuntu-22.04-arm, arch: arm64 }  # arm runner（可用性视 GitHub 定）
     runs-on: ${{ matrix.os }}
@@ -72,7 +75,36 @@ jobs:
 
 ## 4. 结论与建议
 
-1. **不建议现在就在产线启用 arm64 打包**：本沙箱（Windows x64）无法实测 mac/linux 产物；交付出未验证安装包违背「不伪造」原则。
-2. **本评估交付的可执行资产**：CI 矩阵草案 + JRE 下载源清单 + 产物命名规范（建议 `${version}-arm64` 后缀）——真机/CI 环境就绪后可直接落地。
+> **2026-10-04 实施更新（T01509）**：本节原为「建议」，现 Windows arm64 已实际落地，进展见下方 §5。
+
+1. ~~**不建议现在就在产线启用 arm64 打包**：本沙箱（Windows x64）无法实测 mac/linux 产物；交付出未验证安装包违背「不伪造」原则。~~（已完成，见 §5）
+2. **本评估交付的可执行资产**：CI 矩阵草案 + JRE 下载源清单 + 产物命名规范（`${version}-arm64` 后缀）——已全部落地为可执行脚本。
 3. **推荐节奏**：先 Windows arm64（用户基数匹配、成本最低），macOS arm64 视对外分发需求启动（签名/公证为前置项）。
 4. **通用代码无需改动**：sidecar jar / 前端 / Electron 主进程均跨架构；installer.nsh 的 PowerShell 清理逻辑仅适用 Windows（mac/linux 不走 NSIS，无影响）。
+
+---
+
+## 5. 实施进展（2026-10-04，T01509）
+
+### 5.1 已落地
+
+| 项 | 状态 |
+| --- | --- |
+| JRE 架构矩阵（按 os+arch 拉取 + PE 头校验） | ✅ `tooling/scripts/fetch-jre.mjs` |
+| 打包前原子切换现役 JRE | ✅ `tooling/scripts/switch-jre.mjs` |
+| arm64 解包目录结构核对 | ✅ `BempDiff.exe` / `jre/bin/java.exe` / `javaw.exe` 三项 PE machine 均 `0xaa64` |
+| arm64 NSIS 安装包 | ✅ 113.5MB + blockmap，包内压缩流提取校验同为 `0xaa64` |
+| CI 启动实测流水线 | ✅ `.github/workflows/build-arm64.yml`（`runs-on: windows-11-arm`） |
+
+**关键设计**：`extraResources` 固定指向 `dist_input/jre`、主进程硬编码 `jre/bin/javaw.exe` → 「换现役 JRE」对壳完全透明、**对 x64 产线零影响**，无需改配置结构或主进程代码。
+
+### 5.2 唯一未完成项
+
+**arm64 产物启动实测**——需原生 ARM64 机器。GitHub `windows-11-arm` runner **已 GA**（本文档原标注的「实验性」已过时），流水线已就绪，触发即跑：安装 → 启动 → 校验 sidecar 18765 监听 → 定向关停。
+
+不给出「已验证可运行」结论的原因：本机 x64 Windows 无法执行 ARM64 二进制，运行态验证必须由目标架构机器完成。
+
+### 5.3 沙箱打包的两处反直觉结论
+
+1. **完整 electron-builder 打包在本沙箱跑不通**——`removeUnusedLanguagesIfNeeded` 要删 53 个 `locales/*.pak`（Electron 31.7.7 带 55 种语言，只留 2 种），撞 safe-delete shim 的 `threshold=50`，在**复制 app.asar 之前**中断。绕行见 `tooling/scripts/eb-alllang-config.mjs`（全语言保留 → 待删集合为空）。
+2. **NSIS 封装阶段不受该守卫限制**——受限制的只有 locales 删除那一步，压缩/封装不涉及删除。故 arm64 安装包**能在沙箱内产出**。

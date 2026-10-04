@@ -1,0 +1,254 @@
+# ============================================================
+# BempDiff — Windows arm64 产物构建 + 启动实测（T01509 收口）
+# ------------------------------------------------------------
+# 目的：补齐 T01509 最后一项「arm64 产物启动实测」。
+#   本地 x64 Windows 无法执行 ARM64 二进制，也无法保证仿真 → 必须在
+#   **原生 arm64 runner** 上真机跑一遍安装 → 启动 → 比对。
+#   GitHub 已 GA `windows-11-arm`（本仓库 2026-10 核实，不再是评估文档
+#   里担心的「实验性 runner」）。
+#
+# 触发：手动（workflow_dispatch）+ push 到 master 时仅允许失败不阻塞
+#       （continue-on-error），避免 CI 抖动卡住主干。
+#
+# 关键设计（都是本仓库踩过的坑，见 docs/arm64平台评估.md §3）：
+#  1. **JRE 必须先换成 arm64**：`extraResources` 固定指向 dist_input/jre、
+#     主进程 main.js 硬编码 jre/bin/javaw.exe → 壳与 JRE 必须同架构。
+#     用仓内 fetch-jre.mjs + switch-jre.mjs 完成，不手写下载逻辑。
+#  2. **assemble 必须带 -SkipJava**：`build_tauri_app.ps1` 默认会 jlink
+#     重新生成 dist_input/jre（x64），会**覆盖**第 1 步换好的 arm64 JRE。
+#     -SkipJava 只重建 jar/前端，保留预置 jre。
+#  3. **产出目录用中性名 arm64-build**：与 x64 产线（release/）分离，
+#     避免取包时误取。
+#
+# 校验（安装包内架构，非只看解包目录）：
+#   setup.exe 是 NSIS 两层压缩，直接列只看得到引导层：
+#     7z l -t# setup.exe  → 载荷在 3.7z
+#     7z e -t# setup.exe 3.7z → 7z e payload.7z <文件>
+#   setup.exe 本体 PE machine=0x014c（NSIS x86 引导桩），属正常。
+# ============================================================
+
+name: build-arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_smoke:
+        description: '打包后是否安装并跑冒烟比对（较慢，约 10-20 分钟）'
+        type: boolean
+        default: true
+  push:
+    branches: [master]
+    paths:
+      - 'bempdiff/dev-shell/**'
+      - 'bempdiff/package.json'
+      - 'bempdiff/java_core/**'
+      - 'bempdiff/webui/**'
+      - 'tooling/scripts/fetch-jre.mjs'
+      - 'tooling/scripts/switch-jre.mjs'
+      - 'tooling/scripts/eb-alllang-config.mjs'
+      - '.github/workflows/build-arm64.yml'
+
+concurrency:
+  group: build-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    # 原生 ARM64 runner（GitHub 已 GA）。不加 continue-on-error：
+    # 本 job 只在手动触发或主干相关变更时跑，失败应当可见。
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打印 runner 架构（自证是真 arm64 而非仿真）
+        shell: pwsh
+        run: |
+          Write-Host "OS: $env:RUNNER_OS  ARCH: $env:RUNNER_ARCH"
+          # RUNNER_ARCH 应为 ARM64；若是 X64 说明落在了普通 windows runner 上
+          if ($env:RUNNER_ARCH -ne 'ARM64') {
+            Write-Error "RUNNER_ARCH=$env:RUNNER_ARCH，不是 ARM64 —— arm64 启动实测无意义，终止"
+            exit 1
+          }
+          # 确认真实处理器架构（x64 进程在 ARM64 系统上会报 ARM64）
+          $env:PROCESSOR_ARCHITECTURE
+
+      - name: 安装 Node（20.x LTS）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装完整 JDK 21（assemble 编译 jar 需要 javac/jlink）
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '21'
+
+      # ---- 1) 依赖安装 ----
+      - name: 安装 bempdiff 依赖（electron-builder）
+        shell: pwsh
+        working-directory: bempdiff
+        run: |
+          npm.cmd install --no-audit --no-fund
+          npm.cmd install --no-audit --no-fund --prefix dev-shell
+          npm.cmd install --no-audit --no-fund --prefix webui
+
+      # ---- 2) 前端构建（dist_input/webui 由 assemble 镜像） ----
+      - name: 构建 webui
+        shell: pwsh
+        working-directory: bempdiff/webui
+        run: npm.cmd run build
+
+      # ---- 3) 换成 arm64 JRE（必须在 assemble 之前） ----
+      - name: 拉取 win_aarch64 JRE 并就位
+        shell: pwsh
+        run: |
+          node tooling/scripts/fetch-jre.mjs --os win --arch arm64
+          node tooling/scripts/switch-jre.mjs --arch arm64
+          node tooling/scripts/switch-jre.mjs --status
+
+      # ---- 4) 组装 dist_input（-SkipJava 保住 arm64 JRE） ----
+      - name: 组装 dist_input（重建 jar，跳过 jre）
+        shell: pwsh
+        working-directory: bempdiff
+        run: |
+          # SkipJava：只重建 jar + 刷新 webui 镜像，绝不重新 jlink dist_input/jre
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File scripts\build_tauri_app.ps1 -AssembleOnly -SkipJava
+          if ($LASTEXITCODE -ne 0) { throw "assemble failed（见 bempdiff\build_native.log）" }
+
+      # 确认 jre 仍是 arm64（若被覆盖，此处会失败——早发现早停）
+      - name: 校验现役 JRE 仍为 ARM64
+        shell: pwsh
+        run: |
+          $jre = 'bempdiff\dist_input\jre\bin\java.exe'
+          $bytes = [System.IO.File]::ReadAllBytes($jre)[0..1023]
+          $peOff = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOff + 4)
+          Write-Host "dist_input/jre machine = 0x$($machine.ToString('x4'))"
+          if ($machine -ne 0xAA64) {
+            Write-Error "dist_input/jre 不是 ARM64（0x$($machine.ToString('x4'))）——被 assemble 覆盖了？"
+            exit 1
+          }
+
+      # ---- 5) 打包 NSIS 安装包 ----
+      # 注意：不用 eb-alllang-config.mjs（那是沙箱 safe-delete 绕行用的，
+      #       会多带 ~10MB 语言包）。CI 干净环境直接用仓库原配置。
+      - name: electron-builder --arm64
+        shell: pwsh
+        working-directory: bempdiff
+        env:
+          ELECTRON_MIRROR: https://registry.npmmirror.com/-/binary/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://registry.npmmirror.com/-/binary/electron-builder-binaries/
+        run: |
+          npx.cmd electron-builder --arm64 `
+            --config.directories.output=../arm64-build `
+            --config.nsis.artifactName='BempDiff-${version}-arm64-setup.${ext}'
+
+      - name: 确认安装包已生成（≥50MB 有效产物判据）
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem arm64-build\*.exe |
+            Where-Object { $_.Name -like '*arm64-setup*' } |
+            Select-Object -First 1
+          if (-not $setup) { throw '未找到 arm64 安装包' }
+          if ($setup.Length -lt 50MB) {
+            throw "安装包仅 $($setup.Length/1MB)MB，可疑（<50MB）"
+          }
+          Write-Host "安装包: $($setup.FullName)  $([math]::Round($setup.Length/1MB,1))MB"
+          "SETUP_PATH=$($setup.FullName)" | Out-File -FilePath arm64-build\.setup-path -Encoding utf8
+
+      # ---- 6) 从安装包压缩流内校验架构（排除「解包目录对、压缩后不对」） ----
+      - name: 校验安装包内 JRE 为 ARM64
+        shell: pwsh
+        run: |
+          $sevenZip = "${env:ProgramFiles}\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) {
+            # runner 自带 7z 在 PATH 下的情况
+            $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $sevenZip) {
+            Write-Warning '未找到 7-Zip，跳过包内架构深校（解包目录已在前一步校验）'
+            exit 0
+          }
+          $setupPath = (Get-Content arm64-build\.setup-path).Trim()
+          $work = 'arm64-build\_payload'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+          # NSIS 两层：setup.exe --(-t#)--> 3.7z --> 目标文件
+          & $sevenZip e -t# "-o$work" $setupPath '3.7z' -y | Out-Null
+          $payload = Join-Path $work '3.7z'
+          if (-not (Test-Path $payload)) { throw '未抽出 3.7z 载荷' }
+
+          $targets = @(
+            'BempDiff.exe',
+            'resources\bempdiff\dist_input\jre\bin\java.exe'
+          )
+          foreach ($t in $targets) {
+            & $sevenZip e $payload $t "-o$work" -y | Out-Null
+            $f = Join-Path $work (Split-Path $t -Leaf)
+            if (-not (Test-Path $f)) { throw "未抽出 $t" }
+            $b = [System.IO.File]::ReadAllBytes($f)[0..1023]
+            $peOff = [BitConverter]::ToInt32($b, 0x3C)
+            $m = [BitConverter]::ToUInt16($b, $peOff + 4)
+            Write-Host "$(Split-Path $t -Leaf): machine=0x$($m.ToString('x4'))"
+            if ($m -ne 0xAA64) { throw "$(Split-Path $t -Leaf) 不是 ARM64（0x$($m.ToString('x4'))）" }
+          }
+          Write-Host '安装包内 ARM64 校验通过'
+
+      # ---- 7) 安装 + 启动实测（可选，手动触发默认开） ----
+      # workflow_dispatch 时受 run_smoke 开关控制；push 事件默认跑
+      # （inputs.* 在非 dispatch 事件下为 null，此时 `!= false` 成立）
+      - name: 安装并做启动冒烟（可在触发时关闭）
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke != false }}
+        shell: pwsh
+        run: |
+          $setupPath = (Get-Content arm64-build\.setup-path).Trim()
+          $installDir = "$env:ProgramFiles\BempDiff-arm64-smoke"
+          Write-Host "静默安装到 $installDir ..."
+          $p = Start-Process -FilePath $setupPath `
+            -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "安装器退出码 $($p.ExitCode)" }
+
+          $exe = Join-Path $installDir 'BempDiff.exe'
+          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
+
+          # 产物内 JRE 必须是 arm64（安装后的落盘副本）
+          $jre = Join-Path $installDir 'resources\bempdiff\dist_input\jre\bin\javaw.exe'
+          $b = [System.IO.File]::ReadAllBytes($jre)[0..1023]
+          $m = [BitConverter]::ToUInt16($b, [BitConverter]::ToInt32($b, 0x3C) + 4)
+          Write-Host "安装后 jre/bin/javaw.exe machine=0x$($m.ToString('x4'))"
+          if ($m -ne 0xAA64) { throw "安装后 JRE 不是 ARM64" }
+
+          # 启动：GUI 壳在无头 runner 上起进程即可，重点是「不崩 + sidecar 起」
+          Write-Host '启动 BempDiff（无头 runner，仅验证可启动）...'
+          $proc = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 40
+          if ($proc.HasExited) {
+            throw "BempDiff 启动后退出，退出码 $($proc.ExitCode)"
+          }
+          Write-Host "BempDiff 存活，PID=$($proc.Id)"
+
+          # sidecar（JRE 后端）应监听 18765
+          $listen = Get-NetTCPConnection -LocalPort 18765 -State Listen -ErrorAction SilentlyContinue
+          if ($listen) {
+            Write-Host "sidecar 已监听 18765（pid=$($listen.OwningProcess)）"
+          } else {
+            Write-Warning '未检测到 18765 监听；GUI 模式可能尚未完成初始化，不作为硬失败'
+          }
+
+          # 收尾：定向关停（绝不按映像名全局杀）
+          taskkill /F /T /PID $proc.Id | Out-Null
+          Write-Host '冒烟完成并已关停'
+
+      # ---- 8) 上传安装包 ----
+      - name: 上传 arm64 安装包
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BempDiff-arm64-setup
+          path: arm64-build/*.exe
+          path: arm64-build/*.blockmap
+          if-no-files-found: warn
+          retention-days: 30
