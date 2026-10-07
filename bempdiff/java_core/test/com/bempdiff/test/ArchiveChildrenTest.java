@@ -1,6 +1,7 @@
 package com.bempdiff.test;
 
 import com.bempdiff.diff.ArchiveTree;
+import com.bempdiff.diff.DiffStatus;
 import com.bempdiff.model.DecompiledUnit;
 import com.bempdiff.model.EntrySource;
 import com.bempdiff.model.FileClass;
@@ -8,6 +9,7 @@ import com.bempdiff.model.Layer;
 import com.bempdiff.model.LogicalEntry;
 import com.bempdiff.model.PackageSnapshot;
 import com.bempdiff.parse.PackageParser;
+import com.bempdiff.server.BempServer;
 import com.bempdiff.server.CompareOptions;
 
 import java.io.IOException;
@@ -284,6 +286,45 @@ public final class ArchiveChildrenTest {
         Asserts.assertNotNull("新增条目应带新侧大小", onlyNew.get("newSize"));
     }
 
+    /** T01544 补全断言（T01454 建议）：顶层树节点 BempServer.buildNode 透传 oldSha256/newSha256。
+     *  buildNode 为 private static，沿用 AiTest/DecompileTest 的反射先例直调，守护三个口径：
+     *  双端存在都透传 / 单侧缺失不输出对侧字段 / parse 未算哈希（sha256=null）时不输出字段。 */
+    public void testTopNodeSha256Passthrough() throws Exception {
+        java.lang.reflect.Method buildNode = BempServer.class.getDeclaredMethod("buildNode",
+                String.class, PackageSnapshot.class, PackageSnapshot.class, DiffStatus.class);
+        buildNode.setAccessible(true);
+
+        Map<String, byte[]> oldE = new LinkedHashMap<>();
+        oldE.put("x", new byte[]{1});
+        Map<String, byte[]> newE = new LinkedHashMap<>();
+        newE.put("x", new byte[]{2});
+        PackageSnapshot oldSnap = snap("app.zip", oldE);
+        PackageSnapshot newSnap = snap("app.zip", newE);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> both = (Map<String, Object>) buildNode.invoke(
+                null, "app.zip", oldSnap, newSnap, DiffStatus.MODIFIED);
+        Asserts.assertEquals("双端应透传旧侧 sha256", "sha-app.zip", both.get("oldSha256"));
+        Asserts.assertEquals("双端应透传新侧 sha256", "sha-app.zip", both.get("newSha256"));
+
+        // DELETED 场景：key 仅存在于旧侧快照 → 不应输出任何新侧字段
+        @SuppressWarnings("unchecked")
+        Map<String, Object> del = (Map<String, Object>) buildNode.invoke(
+                null, "app.zip", oldSnap, snap("other.zip", newE), DiffStatus.DELETED);
+        Asserts.assertNotNull("删除节点应带旧侧 sha256", del.get("oldSha256"));
+        Asserts.assertTrue("删除节点不应带新侧 sha256", !del.containsKey("newSha256"));
+        Asserts.assertTrue("删除节点不应带新侧大小", !del.containsKey("newSize"));
+
+        // 哈希缺失场景：parse 未算 sha256 → old/new 字段均不输出（前端据字段存在性判定，严禁输出 null）
+        PackageSnapshot noSha = snapWithSha("app.zip", null);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ns = (Map<String, Object>) buildNode.invoke(
+                null, "app.zip", noSha, noSha, DiffStatus.UNCHANGED);
+        Asserts.assertTrue("sha256 为 null 时不应输出 old/new 字段",
+                !ns.containsKey("oldSha256") && !ns.containsKey("newSha256"));
+        Asserts.assertNotNull("size 等其余字段不受影响", ns.get("size"));
+    }
+
     private static PackageSnapshot snap(String zipName, Map<String, byte[]> entries) throws IOException {
         byte[] zip = TestFixtures.makeZip(entries);
         Path zipPath = TestFixtures.writePackage(zip, "snap");
@@ -291,6 +332,16 @@ public final class ArchiveChildrenTest {
         // 顶层归档条目本身（children/inner 解析时按 zipName 定位到磁盘 zip）
         map.put(zipName, new LogicalEntry(zipName, Layer.L0, FileClass.ARCHIVE,
                 zip.length, "sha-" + zipName, new EntrySource(zipPath.toString(), null)));
+        return new PackageSnapshot(zipPath, com.bempdiff.model.PackageType.WAR, "1.0", map);
+    }
+
+    /** 与 snap 同构，但顶层条目的 sha256 由调用方指定（可传 null，模拟 parse 未计算哈希）。 */
+    private static PackageSnapshot snapWithSha(String zipName, String sha) throws IOException {
+        byte[] zip = TestFixtures.makeZip(new LinkedHashMap<>());
+        Path zipPath = TestFixtures.writePackage(zip, "snapsha");
+        Map<String, LogicalEntry> map = new LinkedHashMap<>();
+        map.put(zipName, new LogicalEntry(zipName, Layer.L0, FileClass.ARCHIVE,
+                zip.length, sha, new EntrySource(zipPath.toString(), null)));
         return new PackageSnapshot(zipPath, com.bempdiff.model.PackageType.WAR, "1.0", map);
     }
 

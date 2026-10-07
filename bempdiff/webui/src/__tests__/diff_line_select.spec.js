@@ -141,6 +141,43 @@ describe('DiffView 二进制条目摘要卡', () => {
     w.unmount()
   })
 
+  // ---- T01544 补全（T01454 建议）：嵌套 CRC 判定与优先级、仅新侧存在场景 ----
+
+  it('嵌套节点 sameContent 优先于 sha256 判定（数据源优先级口径）', () => {
+    // 冲突场景：双端 sha256 相同（sha 判定=一致）但 sameContent=false → 应取 sameContent（已变化）
+    const conflict = { ...BIN_NODE, oldSha256: 'sha-x', newSha256: 'sha-x', sameContent: false, oldCrc: 'aa', newCrc: 'bb' }
+    let w = mountWithDec({ ok: false, engine: 'none', error: '内部条目为二进制（STATIC），不支持内容 diff' }, conflict)
+    expect(w.text()).toContain('内容已变化')
+    w.unmount()
+
+    // 反向冲突：sha 不同（sha 判定=已变化）但 sameContent=true → 仍取 sameContent（一致）
+    const flip = { ...BIN_NODE, oldSha256: 'sha-a', newSha256: 'sha-b', sameContent: true }
+    w = mountWithDec({ ok: false, engine: 'none', error: '二进制不支持内容 diff' }, flip)
+    expect(w.text()).toContain('内容一致')
+    w.unmount()
+  })
+
+  it('仅 CRC 的嵌套节点（无 sha256）：sameContent=false → 已变化', () => {
+    const crcOnly = {
+      key: 'pkg/img/logo.png', fileClass: 'STATIC', status: 'MODIFIED',
+      oldSize: 5, newSize: 7, oldCrc: 'aa', newCrc: 'bb', sameContent: false
+    }
+    const w = mountWithDec({ ok: false, engine: 'none', error: '嵌套条目为二进制，不支持内容级 diff' }, crcOnly)
+    expect(w.text()).toContain('内容已变化')
+    expect(w.text()).toContain('5 B')
+    expect(w.text()).toContain('7 B')
+    w.unmount()
+  })
+
+  it('仅新侧存在（无任何旧侧字段）：旧侧大小显示「不存在」，判定无法判定', () => {
+    const onlyNew = { key: 'pkg/img/logo.png', fileClass: 'STATIC', status: 'ADDED', newSize: 7 }
+    const w = mountWithDec({ ok: false, engine: 'none', error: '二进制不支持内容 diff' }, onlyNew)
+    expect(w.text()).toContain('不存在')
+    expect(w.text()).toContain('无法判定')
+    expect(w.text()).toContain('7 B')
+    w.unmount()
+  })
+
   it('非二进制失败不渲染摘要卡', () => {
     const w = mountWithDec({ ok: false, engine: 'cfr', error: '语法解析失败：unexpected token' })
     expect(w.text()).not.toContain('二进制条目摘要')
