@@ -19,6 +19,12 @@ Thumbs.db
 *.war
 *.exe
 
+# T01509 构建输入例外：cfr.jar 与 POI 三方 lib 是产线编译/运行输入（java_core 编译
+# classpath + dist_input/app/lib 运行时分发），必须随仓库走，否则全新检出/CI 无法构建。
+# 注：仅精确放行这两处输入目录，dist_input/release/build 下的 jar 产物仍被上面规则排除。
+!bempdiff/cfr.jar
+!bempdiff/toolchain/lib/*.jar
+
 # Build outputs
 dist/
 release/
@@ -38,7 +44,11 @@ tmp/
 .vscode/
 
 # Large binary files (JDK toolchain, dist exe)
-bempdiff/toolchain/
+# T01509：toolchain 下 335M 本地 JDK 绝不入库，但 lib/（POI 编译+运行输入）必须随仓库走。
+# 由「排除整个目录」改为「排除目录内容 + 放行 lib」——被排除的目录 git 不会下钻，
+# 其内 ! 例外规则永远无效（.gitignore 语义）。
+bempdiff/toolchain/*
+!bempdiff/toolchain/lib/
 bempdiff/dist_exe/
 # BempDiff Tauri 桌面壳 cargo 构建产物（由 scripts/build_tauri_app.ps1 生成，CARGO_TARGET_DIR 已项目作用域重定向至此）
 bempdiff/src-tauri/target/

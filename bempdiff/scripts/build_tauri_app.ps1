@@ -22,6 +22,9 @@
   只做 1~4 步（编译/打包 JRE/前端），不跑 cargo tauri build / icon。
 .PARAMETER SkipJava
   跳过 jar/jre 重新编译（复用已有 dist_input/app、dist_input/jre）。
+.PARAMETER SkipJre
+  仅跳过 jlink 重建 dist_input/jre（T01509：CI 全新检出必须编译 jar，
+  但要保住打包前 switch-jre.mjs 就位的预置 JRE，不被 jlink 覆盖）。
 .PARAMETER SkipFrontend
   跳过前端构建与镜像。
 .PARAMETER SkipCargo
@@ -35,6 +38,7 @@
 param(
   [switch]$AssembleOnly,
   [switch]$SkipJava,
+  [switch]$SkipJre,
   [switch]$SkipFrontend,
   [switch]$SkipCargo,
   [switch]$Clean
@@ -44,7 +48,7 @@ $ErrorActionPreference = 'Stop'
 
 # 容忍误传的位置参数（例如 `构建打包.bat src`）：明确警告后忽略，不阻断构建。
 if ($args -and $args.Count -gt 0) {
-  $args | ForEach-Object { Write-Warning "忽略未识别参数: '$_'（本脚本仅接受具名开关: -AssembleOnly / -SkipJava / -SkipFrontend / -SkipCargo / -Clean）" }
+  $args | ForEach-Object { Write-Warning "忽略未识别参数: '$_'（本脚本仅接受具名开关: -AssembleOnly / -SkipJava / -SkipJre / -SkipFrontend / -SkipCargo / -Clean）" }
 }
 
 # 5.1 兼容辅助：Windows PowerShell 5.1 的 Join-Path 仅接受 2 个位置参数（Path + ChildPath），
@@ -257,7 +261,7 @@ if (-not $SkipJava) {
 }
 
 # ---------- 3. jlink 最小 JRE ----------
-if (-not $SkipJava) {
+if (-not $SkipJava -and -not $SkipJre) {
   Write-Step "jlink 最小 JRE → $JreOut"
   # 定向结束可能锁定 dist_input 的残留进程（如未关闭的后端 sidecar / 上一轮构建残留的 java、javaw、jlink）。
   # 覆盖两类命中（仅精确匹配本项目特征，绝不误杀 Jenkins 等其它 Java 进程）：
@@ -292,7 +296,7 @@ if (-not $SkipJava) {
   Write-Host "  -> JRE 就绪（$([math]::Round((Get-ChildItem $JreOut -Recurse | Measure-Object -Property Length -Sum).Sum/1MB,1)) MB）"
 } else {
   Write-Host "跳过 jlink（复用已有 dist_input/jre）"
-  if (-not (Test-Path (Join-Paths $JreOut 'bin' 'java.exe'))) { throw "jre/bin/java.exe 不存在，请去掉 -SkipJava" }
+  if (-not (Test-Path (Join-Paths $JreOut 'bin' 'java.exe'))) { throw "jre/bin/java.exe 不存在，请去掉 -SkipJava/-SkipJre" }
 }
 
 # ---------- 4. 构建前端 + 镜像到 dist_input/webui ----------

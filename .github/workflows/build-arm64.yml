@@ -14,9 +14,10 @@
 #  1. **JRE 必须先换成 arm64**：`extraResources` 固定指向 dist_input/jre、
 #     主进程 main.js 硬编码 jre/bin/javaw.exe → 壳与 JRE 必须同架构。
 #     用仓内 fetch-jre.mjs + switch-jre.mjs 完成，不手写下载逻辑。
-#  2. **assemble 必须带 -SkipJava**：`build_tauri_app.ps1` 默认会 jlink
-#     重新生成 dist_input/jre（x64），会**覆盖**第 1 步换好的 arm64 JRE。
-#     -SkipJava 只重建 jar/前端，保留预置 jre。
+#  2. **assemble 用 -SkipJre 而非 -SkipJava**：CI 全新检出没有 dist_input/app，
+#     `-SkipJava`（要求 bempdiff.jar 已存在）不成立，必须真实编译；但默认流程会
+#     jlink 重建 dist_input/jre，**覆盖**第 3 步就位的 zulu arm64 JRE。
+#     -SkipJre 只跳过 jlink，编译/前端照常（构建输入 cfr.jar、toolchain/lib 已入库）。
 #  3. **产出目录用中性名 arm64-build**：与 x64 产线（release/）分离，
 #     避免取包时误取。
 #
@@ -108,14 +109,14 @@ jobs:
           node tooling/scripts/switch-jre.mjs --arch arm64
           node tooling/scripts/switch-jre.mjs --status
 
-      # ---- 4) 组装 dist_input（-SkipJava 保住 arm64 JRE） ----
-      - name: 组装 dist_input（重建 jar，跳过 jre）
+      # ---- 4) 组装 dist_input（编译 jar，但不 jlink——保住就位的 arm64 JRE） ----
+      - name: 组装 dist_input（重建 jar，跳过 jlink）
         shell: pwsh
         working-directory: bempdiff
         run: |
-          # SkipJava：只重建 jar + 刷新 webui 镜像，绝不重新 jlink dist_input/jre
+          # SkipJre：真实编译 jar + 刷新 webui 镜像，绝不重新 jlink dist_input/jre
           powershell -NoProfile -ExecutionPolicy Bypass `
-            -File scripts\build_tauri_app.ps1 -AssembleOnly -SkipJava
+            -File scripts\build_tauri_app.ps1 -AssembleOnly -SkipJre
           if ($LASTEXITCODE -ne 0) { throw "assemble failed（见 bempdiff\build_native.log）" }
 
       # 确认 jre 仍是 arm64（若被覆盖，此处会失败——早发现早停）
