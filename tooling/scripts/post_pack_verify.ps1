@@ -1,10 +1,13 @@
 # post_pack_verify.ps1 - post-pack verification for BempDiff NSIS builds.
 # Pure ASCII on purpose: PS 5.1 decodes BOM-less non-ASCII scripts via ANSI codepage.
 #
-# What it does (T01507):
+# What it does (T01507, family check added T01543):
 #   1. Locate the canonical installer for $Version across release root AND legacy _bk-* dirs
 #      ("exists and >= 50MB" rule). Warns loudly when the canonical copy is NOT in the root
 #      (stale-root scenario: users picking from \release\ would get an old build).
+#   1b. Deliverable family check: the canonical setup.exe MUST have its .blockmap next to it
+#      (NSIS differentialUpdate is on, so a missing blockmap = partial promote -> FAIL;
+#      a 0-byte blockmap is tolerated with a WARN, verified benign in T00667).
 #   2. Verify packaged webui bundle freshness: the index.html inside the packaged
 #      win-unpacked tree must reference the SAME hashed bundles as the source-side
 #      dist_input\webui\index.html (guards "packaged OK but ships an old frontend").
@@ -48,6 +51,28 @@ if (-not $canonical) {
   $canonical = $valid | Sort-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc } -Descending | Select-Object -First 1
   Write-Host "[WARN] canonical installer is NOT in release root - stale-root scenario. Promote it or pick from the path below."
 }
+
+# ---- 1b. deliverable family check (T01543, from T00638/T00667 suggestion) ----
+# electron-builder NSIS keeps differentialUpdate=true here, so EVERY valid build emits a
+# "<setup.exe>.blockmap" next to the installer. A missing blockmap means a partial promote
+# (exe copied, blockmap copy failed/skipped) - exactly the family-inconsistency class T00667
+# fixed - so FAIL loudly instead of shipping an auto-update-incomplete deliverable.
+# A 0-byte blockmap is tolerated (verified benign for distribution in T00667) with a WARN.
+# The reverse orphan (blockmap present but no valid exe) is already fatal above.
+$bm = $canonical + '.blockmap'
+if (-not (Test-Path -LiteralPath $bm)) {
+  Write-Host "[ERROR] family check FAILED: installer present but its .blockmap is missing:"
+  Write-Host ("        exe      : " + $canonical)
+  Write-Host ("        expected : " + $bm)
+  exit 1
+}
+$bmLen = (Get-Item -LiteralPath $bm).Length
+if ($bmLen -eq 0) {
+  Write-Host ("[WARN] blockmap is 0 bytes (delta updates unavailable; distribution unaffected): " + $bm)
+} else {
+  Write-Host ("[OK] deliverable family intact: setup.exe + blockmap (" + $bmLen + " bytes)")
+}
+
 Write-Host ("CANONICAL-INSTALLER: " + $canonical)
 
 # ---- 2. packaged webui bundle freshness ----
