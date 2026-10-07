@@ -158,7 +158,9 @@ jobs:
             throw "安装包仅 $($setup.Length/1MB)MB，可疑（<50MB）"
           }
           Write-Host "安装包: $($setup.FullName)  $([math]::Round($setup.Length/1MB,1))MB"
-          "SETUP_PATH=$($setup.FullName)" | Out-File -FilePath arm64-build\.setup-path -Encoding utf8
+          # 只写裸路径——后续步骤 Get-Content 整行直接当文件名用，
+          # 带 'SETUP_PATH=' 前缀会让 7z 报无效卷标（T01509 Run#2 实测踩坑）
+          $setup.FullName | Out-File -FilePath arm64-build\.setup-path -Encoding utf8
 
       # ---- 6) 从安装包压缩流内校验架构（排除「解包目录对、压缩后不对」） ----
       - name: 校验安装包内 JRE 为 ARM64
