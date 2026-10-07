@@ -205,7 +205,9 @@ jobs:
         shell: pwsh
         run: |
           $setupPath = (Get-Content arm64-build\.setup-path).Trim()
-          $installDir = "$env:ProgramFiles\BempDiff-arm64-smoke"
+          # 刻意用无空格绝对路径（NSIS /D= 不规范化 ..\，且带空格路径有历史坑；
+          # PS Start-Process ArgumentList 自动加引号行为版本间不一致）
+          $installDir = 'C:\smoke\BempDiff-arm64'
           Write-Host "静默安装到 $installDir ..."
           $p = Start-Process -FilePath $setupPath `
             -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
@@ -248,7 +250,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BempDiff-arm64-setup
-          path: arm64-build/*.exe
-          path: arm64-build/*.blockmap
+          # 注意：YAML 同键不可重复（GitHub runner 解析器直接判 workflow 非法，
+          # T01509 首版误写两行 path: 被 PyYAML 宽松模式掩盖）。用块列表。
+          path: |
+            arm64-build/*.exe
+            arm64-build/*.blockmap
           if-no-files-found: warn
           retention-days: 30
