@@ -181,18 +181,32 @@ public final class PromptBuilders {
             List<String> group = groups.get(dir);
             int groupBudget = Math.max(STAGE_A_MIN_FILE_BUDGET, budget / remainingGroups);
             int groupQuota = Math.max(1, (int) Math.ceil(quota / (double) remainingGroups));
-            budget -= appendGroupSummary(p, dir, group, diff, decompiled, cfg, groupBudget, groupQuota);
+            budget -= appendGroupSummary(p, dir, group, diff, decompiled, cfg,
+                    new GroupAllocation(groupBudget, groupQuota));
             quota -= groupQuota;
             remainingGroups--;
+        }
+    }
+
+    /** 单目录分组的字符预算与展示配额（appendGroupSummary 的参数组）。 */
+    private static final class GroupAllocation {
+        final int budget;
+        final int quota;
+
+        GroupAllocation(int budget, int quota) {
+            this.budget = budget;
+            this.quota = quota;
         }
     }
 
     /** 输出单个目录分组的统计头与组内代表文件摘要（组预算/配额耗尽即停），返回实际消耗字符数。 */
     private static int appendGroupSummary(StringBuilder p, String dir, List<String> group, DiffResult diff,
                                           Map<String, DecompiledUnit> decompiled, AiConfig cfg,
-                                          int groupBudget, int groupQuota) {
+                                          GroupAllocation alloc) {
         int before = p.length();
-        int added = 0, deleted = 0, modified = 0;
+        int added = 0;
+        int deleted = 0;
+        int modified = 0;
         for (String k : group) {
             switch (stOf(diff, k)) {
                 case ADDED: added++; break;
@@ -203,12 +217,10 @@ public final class PromptBuilders {
         p.append("\n### [目录] ").append(dir.isEmpty() ? "/" : dir)
          .append("（共 ").append(group.size()).append(" 个变更：新增").append(added)
          .append("/修改").append(modified).append("/删除").append(deleted).append("）\n");
-        int groupLeft = groupBudget;
+        int groupLeft = alloc.budget;
         int shown = 0;
-        for (String k : group) {
-            if (shown >= groupQuota) break;
-            if (groupLeft < STAGE_A_MIN_FILE_BUDGET) break;
-            groupLeft -= appendSingleFileSummary(p, k, diff, decompiled, cfg, groupLeft);
+        while (shown < group.size() && shown < alloc.quota && groupLeft >= STAGE_A_MIN_FILE_BUDGET) {
+            groupLeft -= appendSingleFileSummary(p, group.get(shown), diff, decompiled, cfg, groupLeft);
             shown++;
         }
         if (shown < group.size()) {

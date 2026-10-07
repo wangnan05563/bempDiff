@@ -699,17 +699,12 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         // 永久性客户端错误（400/401/403/404/422…）重试必然同样失败，且超大 prompt 重传代价高昂
         // （实测：token 超限 400 会把数十万字符请求体重发 3 次），故直接抛出不再重试。
         if (!isRetryable(e) || attempt >= MAX_RETRIES) {
-            // 例外：自适应放宽的 max_tokens 超过该模型供应商上限（如 DeepSeek 硬限 8192）时，
-            // 400 错误消息通常含 max_tokens 字样——按保守配额降级重试一次，而不是让自适应引入新失败。
-            if (e instanceof HttpStatusException && attempt < MAX_RETRIES
-                    && e.getMessage() != null && e.getMessage().contains("max_tokens")) {
-                int conservative = Math.min(cfg.getMaxOutputTokens() > 0 ? cfg.getMaxOutputTokens() : 4096, outTokens);
-                if (conservative < outTokens) {
-                    LOG.log(java.util.logging.Level.WARNING,
-                            "[AI] 自适应输出上限({0})超模型限制，降级为 {1} 重试：{2}",
-                            new Object[]{outTokens, conservative, e.getMessage()});
-                    return callChat(prompt, temperature, sf, attempt + 1, conservative);
-                }
+            int conservative = degradedMaxTokens(e, attempt, outTokens);
+            if (conservative >= 0) {
+                LOG.log(java.util.logging.Level.WARNING,
+                        "[AI] 自适应输出上限({0})超模型限制，降级为 {1} 重试：{2}",
+                        new Object[]{outTokens, conservative, e.getMessage()});
+                return callChat(prompt, temperature, sf, attempt + 1, conservative);
             }
             throw new AiCallException("AI 调用失败"
                     + (attempt > 0 ? "（已重试 " + attempt + " 次）" : "")
@@ -731,6 +726,20 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
         }
         sleepBackoff();
         return callChat(prompt, temperature, nextSf, attempt + 1, outTokens);
+    }
+
+    /** 例外：自适应放宽的 max_tokens 超过该模型供应商上限（如 DeepSeek 硬限 8192）时，
+     *  400 错误消息通常含 max_tokens 字样——按保守配额降级重试一次，而不是让自适应引入新失败。
+     *  返回降级后的输出上限；不满足降级条件返回 -1。 */
+    private int degradedMaxTokens(IOException e, int attempt, int outTokens) {
+        if (!(e instanceof HttpStatusException) || attempt >= MAX_RETRIES) {
+            return -1;
+        }
+        if (e.getMessage() == null || !e.getMessage().contains("max_tokens")) {
+            return -1;
+        }
+        int conservative = Math.min(cfg.getMaxOutputTokens() > 0 ? cfg.getMaxOutputTokens() : 4096, outTokens);
+        return conservative < outTokens ? conservative : -1;
     }
 
     /** 握手失败时选择的回退工厂：仅 TLSv1.2 优先，其次通用兼容，最后原工厂。 */

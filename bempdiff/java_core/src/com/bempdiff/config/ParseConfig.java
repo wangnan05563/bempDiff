@@ -91,10 +91,4 @@ public final class ParseConfig {
         }
         return false;
     }
-
-    /** @deprecated 请改用静态 {@link #ignoredExt(String, List)}；本方法保留仅为兼容历史调用。 */
-    @Deprecated
-    public boolean isIgnoredKey(String key) {
-        return ignoredExt(key, ignoreExtensions);
-    }
 }

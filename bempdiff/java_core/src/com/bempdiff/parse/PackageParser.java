@@ -99,18 +99,19 @@ public final class PackageParser {
         }
     }
 
-    private void processNonLibEntries(ZipFile zf, String libPrefix, String classesPrefix,
-                                      PackageType type, boolean expandAll, ParseConfig cfg,
+    private void processNonLibEntries(ZipFile zf, Prefixes prefixes, PackageType type, boolean expandAll,
+                                      ParseConfig cfg,
                                       Map<String, LogicalEntry> entries, Set<String> topDirs) throws IOException {
         Enumeration<? extends ZipEntry> en = zf.entries();
         while (en.hasMoreElements()) {
             ZipEntry e = en.nextElement();
             String n = e.getName();
-            if (!isValidZipEntry(e, libPrefix)) {
+            if (!isValidZipEntry(e, prefixes.libPrefix)) {
                 continue;
             }
             try {
-                addFromZip(zf, e, n, layerForEntry(n, classesPrefix, type, expandAll, cfg), entries, topDirs);
+                addFromZip(zf, e, n,
+                        layerForEntry(n, prefixes.classesPrefix, type, expandAll, cfg), entries, topDirs);
             } catch (IOException bad) {
                 LOG.warning("[隔离] 跳过可疑条目（已拒绝，不影响其余比对）: " + bad.getMessage());
             }
@@ -154,8 +155,7 @@ public final class PackageParser {
             }
 
             // 第二遍：非 lib 条目
-            processNonLibEntries(zf, prefixes.libPrefix, prefixes.classesPrefix,
-                    type, expandAll, cfg, entries, topDirs);
+            processNonLibEntries(zf, prefixes, type, expandAll, cfg, entries, topDirs);
 
             String version = pickBestVersion(extractVersion(zf), extractVersionFromFileName(file));
             return new PackageSnapshot(file, type, version, entries);
@@ -196,14 +196,15 @@ public final class PackageParser {
                 Enumeration<? extends ZipEntry> jen = jz.entries();
                 while (jen.hasMoreElements()) {
                     ZipEntry je = jen.nextElement();
-                    if (isDirectoryEntry(je, innerDirs)) continue; // 目录（含伪目录）不是原子文件，跳过
                     String inner = sanitizeKey(je.getName());
                     String key = jarPath + "/" + inner;
-                    if (ignoredKey(key)) continue; // 比对级忽略扩展名：嵌套 jar 内部条目同样过滤
-                    // P1-2：流式算内部类 hash，避免整条目 byte[] 驻留
-                    String h = sha256Stream(jz, je);
-                    out.put(key, new LogicalEntry(key, Layer.L1, classify(inner),
-                            je.getSize(), h, new EntrySource(jarPath, inner)));
+                    // 目录（含伪目录）不是原子文件跳过；比对级忽略扩展名：嵌套 jar 内部条目同样过滤
+                    if (!isDirectoryEntry(je, innerDirs) && !ignoredKey(key)) {
+                        // P1-2：流式算内部类 hash，避免整条目 byte[] 驻留
+                        String h = sha256Stream(jz, je);
+                        out.put(key, new LogicalEntry(key, Layer.L1, classify(inner),
+                                je.getSize(), h, new EntrySource(jarPath, inner)));
+                    }
                 }
             } finally {
                 deleteTempFile(tmpJar);

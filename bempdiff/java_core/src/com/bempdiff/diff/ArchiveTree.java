@@ -116,18 +116,23 @@ public final class ArchiveTree {
         // R2 二进制摘要卡（二期 T01454）：双端大小 + CRC32 + 同内容判定。
         // CRC32 来自 zip 条目元数据（listArchive 既有采集，零额外 IO；非加密哈希，
         // 与顶层节点透传的 SHA-256 定位不同——嵌套条目无 LogicalEntry，用 CRC 做内容等价判定足够）。
-        if (!isDir) {
-            long[] a = oldMap.get(name);
-            long[] b = newMap.get(name);
-            if (a != null) { node.put("oldSize", a[0]); node.put("oldCrc", Long.toHexString(a[1])); }
-            if (b != null) { node.put("newSize", b[0]); node.put("newCrc", Long.toHexString(b[1])); }
-            if (a != null && b != null) node.put("sameContent", a[0] == b[0] && a[1] == b[1]);
-        }
+        putBinaryMeta(node, isDir, oldMap, newMap, name);
         node.put("name", name);
         node.put("isDir", isDir);
         // 目录/普通文件不可展开；嵌套归档（zip/jar/war 等）可继续递归展开
         node.put("expandable", !isDir && isArchiveType(fc));
         return node;
+    }
+
+    /** 为非目录节点补充双端大小/CRC32/同内容判定（单侧缺失只写所在侧；两侧齐备才写 sameContent）。 */
+    private static void putBinaryMeta(Map<String, Object> node, boolean isDir,
+                                      Map<String, long[]> oldMap, Map<String, long[]> newMap, String name) {
+        if (isDir) return;
+        long[] a = oldMap.get(name);
+        long[] b = newMap.get(name);
+        if (a != null) { node.put("oldSize", a[0]); node.put("oldCrc", Long.toHexString(a[1])); }
+        if (b != null) { node.put("newSize", b[0]); node.put("newCrc", Long.toHexString(b[1])); }
+        if (a != null && b != null) node.put("sameContent", a[0] == b[0] && a[1] == b[1]);
     }
 
     /** 判定条目在差异树中的状态（新增/删除/未变/修改）；目录只看存在性，文件再比大小。 */
@@ -440,45 +445,56 @@ public final class ArchiveTree {
         Map<String, long[]> m = new TreeMap<>();
         if (archive == null) return m;
         try (ZipFile zf = new ZipFile(archive.toFile())) {
-            Enumeration<? extends ZipEntry> en = zf.entries();
-            int count = 0;
-            while (en.hasMoreElements()) {
-                if (count++ > 200_000) { m.put("... (已截断)", new long[]{0, 0}); break; }
-                ZipEntry e = en.nextElement();
-                String n = e.getName();
-                if (e.isDirectory()) {
-                    m.put(n.endsWith("/") ? n : n + "/", new long[]{0, 0});
-                } else {
-                    m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
-                }
-            }
-            // 伪目录条目升级：见方法 javadoc。
-            if (!m.isEmpty()) {
-                Set<String> dirPrefixes = new HashSet<>();
-                for (String key : m.keySet()) {
-                    if (key.startsWith("... (")) continue;
-                    int idx = 0;
-                    while ((idx = key.indexOf('/', idx)) >= 0) {
-                        dirPrefixes.add(key.substring(0, idx + 1));
-                        idx++;
-                    }
-                }
-                List<String> toUpgrade = new ArrayList<>();
-                for (Map.Entry<String, long[]> me : m.entrySet()) {
-                    String n = me.getKey();
-                    if (n.endsWith("/") || n.startsWith("... (")) continue;
-                    if (me.getValue()[0] != 0) continue;
-                    if (dirPrefixes.contains(n + "/")) toUpgrade.add(n);
-                }
-                for (String n : toUpgrade) {
-                    m.remove(n);
-                    m.put(n + "/", new long[]{0, 0});
-                }
-            }
+            readEntrySizes(zf, m);
         } catch (IOException ioe) {
             throw new IOException("无法读取归档条目: " + ioe.getMessage(), ioe);
         }
+        upgradeFakeDirEntries(m);
         return m;
+    }
+
+    /** 枚举 zip 条目为 name → {size, crc}（目录条目归一化尾随 /，超 20 万条目截断标记）。 */
+    private static void readEntrySizes(ZipFile zf, Map<String, long[]> m) {
+        Enumeration<? extends ZipEntry> en = zf.entries();
+        int count = 0;
+        while (en.hasMoreElements()) {
+            if (count++ > 200_000) {
+                m.put("... (已截断)", new long[]{0, 0});
+                break;
+            }
+            ZipEntry e = en.nextElement();
+            String n = e.getName();
+            if (e.isDirectory()) {
+                m.put(n.endsWith("/") ? n : n + "/", new long[]{0, 0});
+            } else {
+                m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
+            }
+        }
+    }
+
+    /** 伪目录条目升级（见 listArchive javadoc）：0 字节 + 无尾随 / + 存在 name+"/" 前缀 → 升级为目录。 */
+    private static void upgradeFakeDirEntries(Map<String, long[]> m) {
+        if (m.isEmpty()) return;
+        Set<String> dirPrefixes = new HashSet<>();
+        for (String key : m.keySet()) {
+            if (!key.startsWith("... (")) {
+                for (int idx = key.indexOf('/'); idx >= 0; idx = key.indexOf('/', idx + 1)) {
+                    dirPrefixes.add(key.substring(0, idx + 1));
+                }
+            }
+        }
+        List<String> toUpgrade = new ArrayList<>();
+        for (Map.Entry<String, long[]> me : m.entrySet()) {
+            String n = me.getKey();
+            long[] v = me.getValue();
+            if (!n.endsWith("/") && !n.startsWith("... (") && v[0] == 0 && dirPrefixes.contains(n + "/")) {
+                toUpgrade.add(n);
+            }
+        }
+        for (String n : toUpgrade) {
+            m.remove(n);
+            m.put(n + "/", new long[]{0, 0});
+        }
     }
 
     static Path writeTemp(byte[] b) throws IOException {

@@ -582,8 +582,8 @@ public final class BempServer {
             item.put("type", "compare");
             item.put("id", j.id);
             item.put("label", jobLabel(j));
-            item.put("phase", j.getPhase());
-            item.put("message", j.getMessage() == null ? "" : j.getMessage());
+            item.put(KEY_PHASE, j.getPhase());
+            item.put(KEY_MESSAGE, j.getMessage() == null ? "" : j.getMessage());
             running.add(item);
         }
         Map<String, Object> resp = new LinkedHashMap<>();
@@ -1487,11 +1487,11 @@ public final class BempServer {
 
     /** 读条目字节（缺侧/读取失败返回 null，供归一化 diff 安全处理，与 FrontendTextDiff 缺侧语义一致）。 */
     private static byte[] readEntrySafe(PackageSnapshot snap, LogicalEntry e) {
-        if (e == null) return null;
+        if (e == null) return null; // NOSONAR java:S1168 — null 是刻意的「缺侧」语义，下游按缺侧处理，空数组会误判为空文件
         try {
             return new PackageParser().readEntryBytes(snap, e);
         } catch (Exception ignored) {
-            return null;
+            return null; // NOSONAR java:S1168 — 同上：读取失败按缺侧语义返回 null，与 FrontendTextDiff 约定一致
         }
     }
 

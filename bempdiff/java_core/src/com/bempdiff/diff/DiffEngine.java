@@ -153,7 +153,6 @@ public final class DiffEngine {
      * 内部子文件按归档前缀一次收集，最终一次性重建 DELETED/ADDED 列表。</p>
      */
     private static void alignVersionRenamedArchives(DiffResult r, PackageSnapshot os, PackageSnapshot ns) {
-        Map<String, LogicalEntry> old = os.getEntries();
         Map<String, LogicalEntry> now = ns.getEntries();
         LinkedHashSet<String> deleted = new LinkedHashSet<>(r.get(DiffStatus.DELETED));
         LinkedHashSet<String> added = new LinkedHashSet<>(r.get(DiffStatus.ADDED));
@@ -165,7 +164,7 @@ public final class DiffEngine {
             if (ae != null && isArchive(ae)) archiveAdded.add(a);
         }
         for (String dKey : new ArrayList<>(deleted)) {
-            tryAlignArchive(r, os, ns, old, now, archiveAdded, added, deleted, dKey);
+            tryAlignArchive(r, os, ns, archiveAdded, added, deleted, dKey);
         }
         r.replaceList(DiffStatus.DELETED, deleted);
         r.replaceList(DiffStatus.ADDED, added);
@@ -173,8 +172,10 @@ public final class DiffEngine {
 
     /** 对齐单个被删归档到其改名后的等价新归档，并把配对从两侧集合移出（子文件对齐见 {@link #alignSubFiles}）。 */
     private static void tryAlignArchive(DiffResult r, PackageSnapshot os, PackageSnapshot ns,
-                                        Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
-                                        List<String> archiveAdded, Set<String> added, Set<String> deleted, String dKey) {
+                                        List<String> archiveAdded, Set<String> added, Set<String> deleted,
+                                        String dKey) {
+        Map<String, LogicalEntry> old = os.getEntries();
+        Map<String, LogicalEntry> now = ns.getEntries();
         LogicalEntry de = old.get(dKey);
         if (de == null || !isArchive(de)) return;
         String aKey = versionCounterpart(dKey, archiveAdded, now, added);
@@ -188,7 +189,7 @@ public final class DiffEngine {
         r.put(sameContainer ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, dKey);
         // 扁平化内部子文件对齐（同版本键对齐后逐一比对 sha）。子文件跨层多，先按归档前缀一次收集，
         // 避免为每个 DELETED 归档重复全量遍历整个 deleted 集合。
-        alignSubFiles(r, os, ns, deleted, added, old, now, dKey + "!/", aKey + "!/");
+        alignSubFiles(r, os, ns, deleted, added, dKey + "!/", aKey + "!/");
     }
 
     private static boolean isArchive(LogicalEntry e) {
@@ -202,8 +203,9 @@ public final class DiffEngine {
      *  （T00875 验证失败：…M059/M061.zip/scripts/install.sh 内容一致却标修改）。 */
     private static void alignSubFiles(DiffResult r, PackageSnapshot os, PackageSnapshot ns,
                                       Set<String> deleted, Set<String> added,
-                                      Map<String, LogicalEntry> old, Map<String, LogicalEntry> now,
                                       String preO, String preN) {
+        Map<String, LogicalEntry> old = os.getEntries();
+        Map<String, LogicalEntry> now = ns.getEntries();
         List<String> subUnderO = new ArrayList<>();
         for (String dSub : deleted) if (dSub.startsWith(preO)) subUnderO.add(dSub);
         for (String dSub : subUnderO) {
@@ -233,27 +235,32 @@ public final class DiffEngine {
     private static String findUniqueCompat(String d, List<String> candidates, Set<String> added,
                                            Map<String, LogicalEntry> now) {
         String skel = versionNormalizedPath(d);
-        String pick = null;
-        int matches = 0;
+        List<String> strict = collectCompatMatches(d, candidates, added, now, skel);
+        if (strict.size() > 1) return null; // 同骨架候选仍不唯一：保持保守放弃
+        if (strict.size() == 1) return strict.get(0);
+        // 无同骨架候选时回退原宽松等价（兼容 foo-rc1 ↔ foo-rc2 等无 M 构建号的纯版本尾段形态）
+        List<String> loose = collectCompatMatches(d, candidates, added, now, null);
+        return loose.size() == 1 ? loose.get(0) : null;
+    }
+
+    /** 在候选桶内收集版本等价命中（最多收 2 个即可判定唯一性）。
+     *  skel 非空时仅收「同版本骨架」命中（逐段抹平版本号/哈希尾后完全一致）；为空则收全部宽松等价命中。 */
+    private static List<String> collectCompatMatches(String d, List<String> candidates, Set<String> added,
+                                                     Map<String, LogicalEntry> now, String skel) {
+        List<String> hits = new ArrayList<>(2);
         for (String a : candidates) {
-            if (!added.contains(a)) continue;
-            LogicalEntry ae = now.get(a);
-            if (ae == null || !versionEquivalentPath(d, a)) continue;
-            if (!skel.equals(versionNormalizedPath(a))) continue;
-            pick = a;
-            matches++;
-        }
-        if (matches == 1) return pick;
-        if (matches > 1) return null; // 同骨架候选仍不唯一：保持保守放弃
-        pick = null;
-        matches = 0;
-        for (String a : candidates) {
+            if (hits.size() >= 2) {
+                break;
+            }
             if (added.contains(a)) {
                 LogicalEntry ae = now.get(a);
-                if (ae != null && versionEquivalentPath(d, a)) { pick = a; matches++; }
+                if (ae != null && versionEquivalentPath(d, a)
+                        && (skel == null || skel.equals(versionNormalizedPath(a)))) {
+                    hits.add(a);
+                }
             }
         }
-        return (matches == 1) ? pick : null;
+        return hits;
     }
 
     /**
