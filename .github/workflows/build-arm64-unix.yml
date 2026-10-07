@@ -232,8 +232,13 @@ jobs:
           file "$JB" | grep -q 'arm64' || { echo '包内 JRE 非 arm64'; exit 1; }
           DMG=$(ls arm64-unix-build/*.dmg | head -1)
           echo "dmg: $DMG"
-          MOUNT=$(hdiutil attach -nobrowse -readonly "$DMG" | tail -1 | awk '{$1=$1};1')
+          # 卷名带空格（BempDiff <version>-arm64），hdiutil 输出为「设备 GUID 挂载点」
+          # 三列且挂载点是最后一段——必须整段取 /Volumes/... 尾部，awk 重建 $1..$NF 会把
+          # 设备名/GUID 一起并进路径（Run#1 实测：ls 报 No such file or directory）
+          MOUNT=$(hdiutil attach -nobrowse -readonly "$DMG" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | tail -1)
+          [ -n "$MOUNT" ] || { echo '未解析出挂载点'; exit 1; }
           ls "$MOUNT"
+          test -d "$MOUNT/BempDiff.app" || { echo 'dmg 内缺 BempDiff.app'; exit 1; }
           hdiutil detach "$MOUNT" || true
 
       - name: ad-hoc 本地签名并做启动冒烟（sidecar 18765）
