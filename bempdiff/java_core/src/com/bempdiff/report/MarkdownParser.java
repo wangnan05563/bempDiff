@@ -272,13 +272,15 @@ public final class MarkdownParser {
         return i;
     }
 
-    /** 段落：聚合相邻的普通非空行。 */
+    /** 段落：聚合相邻的普通非空行。首行无条件吸收——以 # 开头但非合法标题的行
+     *  （如 "####### x"、"#NoSpace"，CommonMark 语义即普通段落）若按边界判定会
+     *  原样返回 i 导致顶层 while 死循环（T01550 补测时发现的生产缺陷）。 */
     private static int parseParagraph(List<String> lines, int i, List<Block> blocks) {
         List<String> para = new ArrayList<>();
         int n = lines.size();
         while (i < n) {
             String t = lines.get(i).trim();
-            if (t.isEmpty() || isParagraphBoundary(t, lines, i, n)) {
+            if (t.isEmpty() || (!para.isEmpty() && isParagraphBoundary(t, lines, i, n))) {
                 break;
             }
             para.add(t);

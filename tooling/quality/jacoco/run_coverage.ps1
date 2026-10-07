@@ -20,7 +20,12 @@ $classes = @('ParseTest','DiffTest','DecompileTest','AiTest','ReportTest','Expor
   'SsrfTest','FrontendTest','FolderTest','FolderDiffTest','ProfileTest','VendorConfigTest','ServerConfigTest',
   'ArchiveDiffTest','ArchiveChildrenTest','NestedZipDiffTest','OfficeTextDiffTest','DiffDigestTest',
   'PackageVersionTest','FileOpsTest','ProjectContextTest','ProjectIndexerTest','ProjectContextServiceTest',
-  'ContextPromptTest','ContextAiTest','UnpackTest') | ForEach-Object { "com.bempdiff.test.$_" }
+  'ContextPromptTest','ContextAiTest','UnpackTest',
+  'UpdateCheckServiceContractTest','ServerApiHttpTest','ServerCompareFlowTest','ServerStaticAndConfigTest',
+  'MainCliTest','MainReflectTest','MarkdownParserTest','LibJarDiffTest','FolderReportTest','MarkdownReportBranchTest',
+  'JobStateTest','CompareOptionsRequestTest','UpdateCheckStubTest','NestedUnpackerBranchTest',
+  'DecompilerBranchTest','OfficeTextDiffBranchTest','FrontendTextDiffBranchTest',
+  'MockAiAnalyzerTest') | ForEach-Object { "com.bempdiff.test.$_" }
 $cp = @(
   (Join-Path $root 'bempdiff\java_core\test_out'),
   (Join-Path $root 'bempdiff\java_core\out'),

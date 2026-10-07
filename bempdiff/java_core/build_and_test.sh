@@ -72,5 +72,23 @@ echo "==> 运行 TestRunner"
   com.bempdiff.test.ProjectContextServiceTest \
   com.bempdiff.test.ContextPromptTest \
   com.bempdiff.test.ContextAiTest \
-  com.bempdiff.test.UnpackTest
+  com.bempdiff.test.UnpackTest \
+  com.bempdiff.test.UpdateCheckServiceContractTest \
+  com.bempdiff.test.ServerApiHttpTest \
+  com.bempdiff.test.ServerCompareFlowTest \
+  com.bempdiff.test.ServerStaticAndConfigTest \
+  com.bempdiff.test.MainCliTest \
+  com.bempdiff.test.MainReflectTest \
+  com.bempdiff.test.MarkdownParserTest \
+  com.bempdiff.test.LibJarDiffTest \
+  com.bempdiff.test.FolderReportTest \
+  com.bempdiff.test.MarkdownReportBranchTest \
+  com.bempdiff.test.JobStateTest \
+  com.bempdiff.test.CompareOptionsRequestTest \
+  com.bempdiff.test.UpdateCheckStubTest \
+  com.bempdiff.test.NestedUnpackerBranchTest \
+  com.bempdiff.test.DecompilerBranchTest \
+  com.bempdiff.test.OfficeTextDiffBranchTest \
+  com.bempdiff.test.FrontendTextDiffBranchTest \
+  com.bempdiff.test.MockAiAnalyzerTest
 echo "testrunner exit: $?"
