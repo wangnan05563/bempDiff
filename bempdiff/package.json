@@ -57,6 +57,25 @@
       "target": "nsis",
       "icon": "bempdiff-logo.png"
     },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "artifactName": "BempDiff-${version}-arm64.${ext}",
+      "category": "Development",
+      "executableName": "bempdiff",
+      "maintainer": "wangnan05563"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "BempDiff-${version}-arm64.${ext}",
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "gatekeeperAssess": false
+    },
     "nsis": {
       "oneClick": false,
       "perMachine": false,

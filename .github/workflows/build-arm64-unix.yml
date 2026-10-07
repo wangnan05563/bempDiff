@@ -1,0 +1,272 @@
+# ============================================================
+# BempDiff — Linux / macOS arm64 产物构建 + 启动冒烟（T01546）
+# ------------------------------------------------------------
+# 同法推进自 build-arm64.yml（Windows arm64，T01509 Run#3 已全绿）：
+#   架构自证 → arm64 JRE 就位 → 编译组装 dist_input → electron-builder
+#   → 包内架构深校 → 安装/启动冒烟（sidecar 18765 监听）。
+#
+# 与 Windows 版的差异（都是有意的）：
+#  1. assemble 不复用 build_tauri_app.ps1——该脚本强 Windows 依赖
+#     （javac.exe/taskkill/cmd rmdir），unix runner 上不可靠。这里用
+#     等价的 bash 内联三步（javac → jar cfe → 分发 cfr/lib/webui），
+#     产物结构与 -AssembleOnly 完全一致。正式产线仍是 Windows bat。
+#  2. JRE 就位不走 switch-jre.mjs（那是 Windows 产线的原子换入工具）：
+#     CI 全新检出是一次性环境，直接 rm + cp -a 换入目标架构归档。
+#     macOS 归档 Contents/Home/* 扁平化后就位 → 壳内路径与 linux 同构
+#     （main.js findJava 统一 jre/bin/java，T01546 适配）。
+#  3. macOS 无开发者账号 → identity:null 不签名不公证（评估文档 §3，
+#     工单口径「先出未签名产物挂起验收」）。冒烟前做 ad-hoc 本地签名
+#     （Apple Silicon 强制要求任何 Mach-O 有签名才能 exec），
+#     仅影响 runner 本机验证，不改动上传产物。
+#  4. 触发仅 workflow_dispatch：macos 分钟对私有仓库计费，push 自动跑
+#     留给 Windows 产线（build-arm64.yml）。
+# ============================================================
+
+name: build-arm64-unix
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_smoke:
+        description: '打包后是否安装/启动并跑 sidecar 冒烟（较慢）'
+        type: boolean
+        default: true
+      targets:
+        description: '跑哪些平台'
+        type: choice
+        options:
+          - both
+          - linux
+          - macos
+        default: both
+
+concurrency:
+  group: build-arm64-unix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELECTRON_MIRROR: https://registry.npmmirror.com/-/binary/electron/
+  ELECTRON_BUILDER_BINARIES_MIRROR: https://registry.npmmirror.com/-/binary/electron-builder-binaries/
+
+jobs:
+  # ------------------------------------------------------------
+  # Linux arm64：ubuntu-24-04-arm 原生 runner，AppImage + deb 双目标
+  # ------------------------------------------------------------
+  linux-arm64:
+    if: ${{ inputs.targets == 'both' || inputs.targets == 'linux' }}
+    runs-on: ubuntu-24-04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 架构自证（必须 aarch64）
+        run: |
+          uname -m
+          [ "$(uname -m)" = "aarch64" ] || { echo "非 arm64 runner"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: 安装完整 JDK 21（javac/jar 组装 dist_input 用）
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '21'
+
+      - name: 安装依赖（electron-builder + webui）
+        run: |
+          npm install --no-audit --no-fund --prefix bempdiff
+          npm install --no-audit --no-fund --prefix bempdiff/dev-shell
+          npm install --no-audit --no-fund --prefix bempdiff/webui
+
+      - name: 构建 webui
+        run: npm run build --prefix bempdiff/webui
+
+      - name: 拉取 linux_aarch64 JRE 并换入 dist_input/jre
+        run: |
+          node tooling/scripts/fetch-jre.mjs --os linux --arch arm64
+          rm -rf bempdiff/dist_input/jre
+          cp -a bempdiff/dist_input/jre-linux-arm64 bempdiff/dist_input/jre
+          file bempdiff/dist_input/jre/bin/java
+          file bempdiff/dist_input/jre/bin/java | grep -q 'ARM aarch64' || { echo 'JRE 非 aarch64'; exit 1; }
+
+      - name: 组装 dist_input（等价 build_tauri_app.ps1 -AssembleOnly 的三步）
+        run: |
+          set -euo pipefail
+          B=bempdiff
+          rm -rf $B/dist_input/classes && mkdir -p $B/dist_input/classes $B/dist_input/app/lib
+          find $B/java_core/src -name '*.java' > /tmp/sources.txt
+          javac -encoding UTF-8 -Xlint:-unchecked -cp "$B/cfr.jar:$B/toolchain/lib/*" \
+            -d $B/dist_input/classes @/tmp/sources.txt
+          jar cfe $B/dist_input/app/bempdiff.jar com.bempdiff.Main -C $B/dist_input/classes .
+          cp -f $B/cfr.jar $B/dist_input/app/cfr.jar
+          cp -f $B/toolchain/lib/*.jar $B/dist_input/app/lib/
+          rm -rf $B/dist_input/webui && cp -a $B/webui/dist $B/dist_input/webui
+          ls -la $B/dist_input/app
+
+      - name: electron-builder --linux --arm64（AppImage + deb）
+        run: |
+          cd bempdiff
+          npx electron-builder --linux --arm64 \
+            --config.directories.output=../arm64-unix-build
+
+      - name: 校验 deb 内 ELF 为 aarch64
+        run: |
+          set -euo pipefail
+          DEB=$(ls arm64-unix-build/*.deb | head -1)
+          echo "deb: $DEB"
+          rm -rf /tmp/debx && mkdir -p /tmp/debx
+          dpkg-deb -x "$DEB" /tmp/debx
+          BIN=/tmp/debx/opt/BempDiff/bempdiff
+          JBIN=/tmp/debx/opt/BempDiff/resources/bempdiff/dist_input/jre/bin/java
+          file "$BIN" "$JBIN"
+          file "$BIN" | grep -q 'aarch64' || { echo '壳二进制非 aarch64'; exit 1; }
+          file "$JBIN" | grep -q 'aarch64' || { echo '包内 JRE 非 aarch64'; exit 1; }
+
+      - name: 安装 deb 并做启动冒烟（sidecar 18765）
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke != false }}
+        run: |
+          set -uo pipefail
+          DEB=$(ls arm64-unix-build/*.deb | head -1)
+          sudo dpkg -i "$DEB"
+          # 无头 runner：xvfb + --no-sandbox（root 环境 Electron 硬性要求）
+          xvfb-run -a /opt/BempDiff/bempdiff --no-sandbox >/tmp/bempdiff-smoke.log 2>&1 &
+          APP_PID=$!
+          for i in $(seq 1 40); do
+            sleep 3
+            if lsof -nP -iTCP:18765 -sTCP:LISTEN >/dev/null 2>&1; then break; fi
+            kill -0 $APP_PID 2>/dev/null || { echo '壳进程提前退出'; tail -30 /tmp/bempdiff-smoke.log; exit 1; }
+          done
+          if lsof -nP -iTCP:18765 -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "sidecar 已监听 18765："; lsof -nP -iTCP:18765 -sTCP:LISTEN | head -5
+          else
+            echo 'WARN: 未检测到 18765 监听，不作为硬失败（同 Windows 产线口径）'; fi
+          # 定向关停本次冒烟进程组，绝不按映像名全局杀
+          kill -- -"$APP_PID" 2>/dev/null || kill -9 $APP_PID 2>/dev/null || true
+          tail -20 /tmp/bempdiff-smoke.log || true
+
+      - name: 上传 linux arm64 产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BempDiff-linux-arm64
+          path: |
+            arm64-unix-build/*.AppImage
+            arm64-unix-build/*.deb
+            arm64-unix-build/*.blockmap
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ------------------------------------------------------------
+  # macOS arm64：macos-14（Apple Silicon 原生），dmg 目标，未签名
+  # ------------------------------------------------------------
+  macos-arm64:
+    if: ${{ inputs.targets == 'both' || inputs.targets == 'macos' }}
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 架构自证（必须 arm64）
+        run: |
+          uname -m
+          [ "$(uname -m)" = "arm64" ] || { echo "非 Apple Silicon runner"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: 安装完整 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '21'
+
+      - name: 安装依赖（electron-builder + webui）
+        run: |
+          npm install --no-audit --no-fund --prefix bempdiff
+          npm install --no-audit --no-fund --prefix bempdiff/dev-shell
+          npm install --no-audit --no-fund --prefix bempdiff/webui
+
+      - name: 构建 webui
+        run: npm run build --prefix bempdiff/webui
+
+      - name: 拉取 macosx_aarch64 JRE，扁平化 Contents/Home 后换入 dist_input/jre
+        run: |
+          set -euo pipefail
+          node tooling/scripts/fetch-jre.mjs --os macos --arch arm64
+          SRC=bempdiff/dist_input/jre-macos-arm64
+          [ -x "$SRC/Contents/Home/bin/java" ] || { echo 'mac 归档布局变化'; find $SRC -maxdepth 3 | head; exit 1; }
+          rm -rf bempdiff/dist_input/jre
+          mkdir -p bempdiff/dist_input/jre
+          cp -a "$SRC/Contents/Home/." bempdiff/dist_input/jre/
+          file bempdiff/dist_input/jre/bin/java
+          file bempdiff/dist_input/jre/bin/java | grep -q 'arm64' || { echo 'JRE 非 arm64'; exit 1; }
+
+      - name: 组装 dist_input（同 linux 作业三步）
+        run: |
+          set -euo pipefail
+          B=bempdiff
+          rm -rf $B/dist_input/classes && mkdir -p $B/dist_input/classes $B/dist_input/app/lib
+          find $B/java_core/src -name '*.java' > /tmp/sources.txt
+          javac -encoding UTF-8 -Xlint:-unchecked -cp "$B/cfr.jar:$B/toolchain/lib/*" \
+            -d $B/dist_input/classes @/tmp/sources.txt
+          jar cfe $B/dist_input/app/bempdiff.jar com.bempdiff.Main -C $B/dist_input/classes .
+          cp -f $B/cfr.jar $B/dist_input/app/cfr.jar
+          cp -f $B/toolchain/lib/*.jar $B/dist_input/app/lib/
+          rm -rf $B/dist_input/webui && cp -a $B/webui/dist $B/dist_input/webui
+          chmod +x $B/dist_input/jre/bin/java $B/dist_input/jre/bin/* 2>/dev/null || true
+
+      - name: electron-builder --mac --arm64（dmg，identity:null 不签名）
+        run: |
+          cd bempdiff
+          npx electron-builder --mac --arm64 \
+            --config.directories.output=../arm64-unix-build
+
+      - name: 校验产物架构（Mach-O arm64）
+        run: |
+          set -euo pipefail
+          APP=$(find arm64-unix-build -maxdepth 2 -name '*.app' | head -1)
+          echo "app: $APP"
+          file "$APP/Contents/MacOS/BempDiff" | grep -q 'arm64' || { echo '壳非 arm64'; exit 1; }
+          JB="$APP/Contents/Resources/bempdiff/dist_input/jre/bin/java"
+          file "$JB" | grep -q 'arm64' || { echo '包内 JRE 非 arm64'; exit 1; }
+          DMG=$(ls arm64-unix-build/*.dmg | head -1)
+          echo "dmg: $DMG"
+          MOUNT=$(hdiutil attach -nobrowse -readonly "$DMG" | tail -1 | awk '{$1=$1};1')
+          ls "$MOUNT"
+          hdiutil detach "$MOUNT" || true
+
+      - name: ad-hoc 本地签名并做启动冒烟（sidecar 18765）
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke != false }}
+        run: |
+          set -uo pipefail
+          APP=$(find arm64-unix-build -maxdepth 2 -name '*.app' | head -1)
+          # Apple Silicon 强制 exec 要求最低 ad-hoc 签名；仅本机冒烟用，
+          # 不改上传产物（dmg 保持未签名，验收挂起等开发者账号——工单口径）
+          codesign --force --deep -s - "$APP" || { echo 'ad-hoc 签名失败'; exit 1; }
+          "$APP/Contents/MacOS/BempDiff" --no-sandbox >/tmp/bempdiff-smoke.log 2>&1 &
+          APP_PID=$!
+          READY=0
+          for i in $(seq 1 40); do
+            sleep 3
+            if lsof -nP -iTCP:18765 -sTCP:LISTEN >/dev/null 2>&1; then READY=1; break; fi
+            kill -0 $APP_PID 2>/dev/null || { echo '壳进程提前退出'; tail -30 /tmp/bempdiff-smoke.log; exit 1; }
+          done
+          if [ "$READY" = 1 ]; then
+            echo 'sidecar 已监听 18765：'; lsof -nP -iTCP:18765 -sTCP:LISTEN | head -5
+          else
+            echo 'WARN: 未检测到 18765 监听；不作为硬失败（同 Windows 产线口径）'; fi
+          kill -9 $APP_PID 2>/dev/null || true
+          tail -20 /tmp/bempdiff-smoke.log || true
+
+      - name: 上传 macOS arm64 产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BempDiff-macos-arm64
+          path: |
+            arm64-unix-build/*.dmg
+            arm64-unix-build/*.zip
+            arm64-unix-build/*.blockmap
+          if-no-files-found: warn
+          retention-days: 30

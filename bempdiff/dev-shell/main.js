@@ -122,6 +122,7 @@ async function waitPort(port, timeoutMs) {
 // 双注册共 4 次，反复弹窗）。改为 netstat -ano 解析 LISTENING PID + taskkill /F /T，
 // 全部走系统标准工具，无 PowerShell 参与；语义不变（仅杀监听该端口的进程）。
 function killPort(port) {
+  if (process.platform !== 'win32') return killPortUnix(port)
   try {
     const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' })
     if (!out || !out.stdout) return
@@ -138,13 +139,46 @@ function killPort(port) {
   } catch (_) {}
 }
 
+// Unix（linux/macOS，T01546）：lsof 查监听 PID 后逐个 kill -9；lsof 缺失退回 ss。
+// 语义与 Windows 版一致：仅杀监听该端口的进程，绝不误杀自身。
+function killPortUnix(port) {
+  let pids = []
+  try {
+    const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+    pids = String(out.stdout || '').split(/\r?\n/).filter(Boolean)
+  } catch (_) { pids = [] }
+  if (!pids.length) {
+    try {
+      // ss 无 -p 权限时拿不到 PID，尽力而为：解析 users:(("name",pid=N
+      const out = spawnSync('ss', ['-ltnp'], { encoding: 'utf8' })
+      for (const line of String(out.stdout || '').split(/\r?\n/)) {
+        if (!line.includes(`:${port} `)) continue
+        for (const m of String(line).matchAll(/pid=(\d+)/g)) pids.push(m[1])
+      }
+    } catch (_) { /* 静默 */ }
+  }
+  for (const pid of pids) {
+    if (Number(pid) === process.pid) continue
+    try { process.kill(Number(pid), 'SIGKILL') } catch (_) {}
+  }
+}
+
 // 强杀指定 PID 的整个进程树（含子进程），根治 Windows 下 detached 子进程被 SIGTERM 无效而残留。
-// /F 强制 /T 连同子进程树 /PID 指定根。PID 无效时 taskkill 报错，静默忽略不阻断退出。
+// Windows：taskkill /F /T /PID；Unix（T01546）：sidecar 以 detached 启动自成进程组，
+// kill(-pid) 整组回收，组已不存在/无权限则退回单进程 SIGKILL。PID 无效时静默忽略不阻断退出。
 function killTreePid(pid) {
   if (!pid) return
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' })
+    } catch (_) {}
+    return
+  }
   try {
-    spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' })
-  } catch (_) {}
+    process.kill(-pid, 'SIGKILL')
+  } catch (_) {
+    try { process.kill(pid, 'SIGKILL') } catch (_) {}
+  }
 }
 
 // 关闭时确定性清理会话内缓存：
@@ -171,29 +205,33 @@ function cleanupCachesOnExit() {
 }
 
 // ---------- 资源定位 ----------
+// T01546 跨平台：Windows 用 javaw.exe（无控制台），linux/macOS 用 jre/bin/java
+// （macOS 归档 Contents/Home/* 已由 CI 拍平到 jre/ 下，路径与 linux 同构）。
 function findJava() {
+  const exe = process.platform === 'win32' ? 'javaw.exe' : 'java'
   const base = path.join(ROOT, 'bempdiff')
-  const jre = path.join(base, 'dist_input', 'jre', 'bin', 'javaw.exe')
+  const jre = path.join(base, 'dist_input', 'jre', 'bin', exe)
   if (fs.existsSync(jre)) return jre
   const tc = path.join(base, 'toolchain')
   if (fs.existsSync(tc)) {
     for (const d of fs.readdirSync(tc)) {
       if (d.startsWith('zulu21')) {
-        const p = path.join(tc, d, 'bin', 'javaw.exe')
+        const p = path.join(tc, d, 'bin', exe)
         if (fs.existsSync(p)) return p
       }
     }
   }
-  return 'javaw' // 退回 PATH
+  return exe // 退回 PATH
 }
 
 function findJavac() {
+  const exe = process.platform === 'win32' ? 'javac.exe' : 'javac'
   const base = path.join(ROOT, 'bempdiff')
   const tc = path.join(base, 'toolchain')
   if (fs.existsSync(tc)) {
     for (const d of fs.readdirSync(tc)) {
       if (d.startsWith('zulu21')) {
-        const p = path.join(tc, d, 'bin', 'javac.exe')
+        const p = path.join(tc, d, 'bin', exe)
         if (fs.existsSync(p)) return p
       }
     }
@@ -327,21 +365,31 @@ async function startFrontend() {
   else if (frontend === 'auto') {
     // 仅当存在 node 且 webui 依赖已安装时才走 vite dev
     try {
-      spawnSync('where', ['node'], { stdio: 'ignore' })
+      spawnSync(process.platform === 'win32' ? 'where' : 'which', ['node'], { stdio: 'ignore' })
       useVite = fs.existsSync(path.join(ROOT, 'bempdiff', 'webui', 'node_modules'))
     } catch (_) { useVite = false }
   }
   if (!useVite) return false
   const out = openLog(VITE_LOG)
-  const child = spawn('cmd.exe',
-    ['/c', `cd /d bempdiff\\webui && npm run dev -- --port ${DEV_PORT} --host 127.0.0.1`],
-    {
-      cwd: ROOT,
-      windowsHide: true,
-      detached: true,
-      stdio: ['ignore', out, out],
-      env: process.env
-    })
+  // Windows 经 cmd.exe；unix（T01546）经 sh -c，命令语义一致（进 webui 起 vite dev）
+  const child = process.platform === 'win32'
+    ? spawn('cmd.exe',
+      ['/c', `cd /d bempdiff\\webui && npm run dev -- --port ${DEV_PORT} --host 127.0.0.1`],
+      {
+        cwd: ROOT,
+        windowsHide: true,
+        detached: true,
+        stdio: ['ignore', out, out],
+        env: process.env
+      })
+    : spawn('sh',
+      ['-c', `cd bempdiff/webui && npm run dev -- --port ${DEV_PORT} --host 127.0.0.1`],
+      {
+        cwd: ROOT,
+        detached: true,
+        stdio: ['ignore', out, out],
+        env: process.env
+      })
   children.push(child)
   appendLog(VITE_LOG, '[sidecar] vite started PID', child.pid)
   return true
