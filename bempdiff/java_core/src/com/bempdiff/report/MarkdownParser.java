@@ -241,7 +241,7 @@ public final class MarkdownParser {
     private static void accumulateListItem(Block b, String raw, String t) {
         if (isListItem(t)) {
             int indent = leadingSpaces(raw);
-            boolean ord = t.matches("^\\d+\\.\\s+.*");
+            boolean ord = t.matches("^\\d+\\.\\s+.*"); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
             String content = ord
                     ? t.replaceFirst("^\\d+\\.\\s+", "")
                     : t.replaceFirst("^[-*]\\s+", "");
@@ -437,7 +437,7 @@ public final class MarkdownParser {
     }
 
     private static boolean isListItem(String t) {
-        return t.matches("^[-*]\\s+.*") || t.matches("^\\d+\\.\\s+.*");
+        return t.matches("^[-*]\\s+.*") || t.matches("^\\d+\\.\\s+.*"); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
     }
 
     /** 缩进的非列表、非空行，视为上一列表项的续行。 */

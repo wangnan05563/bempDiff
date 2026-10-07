@@ -27,10 +27,10 @@ public final class PackageVersion {
 
     /** 点分式版本（可带 v 前缀与 -SNAPSHOT 等后缀），匹配到即优先采用。 */
     private static final Pattern DOTTED =
-            Pattern.compile("[Vv]?(\\d+(?:\\.\\d+)*+(?:[-_][A-Za-z0-9]+)?)$");
+            Pattern.compile("[Vv]?(\\d+(?:\\.\\d+)*+(?:[-_][A-Za-z0-9]+)?)$"); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
 
     /** 构建号/时间戳式尾段：字母前缀 + 数字 + 字母数字混排 + 可选括号时间戳 + 可选 - 数字。 */
-    private static final Pattern BUILD_TAIL = Pattern.compile(
+    private static final Pattern BUILD_TAIL = Pattern.compile( // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
             "([A-Za-z]*\\d{2,}[A-Za-z]*\\d*(?:\\([^()]*\\))?(?:[-_][A-Za-z0-9]+)?)$");
 
     /** 版本尾段合法字符集（用于「形似版本」判定）。 */
@@ -172,7 +172,9 @@ public final class PackageVersion {
     /** 尾段是否形似版本：含数字且只由 数字/字母/括号/._- 组成。 */
     static boolean looksVersionTail(String t) {
         if (t == null || t.isEmpty()) return false;
-        return t.matches(".*\\d.*") && t.matches(VERSION_TAIL_CHARS);
+        // 复核（java:S5852 热点）：原 t.matches(".*\\d.*") 为全串扫描式正则，改用字符级 anyMatch，
+        // 语义等价且无回溯成本。
+        return t.chars().anyMatch(Character::isDigit) && t.matches(VERSION_TAIL_CHARS);
     }
 
     /** 按「数字段 / 非数字段」交替切分（用于逐段比较）。 */

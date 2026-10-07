@@ -954,7 +954,7 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
     /** 检查是否为链路本地地址或云元数据端点（169.254.0.0/16，含 169.254.169.254）。 */
     private static boolean isLinkLocalOrMetadata(String host) {
         String h = host.toLowerCase();
-        return h.equals("169.254.169.254") || h.startsWith("169.254.");
+        return h.equals("169.254.169.254") || h.startsWith("169.254."); // NOSONAR java:S1313 — 复核通过：该地址为 SSRF 防护黑名单元素（云元数据 169.254.169.254），显式拒绝而非访问目标
     }
 
     /** 检查 IPv4 是否属于私网/回环范围（127/8、0/8、10/8、192.168/16、172.16/12）。 */

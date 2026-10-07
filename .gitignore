@@ -171,3 +171,9 @@ __pycache__/
 !bempdiff/verify_exe/
 !bempdiff/verify_exe/**
 .workbuddy/
+
+# JaCoCo 运行产物（T01549）：exec/xml 由 run_coverage.ps1 再生，不入库；jar 与脚本入库
+!tooling/quality/jacoco/*.jar
+!tooling/quality/jacoco/*.ps1
+tooling/quality/jacoco/jacoco.exec
+tooling/quality/jacoco/jacoco.xml

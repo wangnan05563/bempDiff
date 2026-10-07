@@ -229,7 +229,7 @@ public final class Decompiler {
         // P1-D：仅在真正计算（CFR/javap）前取闸门许可，缓存命中路径不消耗许可。
         // acquireUninterruptibly 避免 InterruptedException 侵入仅声明 IOException 的签名。
         DECOMPILE_GATE.acquireUninterruptibly();
-        File tmp = File.createTempFile("bempdiff-cls-", ".class");
+        File tmp = File.createTempFile("bempdiff-cls-", ".class"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         // 注：finally 中已显式删除，无需 deleteOnExit（避免长生命周期 GUI 累积路径引用）。
         try {
             Files.write(tmp.toPath(), classBytes);

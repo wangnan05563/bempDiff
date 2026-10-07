@@ -32,7 +32,7 @@ public final class ShortHash {
     public static String ofBytes(byte[] data) {
         if (data == null || data.length == 0) return EMPTY;
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            MessageDigest md = MessageDigest.getInstance("SHA-1"); // NOSONAR java:S4790 — 复核：SHA-1 仅用于 7 位展示短哈希（git --short=7 风格徽标），非安全/完整性场景，无抗碰撞诉求
             byte[] d = md.digest(data);
             // 4 字节 → 8 hex → 取前 7。SHA-1 头 4 字节已有 ~2^32 种取值，碰撞概率与 git --short=7 一致
             StringBuilder sb = new StringBuilder(LEN);

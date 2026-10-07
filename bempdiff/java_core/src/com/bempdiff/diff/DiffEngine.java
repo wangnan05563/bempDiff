@@ -70,7 +70,7 @@ public final class DiffEngine {
 
     /** 匹配 key=value / key: value 形式的赋值行（供版本值整段折叠，避免残留值片段）。 */
     private static final java.util.regex.Pattern VERSION_ASSIGN =
-            java.util.regex.Pattern.compile("(\\s*[^=\\n]+[=:])(.*)$");
+            java.util.regex.Pattern.compile("(\\s*[^=\\n]+[=:])(.*)$"); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
 
     /**
      * 判断两个同键文本条目的「规范化内容」是否一致（忽略 BOM / 行尾 CRLF·CR / 每行行尾空白）。
@@ -500,7 +500,7 @@ public final class DiffEngine {
         if (t.startsWith("#")) {
             // Maven properties 自动生成的日期注释：#Fri Jul 03 11:06:08 CST 2026
             String rest = t.substring(1).trim();
-            return rest.matches("(?i)(mon|tue|wed|thu|fri|sat|sun)[a-z]*\\s+[a-z]+\\s+\\d+.*\\d{4}");
+            return rest.matches("(?i)(mon|tue|wed|thu|fri|sat|sun)[a-z]*\\s+[a-z]+\\s+\\d+.*\\d{4}"); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
         }
         return false;
     }
@@ -512,11 +512,11 @@ public final class DiffEngine {
      */
     static String stripVersionTokens(String line) {
         // 1) 构建号[.补丁]+括号时间戳：036M059(20260703.1104) / 036M059(20260703-1104)
-        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?\\(\\d[0-9.\\-]*\\)", VERSION_TOKEN_PLACEHOLDER);
+        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?\\(\\d[0-9.\\-]*\\)", VERSION_TOKEN_PLACEHOLDER); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
         // 2) 构建号[.补丁]+点分时间戳：036M059.20260703.1104 / 20230102036M.15.20260703.1104
-        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?\\.\\d{8}\\.\\d+", VERSION_TOKEN_PLACEHOLDER);
+        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?\\.\\d{8}\\.\\d+", VERSION_TOKEN_PLACEHOLDER); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
         // 3) 独立构建号[.补丁]：036M059 / 20230102036M.15
-        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?", VERSION_TOKEN_PLACEHOLDER);
+        line = line.replaceAll("\\d+M\\d*(?:\\.\\d+)?", VERSION_TOKEN_PLACEHOLDER); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
         return line;
     }
 

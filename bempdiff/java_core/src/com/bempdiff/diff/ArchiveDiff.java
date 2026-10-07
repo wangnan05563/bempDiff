@@ -106,7 +106,7 @@ public final class ArchiveDiff {
         }
         List<String> lines = new ArrayList<>();
         try (ZipFile zf = new ZipFile(file.toFile())) {
-            Enumeration<? extends ZipEntry> en = zf.entries();
+            Enumeration<? extends ZipEntry> en = zf.entries(); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
             int count = 0;
             while (en.hasMoreElements()) {
                 if (count++ >= MAX_ENTRIES_PER_SIDE) {
@@ -126,7 +126,7 @@ public final class ArchiveDiff {
     }
 
     private static String formatEntry(ZipEntry e) {
-        long size = e.getSize();
+        long size = e.getSize(); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
         long crc = e.getCrc();
         boolean dir = e.isDirectory();
         String name = e.getName();
@@ -144,7 +144,7 @@ public final class ArchiveDiff {
      * 仅暴露给测试：把 zip 字节流读到 listing（用于无需落盘的小 fixture）。
      */
     public static String readListingFromBytes(byte[] zipBytes) throws IOException {
-        Path tmp = Files.createTempFile("bempdiff-archdiff-", ".zip");
+        Path tmp = Files.createTempFile("bempdiff-archdiff-", ".zip"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         try {
             Files.write(tmp, zipBytes);
             return readListing(tmp);

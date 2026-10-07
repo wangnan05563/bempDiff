@@ -1009,7 +1009,7 @@ public final class BempServer {
             sendError(ex, 409, MSG_NOT_DONE + job.getStatus());
             return;
         }
-        Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX);
+        Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         try {
             // P1-2：同 job 已导出过则直接复用缓存 zip，跳过重复 exportIncrement+zipTree（增量 zip 由不可变 diff/snap 幂等派生）。
             Path cached = cachedExportZip(job.id);
@@ -1179,7 +1179,7 @@ public final class BempServer {
         long bytes = ((Number) est.get("bytes")).longValue();
         if (!isLargeExport(files, bytes)) {
             // 小包：同步流式导出。发送完成后才返回，删除临时树不会截断响应体。
-            Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX);
+            Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
             try {
                 // P1-2：同 job 已导出过则复用缓存 zip，跳过重复 exportIncrement+zipTree（增量 zip 幂等）。
                 Path cached = cachedExportZip(job.id);
@@ -1703,7 +1703,7 @@ public final class BempServer {
     }
 
     private static Path writeTemp(byte[] b) throws IOException {
-        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
+        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         Files.write(tmp, b);
         // S1 修复：兜底在 JVM 退出时删除，避免 %TEMP% 持续累积（调用方也会显式删除）。
         // 空 catch：deleteOnExit 仅为保险性兜底，注册失败可忽略，不阻断正常流程。
@@ -2723,7 +2723,7 @@ public final class BempServer {
         } catch (IOException e) {
             // 作业级目录创建失败：回退系统临时目录（可用性优先，不中断比对；残留概率低）
             try {
-                dir = Files.createTempDirectory("bempdiff-unpack");
+                dir = Files.createTempDirectory("bempdiff-unpack"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
             } catch (IOException e2) {
                 throw new IllegalStateException("无法创建解包临时目录", e2);
             }

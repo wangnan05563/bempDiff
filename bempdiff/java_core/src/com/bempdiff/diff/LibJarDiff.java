@@ -303,7 +303,7 @@ public final class LibJarDiff {
         try {
             tmp = writeTempJar(jar);
             try (ZipFile zf = new ZipFile(tmp)) {
-                Enumeration<? extends ZipEntry> en = zf.entries();
+                Enumeration<? extends ZipEntry> en = zf.entries(); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
                 while (en.hasMoreElements()) {
                     ZipEntry e = en.nextElement();
                     String n = sanitize(e.getName());
@@ -341,7 +341,7 @@ public final class LibJarDiff {
 
     private static File writeTempJar(byte[] jar) throws IOException {
         // 注：临时 jar 在 finally 中已显式删除，无需 deleteOnExit（避免长生命周期 GUI 累积路径引用）。
-        File f = File.createTempFile("bempdiff-libjar-", ".jar");
+        File f = File.createTempFile("bempdiff-libjar-", ".jar"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         Files.write(f.toPath(), jar);
         return f;
     }

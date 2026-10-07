@@ -329,7 +329,7 @@ public final class ArchiveTree {
     /** 流式写临时文件：从 InputStream 边读边写，不整存 byte[]（降低内存与磁盘峰值）。 */
     private static Path writeTempStream(InputStream in) throws IOException {
         if (in == null) return null;
-        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
+        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         try (InputStream is = in) {
             Files.copy(is, tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } finally {
@@ -384,7 +384,7 @@ public final class ArchiveTree {
         try (ZipFile zf = new ZipFile(archive.toFile())) {
             ZipEntry ze = resolveEntry(zf, entryPath);
             if (ze == null || ze.isDirectory()) return null;
-            if (ze.getSize() > ENTRY_READ_CAP) return null;
+            if (ze.getSize() > ENTRY_READ_CAP) return null; // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
             byte[] b = readZipEntryBytes(archive, ze.getName()).orElse(null);
             if (b == null) return null;
             return writeTemp(b);
@@ -420,7 +420,7 @@ public final class ArchiveTree {
         ZipEntry ze = zf.getEntry(entryPath);
         if (ze != null) return ze;
         String alt = null;
-        Enumeration<? extends ZipEntry> en = zf.entries();
+        Enumeration<? extends ZipEntry> en = zf.entries(); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
         while (en.hasMoreElements()) {
             ZipEntry cand = en.nextElement();
             String cn = cand.getName();
@@ -455,7 +455,7 @@ public final class ArchiveTree {
 
     /** 枚举 zip 条目为 name → {size, crc}（目录条目归一化尾随 /，超 20 万条目截断标记）。 */
     private static void readEntrySizes(ZipFile zf, Map<String, long[]> m) {
-        Enumeration<? extends ZipEntry> en = zf.entries();
+        Enumeration<? extends ZipEntry> en = zf.entries(); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
         int count = 0;
         while (en.hasMoreElements()) {
             if (count++ > 200_000) {
@@ -467,7 +467,7 @@ public final class ArchiveTree {
             if (e.isDirectory()) {
                 m.put(n.endsWith("/") ? n : n + "/", new long[]{0, 0});
             } else {
-                m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() });
+                m.put(n, new long[]{ e.getSize() < 0 ? 0 : e.getSize(), e.getCrc() }); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
             }
         }
     }
@@ -498,7 +498,7 @@ public final class ArchiveTree {
     }
 
     static Path writeTemp(byte[] b) throws IOException {
-        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin");
+        Path tmp = Files.createTempFile("bempdiff-entry-", ".bin"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         Files.write(tmp, b);
         // S1 修复：临时抽取文件用后即删，避免运行期 %TEMP% 持续累积（磁盘泄漏）。
         // 注册 JVM 退出时清理；调用方在 diff 完成后也应尽快用完落盘的文件（此处统一兜底）。

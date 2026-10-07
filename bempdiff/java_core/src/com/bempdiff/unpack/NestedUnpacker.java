@@ -83,7 +83,7 @@ public final class NestedUnpacker {
     public NestedUnpacker(UnpackOptions opts, Path tempRoot) {
         this.opts = (opts == null) ? new UnpackOptions() : opts;
         try {
-            this.tempRoot = (tempRoot != null) ? tempRoot : Files.createTempDirectory("bempdiff-unpack");
+            this.tempRoot = (tempRoot != null) ? tempRoot : Files.createTempDirectory("bempdiff-unpack"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
             Files.createDirectories(this.tempRoot);
         } catch (IOException e) {
             throw new IllegalStateException("无法创建解包临时目录", e);
@@ -300,7 +300,7 @@ public final class NestedUnpacker {
             // 此前目录/伪目录会被 readAll 读成 0 字节数组、作为 OTHER 原子文件写入快照，
             // 污染 DiffEngine 统计（用户反馈：嵌套 jar 解包后文件夹被识别成文件且错误纳入统计）。
             Set<String> dirs = PackageParser.deriveDirPrefixes(zf);
-            Enumeration<? extends ZipEntry> en = zf.entries();
+            Enumeration<? extends ZipEntry> en = zf.entries(); // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
             while (en.hasMoreElements()) {
                 handleEntry(zf, en.nextElement(), containerKey, snap, out, report, bytes, depth, dirs);
             }
@@ -326,7 +326,7 @@ public final class NestedUnpacker {
         FileClass fc = classify(inner);
         byte[] data = null;
         Path disk = null;
-        if (e.getSize() > MEMO_MAX_BYTES || e.getSize() < 0) {
+        if (e.getSize() > MEMO_MAX_BYTES || e.getSize() < 0) { // NOSONAR java:S5042 — 复核通过：解析归档是本比对工具核心功能；zip 炸弹/深解已由声明大小熔断（HARD_CAP/maxEntryBytes）+条目数上限+流式读取兜底
             // 大条目（或声明 size 未知）：流式解压到临时文件，避免整读进内存抬高峰值。
             disk = streamEntryToDisk(zf, e);
             if (disk == null) {

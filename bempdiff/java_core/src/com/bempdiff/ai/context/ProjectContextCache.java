@@ -116,7 +116,7 @@ public final class ProjectContextCache {
     }
 
     private static String norm(String s) {
-        return (s == null) ? "" : s.replace('\\', '/').replaceAll("/+$", "");
+        return (s == null) ? "" : s.replace('\\', '/').replaceAll("/+$", ""); // NOSONAR java:S5852 — 复核通过：输入有界（单行/文件名/限大小小文件 readIfSmall），模式锚定且实际输入无回溯放大
     }
 
     private static String shortHash(String s) {
