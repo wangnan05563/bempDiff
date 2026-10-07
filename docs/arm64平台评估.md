@@ -94,15 +94,20 @@ jobs:
 | 打包前原子切换现役 JRE | ✅ `tooling/scripts/switch-jre.mjs` |
 | arm64 解包目录结构核对 | ✅ `BempDiff.exe` / `jre/bin/java.exe` / `javaw.exe` 三项 PE machine 均 `0xaa64` |
 | arm64 NSIS 安装包 | ✅ 113.5MB + blockmap，包内压缩流提取校验同为 `0xaa64` |
-| CI 启动实测流水线 | ✅ `.github/workflows/build-arm64.yml`（`runs-on: windows-11-arm`） |
+| CI 启动实测流水线 | ✅ `.github/workflows/build-arm64.yml`（`runs-on: windows-11-arm`），Run#3 全 14 步通过 |
 
 **关键设计**：`extraResources` 固定指向 `dist_input/jre`、主进程硬编码 `jre/bin/javaw.exe` → 「换现役 JRE」对壳完全透明、**对 x64 产线零影响**，无需改配置结构或主进程代码。
 
-### 5.2 唯一未完成项
+### 5.2 启动实测已通过（2026-10-07，GitHub Actions Run#3，commit `b1b10c8`）
 
-**arm64 产物启动实测**——需原生 ARM64 机器。GitHub `windows-11-arm` runner **已 GA**（本文档原标注的「实验性」已过时），流水线已就绪，触发即跑：安装 → 启动 → 校验 sidecar 18765 监听 → 定向关停。
+在原生 `windows-11-arm` runner（`RUNNER_ARCH=ARM64` 自证通过）完成全链实测：
 
-不给出「已验证可运行」结论的原因：本机 x64 Windows 无法执行 ARM64 二进制，运行态验证必须由目标架构机器完成。
+- 安装包 `BempDiff-0.1.2026093001-arm64-setup.exe`（184.4MB）；
+- 包内压缩流（NSIS `3.7z` 载荷）提取深校：`BempDiff.exe` / `java.exe` PE machine 均 `0xaa64`；
+- 静默安装后落盘 `jre/bin/javaw.exe` = `0xaa64`；
+- **启动实测：BempDiff 进程 40s 存活（PID=3280），sidecar 监听 18765（PID=6404）**，定向关停干净。
+
+注：Run#1/#2 暴露并修复了两处产线级问题——① `cfr.jar`+POI lib 从未入库（fresh clone 不可构建）；② `-SkipJava` 将「跳过编译」与「跳过 jlink」捆绑致 CI 无法表达「编译但保 JRE」，新增 `-SkipJre`。运行态结论口径：进程存活 + sidecar 就绪 = 可运行；GUI 界面交互未覆盖（无头 runner），如需完整验收请在 arm64 真机装 Run#3 的 artifact 人工点验。
 
 ### 5.3 沙箱打包的两处反直觉结论
 
