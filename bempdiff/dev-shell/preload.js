@@ -7,7 +7,20 @@
 
 const { contextBridge, ipcRenderer } = require('electron')
 
+// 当前产品版本（安装包版本）：沙箱 preload 拿不到 process.env，故在主进程注册 handler 后
+// 同步取一次常量。前端据此把「当前版本」传给 /api/update/check——此前壳层未暴露版本号，
+// 前端只能回落内置 APP_VERSION('0.1.0')，导致最新版安装包也恒报「发现新版本」。
+function readAppVersion() {
+  try {
+    return String(ipcRenderer.sendSync('bempdiff:app-version') || '')
+  } catch (_) {
+    return ''
+  }
+}
+
 contextBridge.exposeInMainWorld('bempdiff', {
+  /** 安装包版本号（app.getVersion()）；浏览器模式下不存在该桥，前端自行回落。 */
+  appVersion: readAppVersion(),
   /**
    * 调主进程 dialog.showOpenDialog 选择文件或文件夹。
    * @param {{directory?: boolean, multiple?: boolean}} [opts]

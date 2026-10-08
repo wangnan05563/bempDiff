@@ -645,6 +645,11 @@ ipcMain.handle('bempdiff:show-in-folder', async (_event, p) => {
   }
 })
 
+// ---------- 当前产品版本（preload 同步取常量 → window.bempdiff.appVersion） ----------
+// 打包后 app.getVersion() 读的是 asar 内 package.json 版本，即安装包版本；
+// 前端「关于/更新检查」据此上报 current，避免回落内置常量导致恒报「发现新版本」。
+ipcMain.on('bempdiff:app-version', (event) => { event.returnValue = app.getVersion() })
+
 // ---------- 版本更新：一键下载更新包并触发安装（来自 About「立即更新」） ----------
 // 前端只传 GitHub Release 的 .exe 资产下载 URL；主进程下载到系统下载目录（Downloads），
 // 完成后 shell.openPath 启动安装器。仅接受 https formpage 的 URL（防注入任意协议/路径）。
