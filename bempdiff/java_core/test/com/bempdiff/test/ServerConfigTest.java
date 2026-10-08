@@ -70,6 +70,37 @@ public final class ServerConfigTest {
         Files.deleteIfExists(f);
     }
 
+    /**
+     * 「勾选记住 + PUT 空 aiApiKey」必须保留磁盘密钥。
+     * 该语义原先只由 applyAiFields 忽略空串隐式保证（见 T01615），此处显式固化：
+     * 前端未改动密钥时 PUT 里带的是空串，绝不能把已落盘的密钥清掉。
+     */
+    public void testPersistOnWithEmptyKeyKeepsDiskApiKeyLine() throws Exception {
+        Path f = tempFile();
+        ServerConfig a = new ServerConfig(f);
+        Map<String, Object> on = new LinkedHashMap<>();
+        on.put("aiProvider", "openai");
+        on.put("aiApiKey", "sk-keep-me-456");
+        on.put("persistApiKey", true);
+        a.updateFrom(on);
+
+        ServerConfig b = new ServerConfig(f);
+        Map<String, Object> emptyPut = new LinkedHashMap<>();
+        emptyPut.put("aiApiKey", "");
+        emptyPut.put("persistApiKey", true);
+        b.updateFrom(emptyPut);
+
+        ServerConfig c = new ServerConfig(f); // 再重启，验证落盘内容
+        Map<String, Object> j = c.toJson();
+        if (!Boolean.TRUE.equals(j.get("hasApiKey"))) throw new AssertionError("PUT 空密钥后磁盘密钥被误删");
+        if (!"sk-keep-me-456".equals(j.get("aiApiKey")))
+            throw new AssertionError("PUT 空密钥改写了磁盘密钥值: " + j.get("aiApiKey"));
+        String raw = Files.readString(f);
+        if (!raw.contains("aiApiKey=sk-keep-me-456"))
+            throw new AssertionError("properties 中 aiApiKey 行丢失:\n" + raw);
+        Files.deleteIfExists(f);
+    }
+
     /** 「记住 API Key」开启时，GET(toJson) 应回显明文 key 供 UI 返显；关闭时仅给 hasApiKey 标记。 */
     public void testToJsonEchoesApiKeyOnlyWhenPersistOn() throws Exception {
         Path f = tempFile();

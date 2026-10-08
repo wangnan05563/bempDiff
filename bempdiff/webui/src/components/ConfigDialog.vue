@@ -142,6 +142,34 @@ const apiKeyState = computed(() => {
 const apiKeyPlaceholder = computed(() =>
   serverHasKey.value && !form.aiApiKey ? t('cfg.apiKey.covered.placeholder') : t('cfg.apiKey.placeholder'))
 
+// ---- 密钥清除的不可逆性守卫（T01615）----
+// ServerConfig.toProperties() 全量重建 properties，仅在 persistApiKey && 密钥非空时写 aiApiKey 行，
+// 所以「取消勾选记住 + 保存」= 删除磁盘密钥；而默认安全模式 GET 从不回显明文，删完既看不见也找不回。
+// 这里把该隐式语义改为显式：保存前二次确认 + 提供「清除已保存密钥」入口 + 状态行长驻提示。
+const savedKeyOnDisk = computed(() => !!(state.config && state.config.hasApiKey && state.config.persistApiKey === true))
+const explicitClear = ref(false)
+const clearKeyPending = ref(false)
+const wipeRisk = computed(() => form.persistApiKey === false && (savedKeyOnDisk.value || explicitClear.value))
+// 绿条 toast 会被后续提示覆盖，故同一后果在状态行长驻一份（空框 + 勾选记住 = 本次什么都不写）
+const apiKeyNoWriteHint = computed(() => {
+  if (wipeRisk.value) return t('cfg.apiKey.state.willWipe')
+  if (!form.aiApiKey && form.persistApiKey === true && !serverHasKey.value) return t('cfg.apiKey.warn.emptyPersist')
+  return ''
+})
+watch(() => form.persistApiKey, (v) => { if (v !== false) { clearKeyPending.value = false; explicitClear.value = false } })
+
+function onClearKey() {
+  form.aiApiKey = ''
+  form.persistApiKey = false
+  explicitClear.value = true
+  clearKeyPending.value = true
+}
+function cancelClearKey() {
+  clearKeyPending.value = false
+  explicitClear.value = false
+  form.persistApiKey = true
+}
+
 let prevProviderKey = null
 watch(() => props.visible, (v) => {
   if (v) {
@@ -154,6 +182,8 @@ watch(() => props.visible, (v) => {
     if (draft && draft.aiApiKey === '' && form.aiApiKey) delete draft.aiApiKey
     if (draft) Object.assign(form, draft)
     savedSnapshot = snapForm(form) // 记录本次打开的"初始已保存态"，供 close 判定是否需要写草稿
+    clearKeyPending.value = false
+    explicitClear.value = false
     prevProviderKey = form.aiProvider // 记录当前厂商，供首次切换时判断「是否未改过默认值」
     // 打开配置中心即查询上下文索引状态（读缓存秒回；让用户一眼看到「是否已生效」）
     if (form.projectContextEnabled && form.projectContextDir) loadContextStatus()
@@ -251,7 +281,15 @@ async function onSave() {
   // 勾了「记住」但框内密钥为空、且后端也没有密钥：本次 PUT 不会写入任何密钥，
   // 不能让「配置已保存」的绿条误导用户以为密钥已记住（T01567）。
   const emptyPersist = out.persistApiKey === true && !out.aiApiKey && !state.config?.hasApiKey
+  // 本次保存会删除后端持有的密钥且无法找回 → 先要求二次确认（T01615）
+  if (wipeRisk.value && !clearKeyPending.value) {
+    clearKeyPending.value = true
+    toast('warning', t('cfg.apiKey.state.willWipe'))
+    return
+  }
   await saveConfig(out)
+  clearKeyPending.value = false
+  explicitClear.value = false
   if (emptyPersist) toast('warning', t('cfg.apiKey.warn.emptyPersist'))
   // 保存成功：清除草稿（这些字段已落盘，无需再续录），并刷新"已保存态"快照，
   // 使随后 close() 能正确判定"本次已保存、无未保存修改"。
@@ -390,11 +428,20 @@ function pickImportFile(ev) {
                 <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" :aria-label="t('cfg.test.hint')" :title="t('cfg.test.hint')">
                   <i class="bi bi-plug"></i> {{ testing ? t('cfg.testing') : t('cfg.test') }}
                 </button>
+                <button v-if="serverHasKey" class="btn btn-outline-danger" type="button" data-testid="clear-key-btn"
+                        @click="onClearKey" :aria-label="t('cfg.apiKey.clear')" :title="t('cfg.apiKey.clear.hint')">
+                  <i class="bi bi-trash"></i> {{ t('cfg.apiKey.clear') }}
+                </button>
               </div>
             </div>
-            <div v-if="apiKeyState" class="row g-2 mb-2">
+            <div v-if="apiKeyState" class="row g-2 mb-1">
               <div class="col-sm-9 offset-sm-3">
                 <small class="text-secondary" data-testid="apikey-state">{{ apiKeyState }}</small>
+              </div>
+            </div>
+            <div v-if="apiKeyNoWriteHint" class="row g-2 mb-2">
+              <div class="col-sm-9 offset-sm-3">
+                <small class="text-warning" data-testid="apikey-nowrite">{{ apiKeyNoWriteHint }}</small>
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
@@ -663,6 +710,16 @@ function pickImportFile(ev) {
           <!-- 关于：版本更新检查 + 手动更新指引 -->
           <div v-show="cfgTab==='about'" class="about-tab">
             <About />
+          </div>
+        </div>
+
+        <div v-if="clearKeyPending" class="alert alert-warning mx-4 mt-3 mb-0 py-2" role="alert" data-testid="clear-key-confirm">
+          <div class="d-flex align-items-center justify-content-between gap-3">
+            <small>{{ t('cfg.apiKey.confirm.wipe') }}</small>
+            <span class="d-flex gap-2 flex-shrink-0">
+              <button class="btn btn-danger btn-sm" data-testid="clear-key-ok" @click="onSave">{{ t('cfg.apiKey.confirm.ok') }}</button>
+              <button class="btn btn-outline-secondary btn-sm" data-testid="clear-key-cancel" @click="cancelClearKey">{{ t('common.cancel') }}</button>
+            </span>
           </div>
         </div>
 
