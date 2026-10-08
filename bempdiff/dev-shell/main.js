@@ -663,14 +663,30 @@ ipcMain.handle('bempdiff:download-install', async (_event, url) => {
     file = path.join(dlDir, path.basename(u.pathname) || 'BempDiff-update-setup.exe')
     tmp = file + '.download'
     await new Promise((resolve, reject) => {
-      https.get(url, { headers: { 'User-Agent': 'BempDiff-Updater' } }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return reject(new Error('下载失败 HTTP ' + res.statusCode)) }
-        // 跟随 GitHub 资产下载可能的跳转由 https.get 自动处理（默认跟随有限次重定向）
-        const ws = fs.createWriteStream(tmp)
-        res.pipe(ws)
-        ws.on('finish', () => { ws.close(); resolve() })
-        ws.on('error', reject)
-      }).on('error', reject)
+      // Node 的 https.get **不会**自动跟随重定向（与浏览器/curl 不同）；
+      // GitHub Release 的 browser_download_url（api.github.com 资产链接）必返
+      // 302 跳 objects.githubusercontent.com——不跟随即报「下载失败 HTTP 302」。
+      // 手动跟随：限 10 跳、每跳仅允许 https，防协议降级与重定向环。
+      const getFollowed = (target, hopsLeft) => {
+        https.get(target, { headers: { 'User-Agent': 'BempDiff-Updater' } }, (res) => {
+          const loc = res.headers.location
+          if (res.statusCode >= 300 && res.statusCode < 400 && loc) {
+            res.resume()
+            if (hopsLeft <= 0) { reject(new Error('下载重定向次数过多')); return }
+            let next
+            try { next = new URL(loc, target) } catch (_) { reject(new Error('非法下载重定向地址')); return }
+            if (next.protocol !== 'https:') { reject(new Error('下载重定向仅允许 HTTPS')); return }
+            getFollowed(next.toString(), hopsLeft - 1)
+            return
+          }
+          if (res.statusCode !== 200) { res.resume(); reject(new Error('下载失败 HTTP ' + res.statusCode)); return }
+          const ws = fs.createWriteStream(tmp)
+          res.pipe(ws)
+          ws.on('finish', () => { ws.close(); resolve() })
+          ws.on('error', reject)
+        }).on('error', reject)
+      }
+      getFollowed(url, 10)
     })
     // 原子落位：先写 .download 再改名，避免残留半包被误当安装包。
     fs.renameSync(tmp, file)
