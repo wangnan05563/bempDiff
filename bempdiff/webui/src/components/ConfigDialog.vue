@@ -27,7 +27,9 @@ function saveDraft(form) {
   const persist = form.persistApiKey === true
   const snap = {}
   for (const k of DRAFT_KEYS) {
-    if (k === 'aiApiKey' && !persist) continue
+    // 空密钥不写草稿：草稿的「空串」会把后端已持久化/已回显的真实 Key 覆盖成空白，
+    // 表现为「勾了记住、Key 也落盘了，但输入框看不到字符串」（T01567）。空值本就不需续录。
+    if (k === 'aiApiKey' && (!persist || !form[k])) continue
     if (form[k] !== undefined) snap[k] = form[k]
   }
   try { localStorage.setItem(DRAFT_KEY, JSON.stringify(snap)) } catch (_) { /* 存储满/禁用时静默放弃草稿 */ }
@@ -129,6 +131,17 @@ const form = reactive({})
 const showKey = ref(false)
 const testing = ref(false)
 
+// API Key 状态回显（T01567）：后端 GET 一直带 hasApiKey，但前端取了不用，
+// 于是空输入框无法区分「密钥已持久化/后端仍持有」与「真的没配」，用户以为持久化失败。
+const serverHasKey = computed(() => !!(state.config && state.config.hasApiKey))
+const apiKeyState = computed(() => {
+  if (form.aiApiKey) return ''
+  if (!serverHasKey.value) return t('cfg.apiKey.state.none')
+  return form.persistApiKey ? t('cfg.apiKey.state.persisted') : t('cfg.apiKey.state.memOnly')
+})
+const apiKeyPlaceholder = computed(() =>
+  serverHasKey.value && !form.aiApiKey ? t('cfg.apiKey.covered.placeholder') : t('cfg.apiKey.placeholder'))
+
 let prevProviderKey = null
 watch(() => props.visible, (v) => {
   if (v) {
@@ -136,6 +149,9 @@ watch(() => props.visible, (v) => {
     // 恢复未提交的输入（断点续录）。保存成功后 clearDraft，避免过期草稿误当未保存内容恢复。
     Object.assign(form, JSON.parse(JSON.stringify(state.config || {})))
     const draft = loadDraft()
+    // 空密钥草稿不得覆盖后端已持久化/已回显的 Key：历史草稿把 aiApiKey 存成 ''，
+    // 直接覆盖会让「已落盘的密钥」在输入框里显示为空（T01567 主诉）。
+    if (draft && draft.aiApiKey === '' && form.aiApiKey) delete draft.aiApiKey
     if (draft) Object.assign(form, draft)
     savedSnapshot = snapForm(form) // 记录本次打开的"初始已保存态"，供 close 判定是否需要写草稿
     prevProviderKey = form.aiProvider // 记录当前厂商，供首次切换时判断「是否未改过默认值」
@@ -232,7 +248,11 @@ async function onSave() {
   if (out.maxPromptTokens !== undefined && out.maxPromptTokens !== null && out.maxPromptTokens !== '') out.maxPromptTokens = Number(out.maxPromptTokens)
   if (out.maxOutputTokens !== undefined && out.maxOutputTokens !== null && out.maxOutputTokens !== '') out.maxOutputTokens = Number(out.maxOutputTokens)
   if (out.costGateWarnTokens !== undefined && out.costGateWarnTokens !== null && out.costGateWarnTokens !== '') out.costGateWarnTokens = Number(out.costGateWarnTokens)
+  // 勾了「记住」但框内密钥为空、且后端也没有密钥：本次 PUT 不会写入任何密钥，
+  // 不能让「配置已保存」的绿条误导用户以为密钥已记住（T01567）。
+  const emptyPersist = out.persistApiKey === true && !out.aiApiKey && !state.config?.hasApiKey
   await saveConfig(out)
+  if (emptyPersist) toast('warning', t('cfg.apiKey.warn.emptyPersist'))
   // 保存成功：清除草稿（这些字段已落盘，无需再续录），并刷新"已保存态"快照，
   // 使随后 close() 能正确判定"本次已保存、无未保存修改"。
   clearDraft()
@@ -363,13 +383,18 @@ function pickImportFile(ev) {
             <div class="row g-2 align-items-center mb-2">
               <label class="col-sm-3 col-form-label col-form-label-sm" :title="t('cfg.apiKey.hint')">API Key</label>
               <div class="col-sm-9 input-group input-group-sm">
-                <input class="form-control" :type="showKey ? 'text' : 'password'" v-model="form.aiApiKey" :placeholder="t('cfg.apiKey.placeholder')" :aria-label="t('cfg.apiKey.hint')" :title="t('cfg.apiKey.hint')">
+                <input class="form-control" :type="showKey ? 'text' : 'password'" v-model="form.aiApiKey" :placeholder="apiKeyPlaceholder" :aria-label="t('cfg.apiKey.hint')" :title="t('cfg.apiKey.hint')">
                 <button class="btn btn-outline-secondary" type="button" @click="showKey = !showKey" :aria-label="t('cfg.showKey')" :title="t('cfg.showKey')">
                   <i class="bi" :class="showKey ? 'bi-eye-slash' : 'bi-eye'"></i>
                 </button>
                 <button class="btn btn-outline-secondary" type="button" :disabled="testing" @click="onTest" :aria-label="t('cfg.test.hint')" :title="t('cfg.test.hint')">
                   <i class="bi bi-plug"></i> {{ testing ? t('cfg.testing') : t('cfg.test') }}
                 </button>
+              </div>
+            </div>
+            <div v-if="apiKeyState" class="row g-2 mb-2">
+              <div class="col-sm-9 offset-sm-3">
+                <small class="text-secondary" data-testid="apikey-state">{{ apiKeyState }}</small>
               </div>
             </div>
             <div class="row g-2 align-items-center mb-2">
