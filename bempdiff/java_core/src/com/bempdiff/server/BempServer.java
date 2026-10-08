@@ -429,13 +429,16 @@ public final class BempServer {
                 UnpackOptions uo = opts.toUnpackOptions();
                 // 解包临时目录改为作业级：.bempdiff/runtime/<jobId>/old|new，随作业被取代/淘汰整体回收。
                 Path jobRuntime = ensureJobRuntimeDir(job);
+                // 作业级 memo 预算：本作业两侧共用一份，与被 sweep 保留的回看作业互不挤兑，
+                // 修复「二次比对极慢」（旧全局单预算被上一作业吃满 → 全量原子退化为逐文件落盘）。
+                NestedUnpacker.MemoBudget memoBudget = new NestedUnpacker.MemoBudget();
                 job.markRunning(STAGE_UNPACKING, "正在逐层解包（旧侧）…", 33);
                 repOld = new UnpackReport(leftType);
-                oldSnap = new NestedUnpacker(uo, jobRuntime.resolve("old"))
+                oldSnap = new NestedUnpacker(uo, jobRuntime.resolve("old"), memoBudget)
                         .flatten(oldSnap, repOld, unpackProgress(job, "旧侧"));
                 job.markRunning(STAGE_UNPACKING, "正在逐层解包（新侧）…", 37);
                 repNew = new UnpackReport(leftType);
-                newSnap = new NestedUnpacker(uo, jobRuntime.resolve("new"))
+                newSnap = new NestedUnpacker(uo, jobRuntime.resolve("new"), memoBudget)
                         .flatten(newSnap, repNew, unpackProgress(job, "新侧"));
             }
             job.setUnpackReports(new UnpackReport[]{repOld, repNew});

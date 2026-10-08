@@ -67,9 +67,62 @@ public final class NestedUnpacker {
 
     /** 内存态原子单文件大小上限（字节）：超过则落盘，避免大文件驻留内存。 */
     private static final int MEMO_MAX_BYTES = 64 * 1024;
-    /** 全局内存态原子累计软上限：超过后后续小文件自动回退磁盘，保证 RAM 有界（防长会话累积）。 */
-    private static final long GLOBAL_MEMO_CAP = 256L * 1024 * 1024;
+    /**
+     * 作业级内存态原子预算上限（字节）：每个比对作业独享一份 {@link MemoBudget}（两侧解包器共用），
+     * 与历史作业的占用互不挤兑。修复「二次比对极慢」：旧实现全局 256MB 单计数 + sweep 保留最近
+     * 1 个作业（UI 回看），旧作业把预算吃满后新作业起步即饿死 → 全量原子退化为逐文件落盘。
+     */
+    public static final long JOB_MEMO_CAP = 256L * 1024 * 1024;
+    /**
+     * 全局内存态原子累计硬上限（安全网）：跨作业（含被保留的回看作业与并发作业）RAM 总量有界。
+     * 取 3× 作业预算：保留 1 个回看作业（≈1 份）+ 并发比对额度内的作业仍能正常入内存，
+     * 超出后自动回退磁盘，保证 RAM 有界（防长会话累积）。
+     */
+    private static final long GLOBAL_MEMO_CAP = 3L * 256L * 1024 * 1024;
     private static final AtomicLong globalMemoBytes = new AtomicLong();
+
+    /**
+     * 作业级内存态预算：一次比对作业（旧侧+新侧共享）的 memo 额度，随作业淘汰整体丢弃。
+     * <p>预扣采用 CAS：仅成功入内存才累加，超额拒绝时计数不变——修复旧全局计数
+     * 「先加后判、拒绝不回滚」造成幻影字节只增不减、一旦破 256MB 永久丧失 memo 的缺陷。</p>
+     */
+    public static final class MemoBudget {
+        private final AtomicLong used = new AtomicLong();
+        private final long cap;
+
+        /** 默认作业预算（{@link #JOB_MEMO_CAP}）。 */
+        public MemoBudget() { this(JOB_MEMO_CAP); }
+
+        /** 自定义上限预算（单测用小值验证预扣/回滚语义）。 */
+        public MemoBudget(long cap) { this.cap = cap; }
+
+        /** 预扣 n 字节：额度足够才累加并返回 true；不足返回 false 且计数不变。 */
+        public boolean tryReserve(long n) {
+            if (n <= 0) return false;
+            return reserve(used, n, cap);
+        }
+
+        /** 回滚一笔预扣（双层扣减中全局安全网拒绝时撤销作业预算）。 */
+        public void release(long n) {
+            if (n <= 0) return;
+            used.updateAndGet(cur -> Math.max(0L, cur - n));
+        }
+
+        /** 当前已用额度（单测/诊断用）。 */
+        public long used() { return used.get(); }
+    }
+
+    /**
+     * CAS 预扣原语：仅成功时累加，失败计数不变（无幻影膨胀）。
+     * 注意与旧 {@code addAndGet(n) <= cap} 的差异：后者拒绝时仍把 n 加进计数，永不回滚。
+     */
+    private static boolean reserve(AtomicLong counter, long n, long cap) {
+        while (true) {
+            long cur = counter.get();
+            if (cur + n > cap) return false;
+            if (counter.compareAndSet(cur, cur + n)) return true;
+        }
+    }
 
     /**
      * 是否把小文件原子装载到内存（省磁盘、减少落盘垃圾）。小文件且全局内存未超上限才返回 true；
@@ -77,10 +130,18 @@ public final class NestedUnpacker {
      */
     public static boolean tryMemoize(byte[] data) {
         if (data == null || data.length > MEMO_MAX_BYTES) return false;
-        return globalMemoBytes.addAndGet(data.length) <= GLOBAL_MEMO_CAP;
+        return reserve(globalMemoBytes, data.length, GLOBAL_MEMO_CAP);
     }
 
+    private final MemoBudget budget; // 可空：无作业预算时退化为仅全局安全网（兼容旧调用方/单测）
+
     public NestedUnpacker(UnpackOptions opts, Path tempRoot) {
+        this(opts, tempRoot, null);
+    }
+
+    /** 带作业级 memo 预算的构造：同一作业的两侧解包器应传入<b>同一个</b> {@link MemoBudget}。 */
+    public NestedUnpacker(UnpackOptions opts, Path tempRoot, MemoBudget budget) {
+        this.budget = budget;
         this.opts = (opts == null) ? new UnpackOptions() : opts;
         try {
             this.tempRoot = (tempRoot != null) ? tempRoot : Files.createTempDirectory("bempdiff-unpack"); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
@@ -139,6 +200,25 @@ public final class NestedUnpacker {
     /** 当前全局 memo 计数（单测/诊断用）。 */
     public static long globalMemoBytesNow() {
         return globalMemoBytes.get();
+    }
+
+    /** 全局 memo 安全网上限（单测/诊断用）。 */
+    public static long globalMemoCap() {
+        return GLOBAL_MEMO_CAP;
+    }
+
+    /**
+     * 入内存双层预扣：先占作业预算（若有），再占全局安全网；全局层拒绝时回滚作业预算，
+     * 保证任一层的计数在失败路径都不残留幻影字节。无预算构造（旧调用方/单测）退化为仅全局层。
+     */
+    private boolean memoize(byte[] data) {
+        if (data == null || data.length > MEMO_MAX_BYTES) return false;
+        if (budget != null && !budget.tryReserve(data.length)) return false;
+        if (!tryMemoize(data)) {
+            if (budget != null) budget.release(data.length);
+            return false;
+        }
+        return true;
     }
 
     /** 收集尚未展开的顶层容器键：ARCHIVE/JAR 且无 k+"/" 前缀条目（说明未被展开过）。 */
@@ -356,10 +436,10 @@ public final class NestedUnpacker {
         }
     }
 
-    /** 构造原子条目：小文件走内存，超全局上限（或磁盘落盘）自动回退磁盘读源。 */
+    /** 构造原子条目：小文件走内存，超作业预算/全局上限（或磁盘落盘）自动回退磁盘读源。 */
     private LogicalEntry atomic(String childKey, FileClass fc, byte[] data, Path disk) throws IOException {
         LogicalEntry le;
-        if (data != null && tryMemoize(data)) {
+        if (data != null && memoize(data)) {
             // 小文件走内存（不落盘）：避免大量小原子文件在磁盘累积；超全局上限自动回退磁盘。
             le = new LogicalEntry(childKey, (fc == FileClass.CLASS) ? Layer.L1 : Layer.L0,
                     fc, data.length, sha256(data), EntrySource.memoryBacked(data));

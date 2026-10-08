@@ -213,7 +213,7 @@ public final class JobStateTest {
     public void testReleaseMemory_deductsGlobalMemoAndIsIdempotent() {
         byte[] data = new byte[1024];
         long before = NestedUnpacker.globalMemoBytesNow();
-        NestedUnpacker.tryMemoize(data); // 全局计数 +=1024（addAndGet 恒加，与是否入内存无关）
+        NestedUnpacker.tryMemoize(data); // 成功路径：全局计数按实值累加 1024（CAS 预扣，拒绝路径不加分）
         Asserts.assertEquals("登记后全局 memo 增加 1024", before + 1024, NestedUnpacker.globalMemoBytesNow());
 
         LogicalEntry le = new LogicalEntry("a.txt", Layer.L0, FileClass.OTHER,

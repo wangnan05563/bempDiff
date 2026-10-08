@@ -82,6 +82,49 @@ public final class MemoryReleaseTest {
         empty.releaseMemory();
     }
 
+    /** 二次比对卡顿修复回归①：MemoBudget 拒绝时不膨胀（无幻影），额度内可恢复预扣。 */
+    public void testMemoBudgetRejectWithoutPhantom() {
+        NestedUnpacker.MemoBudget b = new NestedUnpacker.MemoBudget(1000);
+        Asserts.assertTrue("额度内预扣应成功", b.tryReserve(600));
+        Asserts.assertFalse("超额应拒绝", b.tryReserve(500));
+        Asserts.assertEquals("拒绝时额度不膨胀（幻影修复核心断言）", 600L, b.used());
+        Asserts.assertTrue("拒绝后剩余额度仍可预扣（证明未永久饿死）", b.tryReserve(400));
+        Asserts.assertEquals("额度占满", 1000L, b.used());
+        Asserts.assertFalse("无剩余额度应拒绝", b.tryReserve(1));
+        Asserts.assertFalse("非正数预扣返回 false", b.tryReserve(0));
+        b.release(400);
+        Asserts.assertEquals("回滚后额度回退", 600L, b.used());
+        b.release(-5);
+        b.release(0);
+        Asserts.assertEquals("非法回滚为空操作", 600L, b.used());
+    }
+
+    /**
+     * 二次比对卡顿修复回归②：全局计数拒绝路径不加幻影字节、释放后立即恢复可 memo 态。
+     * 旧实现 addAndGet 先加后判且拒绝不回滚，一旦破上限后续所有作业永久退化为逐文件落盘
+     * （现场表现：首次比对 3.6s/6s，二次起 40-90s 且永不恢复）。
+     */
+    public void testGlobalMemoRejectNoPhantomAndRecovers() {
+        final int chunk = 64 * 1024; // 单文件 memo 上限内的最大尺寸
+        final long cap = NestedUnpacker.globalMemoCap();
+        NestedUnpacker.releaseMemoized(NestedUnpacker.globalMemoBytesNow()); // 清零基线
+        byte[] data = new byte[chunk]; // 复用同一块数据：只做额度预扣，避免大内存分配
+        long n = 0;
+        while (NestedUnpacker.tryMemoize(data)) n++;
+        try {
+            Asserts.assertEquals("预扣至上限恰为满额", cap, NestedUnpacker.globalMemoBytesNow());
+            Asserts.assertEquals("成功预扣次数 = 上限/块大小", cap / chunk, n);
+            Asserts.assertFalse("超限预扣应被拒绝", NestedUnpacker.tryMemoize(data));
+            Asserts.assertEquals("拒绝时全局计数一分不涨（幻影回归）",
+                    cap, NestedUnpacker.globalMemoBytesNow());
+            NestedUnpacker.releaseMemoized(chunk); // 等价某作业快照被 sweep 释放
+            Asserts.assertTrue("释放一笔后立即恢复可入内存（旧实现破顶后永不恢复）",
+                    NestedUnpacker.tryMemoize(data));
+        } finally {
+            NestedUnpacker.releaseMemoized(NestedUnpacker.globalMemoBytesNow()); // 复位，抗污染后续用例
+        }
+    }
+
     /** T00427：LRU 容量逐出最旧、get 刷新访问序、超容量逐出「最久未访问」而非最新插入。 */
     public void testLruMapEviction() {
         LruMap<String, String> m = new LruMap<>(2);

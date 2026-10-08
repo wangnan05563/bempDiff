@@ -25,7 +25,7 @@ $classes = @('ParseTest','DiffTest','DecompileTest','AiTest','ReportTest','Expor
   'MainCliTest','MainReflectTest','MarkdownParserTest','LibJarDiffTest','FolderReportTest','MarkdownReportBranchTest',
   'JobStateTest','CompareOptionsRequestTest','UpdateCheckStubTest','NestedUnpackerBranchTest',
   'DecompilerBranchTest','OfficeTextDiffBranchTest','FrontendTextDiffBranchTest',
-  'MockAiAnalyzerTest') | ForEach-Object { "com.bempdiff.test.$_" }
+  'MemoryReleaseTest','MockAiAnalyzerTest') | ForEach-Object { "com.bempdiff.test.$_" }
 $cp = @(
   (Join-Path $root 'bempdiff\java_core\test_out'),
   (Join-Path $root 'bempdiff\java_core\out'),

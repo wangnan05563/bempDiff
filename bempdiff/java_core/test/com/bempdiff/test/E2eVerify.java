@@ -54,7 +54,9 @@ public final class E2eVerify {
         Files.createDirectories(base);
         Path tro = base.resolve("old");
         Path trn = base.resolve("new");
-        PackageSnapshot fo = new NestedUnpacker(uo, tro).flatten(os, new UnpackReport("old"), null);
+        // 与 BempServer 一致：本作业两侧共享一个作业级 memo 预算（修复二次比对饿死）
+        NestedUnpacker.MemoBudget memoBudget = new NestedUnpacker.MemoBudget();
+        PackageSnapshot fo = new NestedUnpacker(uo, tro, memoBudget).flatten(os, new UnpackReport("old"), null);
         String dumpE = System.getProperty("bempdiff.dumpOld", "");
         if (!dumpE.isEmpty()) {
             java.util.List<String> lines = fo.getEntries().keySet().stream().sorted()
@@ -65,7 +67,7 @@ public final class E2eVerify {
         }
         System.out.println("OLD 扁平化条目=" + fo.getEntries().size()
                 + "  含.war键=" + fo.getEntries().keySet().stream().filter(k -> k.contains(".war")).count());
-        PackageSnapshot fn = new NestedUnpacker(uo, trn.resolve("new")).flatten(ns, new UnpackReport("new"), null);
+        PackageSnapshot fn = new NestedUnpacker(uo, trn.resolve("new"), memoBudget).flatten(ns, new UnpackReport("new"), null);
         System.out.println("NEW 扁平化条目=" + fn.getEntries().size()
                 + "  含.war键=" + fn.getEntries().keySet().stream().filter(k -> k.contains(".war")).count());
 

@@ -193,6 +193,35 @@ public final class NestedUnpackerBranchTest {
         Asserts.assertEquals("回扣后计数还原", base, NestedUnpacker.globalMemoBytesNow());
     }
 
+    // ---------------- 作业级 memo 预算：耗尽后原子回退落盘（二次比对配套回归） ----------------
+
+    public void testMemoBudgetExhaustedFallsBackToDisk() throws Exception {
+        Map<String, byte[]> inner = new LinkedHashMap<>();
+        inner.put("data/a.txt", "aaaa".getBytes(StandardCharsets.UTF_8));
+        inner.put("data/b.txt", "bbbb".getBytes(StandardCharsets.UTF_8));
+        Map<String, byte[]> outer = new LinkedHashMap<>();
+        outer.put("b.jar", jar(inner));
+        PackageSnapshot snap = parseOuter(outer);
+
+        // 预算只够 1 个 4 字节原子：第 2 个小文件应回退磁盘而非拖垮整次解包
+        NestedUnpacker.MemoBudget budget = new NestedUnpacker.MemoBudget(4);
+        UnpackReport report = new UnpackReport("zip");
+        PackageSnapshot flat = new NestedUnpacker(new UnpackOptions(),
+                Files.createTempDirectory("nu-budget"), budget).flatten(snap, report);
+
+        LogicalEntry a = flat.getEntries().get("b.jar/data/a.txt");
+        LogicalEntry b = flat.getEntries().get("b.jar/data/b.txt");
+        Asserts.assertNotNull("预算耗尽后原子 a 仍正常展开", a);
+        Asserts.assertNotNull("预算耗尽后原子 b 仍正常展开", b);
+        int memCount = (a.getSrc().isMemoryBacked() ? 1 : 0) + (b.getSrc().isMemoryBacked() ? 1 : 0);
+        Asserts.assertEquals("仅预算内可容纳的 1 个原子入内存", 1, memCount);
+        Asserts.assertEquals("作业预算按实扣计满", 4L, budget.used());
+        LogicalEntry disk = a.getSrc().isMemoryBacked() ? b : a;
+        byte[] read = new PackageParser().readEntryBytes(flat, disk);
+        Asserts.assertEquals("磁盘态原子可直读且内容长度一致", 4, read.length);
+        Asserts.assertEquals("快照登记 memo 字节与预算一致", 4L, NestedUnpacker.memoizedBytesOf(flat));
+    }
+
     // ---------------- 构造入参为 null 的容错默认 ----------------
 
     public void testConstructorAcceptsNullOptionsAndTempRoot() throws Exception {
