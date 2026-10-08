@@ -125,7 +125,10 @@ public final class UpdateCheckService {
         String tag = String.valueOf(latest.getOrDefault("tag", ""));
         boolean hasCurrent = current != null && !current.isBlank();
         Boolean upToDate = null;
-        if (hasCurrent) {
+        // 只有 tag 本身是版本号时才比较：滚动固定 tag（如 "bempDiff"）不含数字，
+        // 与 PackageVersion.compare 硬比会得出「当前更旧」，从而对最新版安装包误报「发现新版本」。
+        boolean comparable = hasCurrent && stripVPrefix(tag).matches(".*\\d.*");
+        if (comparable) {
             // strip 前导 v/V：tag 常见 v1.2.3 形态，与纯数字版本（0.1.2026083102）对齐后比较
             int cmp = PackageVersion.compare(stripVPrefix(current), stripVPrefix(tag));
             upToDate = cmp >= 0; // 当前 >= 最新 → 已是最新
@@ -134,7 +137,9 @@ public final class UpdateCheckService {
         resp.put(KEY_UP_TO_DATE, upToDate);
         resp.put(KEY_LATEST, latest);
         if (upToDate == null) {
-            resp.put(KEY_MESSAGE, "已获取最新版本 " + tag + "（当前版本未知，未比较）");
+            resp.put(KEY_MESSAGE, hasCurrent
+                    ? "已获取最新版本 " + tag + "（该 Release 标签不是版本号，无法与当前版本 " + current + " 比较）"
+                    : "已获取最新版本 " + tag + "（当前版本未知，未比较）");
         } else if (upToDate.booleanValue()) {
             resp.put(KEY_MESSAGE, "当前已是最新版本");
         } else {

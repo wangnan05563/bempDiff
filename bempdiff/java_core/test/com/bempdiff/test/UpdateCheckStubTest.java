@@ -66,6 +66,11 @@ public final class UpdateCheckStubTest {
                         + "{\"name\":\"good.exe\",\"browser_download_url\":\"https://dl/good.exe\"}]}";
             case "noAssets":
                 return "{\"tag_name\":\"v1.0.0\",\"name\":\"N\",\"html_url\":\"u\"}";
+            case "rollingTag":
+                // 固定滚动 tag（本项目 0.1.2026091001 那次发布用的就是 tag "bempDiff"）：标签不含版本号
+                return "{\"tag_name\":\"bempDiff\",\"name\":\"BempDiff-0.1.2026091001-setup.exe\","
+                        + "\"html_url\":\"https://github.com/x/y/releases/tag/bempDiff\","
+                        + "\"assets\":[{\"name\":\"setup.exe\",\"browser_download_url\":\"https://dl/setup.exe\"}]}";
             case "emptyArrayAssets":
                 return "{\"tag_name\":\"v1.0.0\",\"assets\":[]}";
             default:
@@ -219,6 +224,20 @@ public final class UpdateCheckStubTest {
         String eNull = (String) m.invoke(null, new RuntimeException());
         Asserts.assertContains("null message 仍走兜底", eNull, "api.github.com");
         Asserts.assertContains("null message 含异常类名", eNull, "RuntimeException");
+    }
+
+    public void testCheck_rollingTagNotVersion_neverClaimsNewVersion() throws Throwable {
+        fresh("rollingTag");
+        // 当前版本比 tag 字面「旧」也不该报「发现新版本」——标签不是版本号，无从比较
+        @SuppressWarnings("unchecked")
+        Map<String, Object> r = (Map<String, Object>) withStubBase(() -> UpdateCheckService.check("0.1.0"));
+        Asserts.assertEquals("滚动 tag 仍算检查成功", Boolean.TRUE, r.get("ok"));
+        Asserts.assertNull("非版本号 tag 不比较→upToDate=null", r.get("upToDate"));
+        String msg = String.valueOf(r.get("message"));
+        Asserts.assertContains("明示无法比较", msg, "无法与当前版本");
+        Asserts.assertTrue("绝不出现「发现新版本」误报: " + msg, !msg.contains("发现新版本"));
+        Map<String, Object> lt = latest(r);
+        Asserts.assertEquals("下载地址照常解析", "https://dl/setup.exe", lt.get("downloadUrl"));
     }
 
     public void testRepoOf_matchesOwnerSlashRepo() {
