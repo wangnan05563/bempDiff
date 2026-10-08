@@ -1213,8 +1213,12 @@ export { fmtBytes as formatBytes }
 
 export async function saveConfig(cfg) {
   try {
-    await api.putConfig(cfg)
-    state.config = cfg
+    const r = await api.putConfig(cfg)
+    // 采用服务端回读（PUT 返回的就是 toJson()，含 hasApiKey 与按 persist 语义的明文回显）而不是请求体：
+    // 请求体没有 hasApiKey 字段，直接 state.config = cfg 会把它变成 undefined，于是「密钥已落盘」
+    // 在前端永久失明——T01615 的「将删除已落盘 API Key」二次确认在会话内保存过一次后即失效，
+    // 取消勾选「记住」再保存会静默删掉 properties 里的密钥行（真实安装版复验实测）。
+    state.config = r && typeof r === 'object' ? r : cfg
     toast('success', '配置已保存')
   } catch (e) {
     toast('danger', '保存配置失败：' + e.message)

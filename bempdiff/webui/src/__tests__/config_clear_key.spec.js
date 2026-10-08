@@ -104,4 +104,49 @@ describe('T01615 密钥清除二次确认与显式入口', () => {
     expect(putCalls()[0].body.persistApiKey).toBe(false)
     w.unmount()
   })
+
+  it('会话内先保存过密钥后，「取消记住 + 保存」仍要求二次确认', async () => {
+    // 真实安装版复验抓到的回归：store.saveConfig 把「请求体」当成服务端状态写回 state.config，
+    // 而请求体不含 hasApiKey → 该字段变 undefined → savedKeyOnDisk 永久为假 → 守卫静默失效，
+    // 取消勾选「记住」再保存会直接删掉 properties 里的密钥行。此处让 PUT 如实返回 toJson()。
+    let serverCfg = { ...defaultConfig(), aiApiKey: '', hasApiKey: false, persistApiKey: false }
+    calls = []
+    global.fetch = vi.fn(async (url, init) => {
+      const body = init && init.body ? JSON.parse(init.body) : null
+      calls.push({ url, body })
+      if (url === '/api/config' && init && init.method === 'PUT') {
+        serverCfg = {
+          ...serverCfg, ...body,
+          hasApiKey: !!(body.aiApiKey && body.persistApiKey),
+          aiApiKey: body.aiApiKey,
+        }
+      }
+      const snapshot = { ...serverCfg }
+      delete snapshot.aiApiKey
+      if (serverCfg.hasApiKey && serverCfg.persistApiKey) snapshot.aiApiKey = serverCfg.aiApiKey
+      // api 客户端会读 content-type 决定 json/text，桩必须提供 headers
+      return {
+        ok: true, status: 200, statusText: 'OK',
+        headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'application/json' : null) },
+        json: async () => snapshot, text: async () => ''
+      }
+    })
+
+    const w = await mountDialog({ ...defaultConfig(), hasApiKey: false, persistApiKey: false })
+    const keyIn = w.findAll('input').find(i => (i.attributes('aria-label') || '').includes('访问密钥'))
+    // 第一次保存：写入密钥并勾选「记住」→ 密钥落盘
+    await keyIn.setValue('sk-first-111')
+    await w.find('#cfgPersist').setValue(true)
+    await save(w)
+    expect(putCalls().length).toBe(1)
+    expect(state.config.hasApiKey).toBe(true)
+
+    // 第二次保存：取消「记住」→ 必须仍然先要二次确认，且确认前不发 PUT
+    await w.find('#cfgPersist').setValue(false)
+    expect(w.find('[data-testid="apikey-nowrite"]').text()).toContain('将删除')
+    await save(w)
+    expect(putCalls().length).toBe(1)
+    expect(w.find('[data-testid="clear-key-confirm"]').exists()).toBe(true)
+    w.unmount()
+  })
 })
