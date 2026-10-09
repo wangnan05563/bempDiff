@@ -1,0 +1,43 @@
+{
+  "app": "bempdiff",
+  "kind": "config",
+  "version": 1,
+  "exportedAt": "2026-10-09T16:13:52.464Z",
+  "config": {
+    "aiProvider": "custom",
+    "aiBaseUrl": "https://apihub.agnes-ai.com/v1",
+    "aiModel": "agnes-3.0-flash",
+    "aiEnabled": true,
+    "stageBTopK": 15,
+    "stageATopK": 30,
+    "stageAFileSampleLines": 80,
+    "maxPromptTokens": 120000,
+    "maxOutputTokens": 65536,
+    "costGateWarnTokens": 50000000,
+    "internalPrefixes": "com.hundsun.bemp",
+    "expandAll": true,
+    "topK": 8,
+    "cfrJar": "",
+    "httpProxy": "",
+    "httpsProxy": "",
+    "blockPrivateEndpoints": true,
+    "persistApiKey": true,
+    "persistGithubToken": false,
+    "projectContextDir": "D:\\code\\QJ\\BEMP5.0DEV",
+    "projectContextEnabled": true,
+    "filterSearch": "",
+    "filterRegex": false,
+    "filterShowModified": true,
+    "filterShowAdded": true,
+    "filterShowDeleted": true,
+    "filterShowUnchanged": false,
+    "autoAiOnCompare": true,
+    "unpackNested": true,
+    "unpackThreads": 4,
+    "unpackMaxDepth": 6,
+    "ignoreExtensions": [
+      ".mf"
+    ],
+    "hasApiKey": false
+  }
+}
