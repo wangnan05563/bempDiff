@@ -113,5 +113,33 @@ if ($diff) {
   exit 1
 }
 Write-Host ("[OK] packaged webui bundles match source (" + ($pkgBundles.Count) + " bundles): " + $packagedIndex)
+
+# ---- 2b. T01670: reject stale extra bundles in packaged assets dir ----
+# emptyOutDir:false in vite.config.js causes webui/dist/assets to accumulate historical
+# index-*.js/css bundles across builds. The mirror step (robocopy dist_input/webui) only
+# copies current build output, but if webui/dist itself wasn't cleaned before npm run build,
+# the NEW build's dist still contains old bundles. This check ensures the packaged
+# webui/assets/ directory contains ONLY the bundles referenced by its own index.html
+# (plus non-bundle assets like splash-logo.png / vendor/ which live at webui root, not assets/).
+$assetsDir = Split-Path $packagedIndex -Parent
+$assetsDir = Join-Path (Split-Path $assetsDir -Parent) 'assets'
+if (Test-Path -LiteralPath $assetsDir) {
+  $actualFiles = Get-ChildItem -LiteralPath $assetsDir -File | ForEach-Object { $_.Name } | Sort-Object
+  # Only index-* hashed bundles should be in assets/; any extras indicate accumulation.
+  $expectedFiles = $pkgBundles | Sort-Object
+  $extras = Compare-Object -ReferenceObject $expectedFiles -DifferenceObject $actualFiles -ErrorAction SilentlyContinue |
+    Where-Object { $_.SideIndicator -eq '=>' } | ForEach-Object { $_.InputObject }
+  if ($extras) {
+    Write-Host "[ERROR] T01670: packaged webui/assets/ contains EXTRA files not referenced by index.html:"
+    foreach ($f in $extras) { Write-Host ("        extra: " + $f) }
+    Write-Host ("        assets dir: " + $assetsDir)
+    Write-Host "        Fix: ensure build_tauri_app.ps1 clears webui/dist before npm run build"
+    exit 1
+  }
+  Write-Host ("[OK] T01670: no extra bundles in packaged assets/ (" + $actualFiles.Count + " files, all referenced)")
+} else {
+  Write-Host "[WARN] T01670: packaged assets dir not found - extra bundle check skipped"
+}
+
 Write-Host "[OK] post-pack verify passed."
 exit 0

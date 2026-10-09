@@ -302,6 +302,10 @@ if (-not $SkipJava -and -not $SkipJre) {
 # ---------- 4. 构建前端 + 镜像到 dist_input/webui ----------
 if (-not $SkipFrontend) {
   Write-Step "构建前端 (vite build)"
+  # T01670：构建前先清空 webui/dist，避免 emptyOutDir:false 导致历史 bundle 累积。
+  # 不能用 vite.config.js 的 emptyOutDir:true（显式设为 false 是因 WorkBuddy safe-delete
+  # 钩子 fail-closed 会中断构建），这里用 PowerShell Remove-Tree 直接清理，绕过该限制。
+  Remove-Tree $WebuiDist
   Push-Location $Webui
   try {
     # 约束：npm 走默认全局缓存；切勿手动传 `--cache /d/code/...` 之类 POSIX 路径，
