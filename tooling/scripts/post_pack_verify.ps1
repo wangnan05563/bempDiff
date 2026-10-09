@@ -76,7 +76,10 @@ if ($bmLen -eq 0) {
 Write-Host ("CANONICAL-INSTALLER: " + $canonical)
 
 # ---- 2. packaged webui bundle freshness ----
-$bundleRe = 'index-[A-Za-z0-9_-]+\.js'
+# T01670: match BOTH index-*.js and index-*.css — vite emits hashed css bundles into
+# assets/ too, and the T01670 extra-file check below compares the full assets/ listing
+# against this set; a js-only regex would flag every css bundle as "extra" (false FAIL).
+$bundleRe = 'index-[A-Za-z0-9_-]+\.(?:js|css)'
 function Get-Bundles([string]$idxPath) {
   if (-not (Test-Path -LiteralPath $idxPath)) { return $null }
   $html = [System.IO.File]::ReadAllText($idxPath)
@@ -121,8 +124,8 @@ Write-Host ("[OK] packaged webui bundles match source (" + ($pkgBundles.Count) +
 # the NEW build's dist still contains old bundles. This check ensures the packaged
 # webui/assets/ directory contains ONLY the bundles referenced by its own index.html
 # (plus non-bundle assets like splash-logo.png / vendor/ which live at webui root, not assets/).
-$assetsDir = Split-Path $packagedIndex -Parent
-$assetsDir = Join-Path (Split-Path $assetsDir -Parent) 'assets'
+# packagedIndex = ...\dist_input\webui\index.html  ->  assets dir = ...\dist_input\webui\assets
+$assetsDir = Join-Path (Split-Path $packagedIndex -Parent) 'assets'
 if (Test-Path -LiteralPath $assetsDir) {
   $actualFiles = Get-ChildItem -LiteralPath $assetsDir -File | ForEach-Object { $_.Name } | Sort-Object
   # Only index-* hashed bundles should be in assets/; any extras indicate accumulation.
