@@ -13,6 +13,8 @@ export const SHORTCUTS = [
   { keys: 'Ctrl+K', label: '定位到差异树过滤框', labelKey: 'sc.focusFilter', scope: '全局', scopeKey: 'sc.scope.global' },
   { keys: '?', label: '快捷键速查面板', labelKey: 'sc.shortcutHelp', scope: '全局', scopeKey: 'sc.scope.global' },
   { keys: 'Ctrl/Alt + ↑/↓', label: '跳转上一处 / 下一处差异', labelKey: 'sc.prevNextDiff', scope: '差异视图', scopeKey: 'sc.scope.diff' },
+  { keys: 'j / k', label: '下一处 / 上一处差异行（IDE 惯例）', labelKey: 'sc.jkDiff', scope: '差异视图', scopeKey: 'sc.scope.diff' },
+  { keys: 'n / p', label: '查找结果下一条 / 上一条（查找面板打开时）', labelKey: 'sc.npFind', scope: '差异视图', scopeKey: 'sc.scope.diff' },
   { keys: 'Ctrl+F', label: '差异内容内查找', labelKey: 'sc.findInDiff', scope: '差异视图', scopeKey: 'sc.scope.diff' },
   { keys: 'Ctrl+A', label: '全选差异行（无原生文本选区时）', labelKey: 'sc.selectAllRows', scope: '差异视图', scopeKey: 'sc.scope.diff' },
   { keys: 'Ctrl+C', label: '复制选中行（无原生文本选区时）', labelKey: 'sc.copyRows', scope: '差异视图', scopeKey: 'sc.scope.diff' },

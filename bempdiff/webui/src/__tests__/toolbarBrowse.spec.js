@@ -30,7 +30,8 @@ vi.mock('../store', () => ({
   startAiAnalysis: vi.fn(),
   aiAnyRunning: () => false,
   isUnpacking: () => false,
-  openExports: vi.fn()
+  openExports: vi.fn(),
+  loadHlTheme: () => 'default'
 }))
 
 import ToolBar from '../components/ToolBar.vue'

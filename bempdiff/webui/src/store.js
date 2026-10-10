@@ -4,6 +4,7 @@ import { activateTab as activateTabImpl, closeTabReducer as closeTabImpl, pinTab
   closeOtherTabsReducer as closeOtherTabsImpl, closeAllTabsReducer as closeAllTabsImpl, findActiveTab } from './lib/tabs'
 import { extractFromFileName, sameBaseDifferentVersion, orderOldNew } from './lib/version'
 import { loadIgnoreRules, saveIgnoreRules, addRule as addRuleFn, removeRule as removeRuleFn } from './lib/ignore'
+import { hlThemeOf } from './lib/hl_themes'
 import { friendlyAiError } from './lib/ai_error'
 import { resolveAppVersion } from './lib/helpContent'
 import { t } from './lib/i18n'
@@ -79,6 +80,7 @@ export const state = reactive({
   aiActiveTaskId: null,   // 当前聚焦的 AI 分析任务 tab
   compareHistory: [],     // R5 比对会话历史（跨启动 localStorage 持久化，仅路径元数据不含差异内容）
   savedSessions: [],      // FR-010 命名保存的常用对比任务（与自动历史分池，用户显式管理不自动淘汰）
+  hlTheme: 'default',     // FR-014 语法高亮主题包 key（loadHlTheme 恢复；与界面明暗联动切换）
   treeFilterFocusTick: 0, // R6：全局快捷键 Ctrl+K 请求聚焦差异树过滤框（自增信号，DiffTree watch）
   aiSelCategory: 'risk',  // 「新建分析 / 生成报告(AI)」共享的当前分析项（risk/breaking/impact/testpoints/custom）
   reportCategory: null,   // 最近一次生成报告所用的分析项（ReportPreview「重新生成」沿用；null=基础报告/默认整体分析）
@@ -134,6 +136,30 @@ export function applyTheme(t) {
 export function cycleTheme() {
   const i = THEME_ORDER.indexOf(state.theme)
   applyTheme(THEME_ORDER[(i + 1) % THEME_ORDER.length])
+  // FR-014 联动：界面明暗切换时，若当前高亮主题的适配明暗与新界面不符，自动切到该模式的默认主题。
+  // 仅在用户显式切换时联动（启动恢复不校正），避免覆盖「暗主题配亮高亮」之类的用户刻意选择。
+  const mode = resolveTheme(state.theme) === 'dark'
+  const cur = hlThemeOf(state.hlTheme)
+  if (cur.dark !== mode) setHlTheme(mode ? 'github-dark' : 'default')
+}
+
+// ---------------- FR-014 语法高亮主题包 ----------------
+// 高亮主题（亮 2 / 暗 2）与界面明暗正交但联动：界面切到不匹配的模式时自动切到该模式默认主题
+//（用户随后手动选别的主题仍尊重选择）。持久化独立 key，随 applyTheme 的 resolveTheme 联动。
+export function loadHlTheme() {
+  try {
+    const k = localStorage.getItem('bempdiff.hlTheme')
+    if (k) state.hlTheme = k
+  } catch (_) { /* 静默 */ }
+  return state.hlTheme
+}
+
+/** 设置高亮主题（非法 key 回退 default 并持久化）。 */
+export function setHlTheme(key) {
+  const t = hlThemeOf(key)
+  state.hlTheme = t.key
+  try { localStorage.setItem('bempdiff.hlTheme', t.key) } catch (_) { /* 静默 */ }
+  return t
 }
 
 export async function init() {

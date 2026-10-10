@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, cycleTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory, loadSavedSessions, saveNamedSession, applyNamedSession, removeNamedSession } from '../store'
+import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, cycleTheme, loadHlTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory, loadSavedSessions, saveNamedSession, applyNamedSession, removeNamedSession } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import { ACCENTS, loadAccentKey, applyAccent } from '../lib/accents'
 import { i18n, LOCALES, setLocale, t } from '../lib/i18n'
@@ -215,6 +215,7 @@ const themeTip = computed(() => t((THEME_META[state.theme] || THEME_META.light).
 // R10 强调色（二期 T01475）：预设色盘选择，明暗主题正交叠加
 state.accent = loadAccentKey()
 applyAccent(state.accent) // 启动即恢复上次强调色
+loadHlTheme() // FR-014：启动恢复上次语法高亮主题包
 const showAccent = ref(false)
 const accentWrap = ref(null)
 function onPickAccent(key) {

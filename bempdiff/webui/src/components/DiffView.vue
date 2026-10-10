@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, shallowRef, nextTick, onMounted, onUnmounted, onUpdated, watch } from 'vue'
-import { state, activeTab, closeTab, pinTab, closeOtherTabs, closeAllTabs, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL, fmtBytes } from '../store'
+import { state, activeTab, closeTab, pinTab, closeOtherTabs, closeAllTabs, toggleFocusMode, setFocusMode, toggleAiPanel, STATUS_META, STATUS_LABEL, fmtBytes, setHlTheme } from '../store'
 import { toast } from '../store'
 import { t } from '../lib/i18n'
 import { inlineDiff } from '../lib/diff_inline'
@@ -10,6 +10,7 @@ import { rangeSelection, buildCopyText, allRowIndexes } from '../lib/diff_select
 import { searchRows } from '../lib/diff_search'
 import { tokenInfoAt, TOKEN_META } from '../lib/token_classify'
 import { langOf, tokenizeLine } from '../lib/syntax_highlight'
+import { hlThemeOf, HL_THEMES } from '../lib/hl_themes'
 import PathBar from './PathBar.vue'
 import ContextMenu from './ContextMenu.vue'
 
@@ -52,6 +53,22 @@ function cycleGranularity() {
 }
 // 折叠未变：收起远离变化块的纯 ctx 行（对标 Beyond Compare 忽略未变更区段）
 const collapse = ref(false)
+
+// ---------------- FR-014 语法高亮主题包 ----------------
+// 主题 vars 以内联 style 绑定 .col-center：CSS 变量即时生效（无需重挂载/重解析），
+// scoped 默认色板保留作为兜底。工具栏下拉切换；store.setHlTheme 持久化。
+const hlThemeKey = computed(() => state.hlTheme || 'default')
+const hlVars = computed(() => {
+  const t = hlThemeOf(hlThemeKey.value)
+  const out = {}
+  for (const [k, v] of Object.entries(t.vars)) out['--tok-' + k] = v
+  return out
+})
+const hlThemes = computed(() => HL_THEMES.map(t => ({ key: t.key, labelKey: t.labelKey })))
+function onHlThemeChange(e) {
+  setHlTheme(e.target.value)
+}
+
 // 折叠上下文行数：默认 3（变化行前后各保留 3 行）。FR-003 验收①要求「默认 3~5 行可配置」，
 // 故放开为用户可调并持久化——沿 DiffView 既有惯例（copyWithLineNo 同款 localStorage 轻量偏好）。
 const FOLD_WIN_KEY = 'bempdiff.diffFoldWin'
@@ -663,6 +680,24 @@ function onKey(e) {
     if (e.key === 'ArrowUp') gotoPrev()
     else gotoNext()
   }
+  // FR-015 IDE 惯例键位：j/k=下一处/上一处差异行（与 Ctrl+↓/↑ 同义），n/p=查找结果下一条/上一条。
+  // 单键无修饰符；输入框已在上方拦截。n/p 仅在查找面板打开时有意义（否则放行不拦截）。
+  if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.key === 'j' || e.key === 'J') {
+      if (!diffRows.value.length) return
+      e.preventDefault(); gotoNext(); return
+    }
+    if (e.key === 'k' || e.key === 'K') {
+      if (!diffRows.value.length) return
+      e.preventDefault(); gotoPrev(); return
+    }
+    if ((e.key === 'n' || e.key === 'N') && findOpen.value) {
+      e.preventDefault(); findNext(); return
+    }
+    if ((e.key === 'p' || e.key === 'P') && findOpen.value) {
+      e.preventDefault(); findPrev(); return
+    }
+  }
 }
 
 // 中键关闭 tab；左键点 tab 文字切激活，点 x 关闭；右键打开 tab 上下文菜单。
@@ -1129,7 +1164,7 @@ onUpdated(() => measureVisible())
 
 <template>
   <div class="col-center" :data-fc="currentFc"
-       :style="{ '--dt-accent': currentFcMeta.accent }">
+       :style="{ '--dt-accent': currentFcMeta.accent, ...hlVars }">
     <!--
       tab 栏：始终渲染，避免 0/1 tab 时这层"忽隐忽现"导致用户找不到。
     -->
@@ -1253,6 +1288,12 @@ onUpdated(() => measureVisible())
               @click="cycleGranularity" :aria-label="granTip" :title="granTip">
         <i class="bi" :class="granularityIcon"></i>
       </button>
+      <!-- FR-014 语法高亮主题包：4 套内置（亮 2/暗 2），CSS 变量内联绑定即时生效 -->
+      <select class="form-select form-select-sm py-0 px-1" style="width:auto;font-size:.75rem"
+              :value="hlThemeKey" @change="onHlThemeChange"
+              :aria-label="t('dv.hlTitle')" :title="t('dv.hlTitle')">
+        <option v-for="th in hlThemes" :key="th.key" :value="th.key">{{ t(th.labelKey) }}</option>
+      </select>
       <button class="btn btn-sm py-0 px-2" style="font-size:1.05rem"
               :class="collapse ? 'btn-primary' : 'btn-outline-secondary'"
               @click="collapse = !collapse"
