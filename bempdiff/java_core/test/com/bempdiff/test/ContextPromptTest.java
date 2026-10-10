@@ -73,4 +73,13 @@ public final class ContextPromptTest {
         String old = PromptBuilders.buildStageB("A.class", u, null, cfg);
         Asserts.assertEquals("ctx=null 应与原 3 参方法等价", old, withNull);
     }
+
+    /** FR-026 迁移建议：Java 类深读指令应引导对外 API 变更给出旧调用→新调用片段。 */
+    public void testStageB_javaBranch_requestsMigrationAdvice() {
+        AiConfig cfg = new AiConfig();
+        DecompiledUnit u = new DecompiledUnit("k", "o", "n", "diff line", "cfr", "", true);
+        String prompt = PromptBuilders.buildStageB("A.class", u, null, cfg);
+        Asserts.assertContains("Java 分支应含迁移建议指令", prompt, "迁移建议");
+        Asserts.assertContains("应限定对外可见 API 范围", prompt, "public/protected");
+    }
 }

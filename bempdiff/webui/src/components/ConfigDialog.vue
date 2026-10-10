@@ -319,6 +319,45 @@ async function onCleanupTemp() {
   }
 }
 
+// FR-011 一键导出脱敏诊断包：fetch+blob 而非原生跳转——包体 <5MB 内存无忧，
+// 换取失败时的明确错误提示（原生 <a> 下载失败只有浏览器静默角标，用户会以为点了没反应）
+const diagBusy = ref(false)
+const diagMsg = ref('')
+const diagOk = ref(false)
+async function onDiagExport(e) {
+  e.preventDefault() // 拦截原生下载改走 fetch：失败可提示、成功可报体积
+  if (diagBusy.value) return
+  diagBusy.value = true
+  diagMsg.value = ''
+  try {
+    const res = await fetch('/api/admin/diag-bundle')
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`
+      try { const j = await res.json(); msg = j.error || msg } catch (_) { /* 非 JSON 错误体 */ }
+      throw new Error(msg)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `bempdiff-diag-${new Date().toISOString().slice(0, 10)}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+    diagOk.value = true
+    diagMsg.value = t('cfg.diag.done', { mb: (blob.size / 1048576).toFixed(2) })
+    toast('success', t('cfg.diag.toast'))
+  } catch (err) {
+    diagOk.value = false
+    const m = (err && err.message) || String(err)
+    diagMsg.value = t('cfg.diag.fail', { msg: m })
+    toast('danger', t('cfg.diag.toastFail', { msg: m }))
+  } finally {
+    diagBusy.value = false
+  }
+}
+
 // ---- 配置迁移：导出 / 导入整套配置，用于重装、换机/换服务器时整体迁移 ----
 const migrateMsg = ref('')
 const importFile = ref(null)
@@ -699,6 +738,21 @@ function pickImportFile(ev) {
                 </button>
               </div>
               <div v-if="cleanupMsg" class="mt-2 text-success" style="font-size:.72rem"><i class="bi bi-check-circle"></i> {{ cleanupMsg }}</div>
+            </div>
+            <!-- FR-011 一键导出脱敏诊断包：出错反馈时替代口头描述环境（包内已脱敏 API Key 与用户路径） -->
+            <div class="card card-body py-2 mb-0" style="font-size:.76rem">
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold text-nowrap"><i class="bi bi-clipboard-pulse"></i>{{ t('cfg.diag') }}</span>
+                <span class="text-secondary">{{ t('cfg.diag.desc') }}</span>
+                <a class="btn btn-outline-primary btn-sm ms-auto" href="/api/admin/diag-bundle" download
+                   :aria-label="t('cfg.diag.hint')" :title="t('cfg.diag.hint')" :class="{ disabled: diagBusy }"
+                   @click="onDiagExport">
+                  <i class="bi bi-download"></i> {{ diagBusy ? t('cfg.diag.doing') : t('cfg.diag.run') }}
+                </a>
+              </div>
+              <div v-if="diagMsg" class="mt-2" :class="diagOk ? 'text-success' : 'text-danger'" style="font-size:.72rem">
+                <i class="bi" :class="diagOk ? 'bi-check-circle' : 'bi-exclamation-triangle'"></i> {{ diagMsg }}
+              </div>
             </div>
           </div>
 

@@ -210,6 +210,7 @@ public final class BempServer {
         server.createContext("/api/ai/models", this::handleAiModels);
         server.createContext("/api/ai/context", this::handleAiContext);
         server.createContext("/api/admin/cleanup", this::handleCleanupTemp); // 配置中心「手动清理」
+        server.createContext("/api/admin/diag-bundle", this::handleDiagBundle); // FR-011 一键导出脱敏诊断包
         server.createContext("/api/update/check", this::handleUpdateCheck); // 「关于」页版本更新检查
         server.createContext("/", this::handleStatic);
         // 关键：默认 HttpServer 用单线程串行处理所有请求——一次长比对会阻塞全部 API/静态资源。
@@ -1836,6 +1837,42 @@ public final class BempServer {
         } catch (Exception e) {
             LOG.log(Level.WARNING, "清理临时文件失败", e);
             sendError(ex, 500, "清理临时文件失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * GET /api/admin/diag-bundle：FR-011 一键导出脱敏诊断包（环境信息 + 脱敏日志 zip）。
+     * 包体 <5MB（DiagBundle 内护栏），生成到系统临时目录（bempdiff- 前缀，退出 hook 可回收），
+     * 流式下发后立即删除临时文件。
+     */
+    private void handleDiagBundle(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals(M_OPTIONS)) {
+            sendJson(ex, 204, new LinkedHashMap<>());
+            return;
+        }
+        if (!ex.getRequestMethod().equals("GET")) {
+            sendError(ex, 405, "仅支持 GET");
+            return;
+        }
+        Path zip = null;
+        try {
+            zip = DiagBundle.build(Paths.get(System.getProperty("java.io.tmpdir", ".")));
+            ex.getResponseHeaders().add("Content-Disposition",
+                    "attachment; filename=\"bempdiff-diag-"
+                            + java.time.LocalDate.now() + ".zip\"");
+            sendFile(ex, 200, "application/zip", zip);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "诊断包生成失败", e);
+            // sendFile 内部已写响应头时不能再 sendError（HttpServer 会抛 IllegalStateException），
+            // 此时只能放弃错误提示——生成失败发生在 build 阶段才有机会返回 JSON 错误体
+            if (ex.getResponseHeaders().getFirst(HDR_CONTENT_TYPE) == null) {
+                sendError(ex, 500, "诊断包生成失败: " + e.getMessage());
+            }
+        } finally {
+            // 临时 zip 下发完即回收，不依赖退出 hook（诊断包生成频率低，泄漏可忽略但即时删更干净）
+            if (zip != null) {
+                try { Files.deleteIfExists(zip); } catch (IOException ignore) { /* 最佳努力 */ }
+            }
         }
     }
 

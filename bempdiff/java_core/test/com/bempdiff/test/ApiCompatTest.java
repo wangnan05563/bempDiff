@@ -129,6 +129,8 @@ public final class ApiCompatTest {
         String prompt = r.toPromptSection();
         Asserts.assertContains("提示词应含 REMOVED_API", prompt, "REMOVED_API");
         Asserts.assertContains("提示词应含类名", prompt, "Svc");
+        // FR-026：分级清单须引导 AI 输出迁移建议（旧调用→新调用），而不只是「哪里断了」
+        Asserts.assertContains("提示词应含迁移建议指令", prompt, "迁移建议");
 
         Map<String, DecompiledUnit> empty = new LinkedHashMap<>();
         Asserts.assertTrue("空结果 isEmpty", ApiCompat.analyze(empty).isEmpty());

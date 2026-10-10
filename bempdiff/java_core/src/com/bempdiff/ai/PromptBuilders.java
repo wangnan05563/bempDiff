@@ -316,7 +316,12 @@ public final class PromptBuilders {
             p.append(FILE_HEADER).append(key).append(" （配置文件）\n");
         } else {
             p.append("请对以下Java类改动做逐文件深读，返回 JSON：");
-            p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n\n");
+            p.append("改动意图(intent)、风险等级(risk: LOW/MEDIUM/HIGH)、影响范围(impact)、测试要点(testPoints数组)、contextInfluence（项目上下文如何影响本文件结论）。\n");
+            // FR-026 迁移建议：改动若触及 public/protected 对外签名，调用方需要「怎么改」而不只是「改了什么」——
+            // 让 impact 字段承载旧调用→新调用片段，与阶段A 的 API 兼容性分级指令同口径
+            p.append("若改动涉及对外可见 API（public/protected 方法/字段/类签名）的移除或签名变更，")
+             .append("请在 impact 中给出迁移建议（旧调用 → 建议的新调用/写法；无直接替代时说明过渡方案）。\n");
+            p.append("\n");
             p.append(FILE_HEADER).append(key).append("\n");
         }
         p.append("> 以下为仅含变更行的差异摘要：每块标注变更类型（修改/新增/删除）与行号区间（老 Lx-y → 新 La-b），"

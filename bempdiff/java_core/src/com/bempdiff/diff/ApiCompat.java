@@ -98,6 +98,10 @@ public final class ApiCompat {
             for (Item it : items) {
                 sb.append("- ").append(it.level).append(" ").append(it.cls).append("#").append(it.api).append("\n");
             }
+            // FR-026 AI 修复/迁移建议：分级清单是「哪里断了」的证据，指令补上「怎么接回去」——
+            // 引导模型对不兼容项给出旧调用→新调用的迁移要点，输出自然落进既有 JSON 字段（不扩 schema）
+            sb.append("\n对上述 REMOVED_API / SIGNATURE_CHANGED 条目，请在对应结论中附迁移建议：")
+              .append("给出调用方的替代写法（旧 API → 建议新 API/写法），若无直接替代则说明可用的过渡方案（适配层/降级路径）。\n");
             sb.append("\n");
             return sb.toString();
         }

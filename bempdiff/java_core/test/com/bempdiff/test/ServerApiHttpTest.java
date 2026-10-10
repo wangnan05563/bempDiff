@@ -181,6 +181,31 @@ public final class ServerApiHttpTest {
         }
     }
 
+    // ---------------- FR-011 诊断包 ----------------
+
+    /** GET /api/admin/diag-bundle 应 200 + zip 魔数（PK）+ attachment 头；POST 应 405。 */
+    public void testDiagBundleDownloadsZip() throws Exception {
+        Path tmp = Files.createTempDirectory("bdf-diag");
+        try {
+            ServerConfig config = newConfig(tmp);
+            ServerTestHarness.Server s = launch(config, Files.createDirectories(tmp.resolve("webroot")));
+
+            HttpResponse<byte[]> r = s.getRaw("/api/admin/diag-bundle");
+            Asserts.assertEquals("诊断包应 200", 200, r.statusCode());
+            Asserts.assertTrue("应含 attachment 下发头", r.headers().firstValue("Content-Disposition").orElse("").contains("attachment"));
+            byte[] b = r.body();
+            Asserts.assertTrue("响应体应非空", b.length > 0);
+            Asserts.assertTrue("应为 zip 魔数（PK）", b.length > 2 && b[0] == 'P' && b[1] == 'K');
+            Asserts.assertTrue("验收②：包体应 <5MB", b.length < 5 * 1024 * 1024);
+            Asserts.assertTrue("应含 env.json 内容特征", new String(b, StandardCharsets.ISO_8859_1).contains("osName"));
+
+            HttpResponse<String> post = s.post("/api/admin/diag-bundle", "{}");
+            Asserts.assertEquals("非 GET 应 405", 405, post.statusCode());
+        } finally {
+            deleteTree(tmp);
+        }
+    }
+
     // ---------------- 错误分支 / 方法限制 / 路由 ----------------
 
     /** /api/job 未知 jobId → 404；缺少 jobId → 400。 */
