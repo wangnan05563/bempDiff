@@ -55,6 +55,23 @@ public interface AiAnalyzer {
         return stageB(candidates, cfg);
     }
 
+    /**
+     * FR-007：阶段A 携带 API 兼容性静态分级（验收②「结论进入 AI 分析上下文」）。
+     * 刻意以「合成条目」注入而非扩 stageA 签名——实现类（Mock/Http）零改动、回归面最小；
+     * 合成条目只进本方法的临时 map，不回传报告渲染用的 decompiled（不污染「三、反编译源码级差异」章节）。
+     */
+    default StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                 ProjectContext ctx, com.bempdiff.diff.ApiCompat.Result apiCompat) {
+        Map<String, DecompiledUnit> augmented = decompiled;
+        if (apiCompat != null && !apiCompat.isEmpty()) {
+            augmented = new java.util.LinkedHashMap<>(decompiled);
+            String section = apiCompat.toPromptSection();
+            augmented.put("__api_compat__", new DecompiledUnit("__api_compat__",
+                    null, section, section, "none", null, true));
+        }
+        return stageA(diff, augmented, cfg, ctx);
+    }
+
     /** 构建阶段A prompt（聚焦类别增强）：focus 非空时追加聚焦指令，引导模型在该维度深入。 */
     default String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
         return buildStageAPrompt(diff, decompiled, cfg, ctx);

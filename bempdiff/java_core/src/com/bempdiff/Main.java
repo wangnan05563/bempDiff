@@ -294,8 +294,9 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     }
 
     /** T12/FR7：全链路 + Markdown 报告导出（真实包验证）。--ai 时加载持久化 AI 配置，运行两阶段分析并原生写回「七、AI 智能分析」章节。 */
-    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要。 */
-    private record ReportOut(DiffStats s, DiffResult r, StageASummary summary) {}
+    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要；apiCompat 供 ci JSON 分级段。 */
+    private record ReportOut(DiffStats s, DiffResult r, StageASummary summary,
+                             com.bempdiff.diff.ApiCompat.Result apiCompat) {}
 
     private static ReportOut report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
         PrepResult prep = prepCompare(oldP, newP, expandAll);
@@ -312,6 +313,11 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                 oldSnap, newSnap, r, dec, topK);
 
         MarkdownReport rep = new MarkdownReport(topK);
+
+        // FR-007：API 兼容性静态分级（复用 FR-006 AST 基建）——decompiled 此刻仅含 class 候选
+        //（text 尚未并入），天然是 Java 源码集；结果进报告章节 + AI 上下文 + ci JSON。
+        com.bempdiff.diff.ApiCompat.Result apiCompat = com.bempdiff.diff.ApiCompat.analyze(decompiled);
+        rep.setApiCompatSection(apiCompat.toMarkdownSection());
 
         // --ai：两阶段 AI 分析并写回「七、AI 智能分析」章节（FR-CX-01），支持项目级上下文增强。
         // 有 API Key 走真实 Http 调用；无 Key 时降级为离线 Mock 回放（仍能产出 AI 章节 + 项目上下文影响说明）。
@@ -335,7 +341,8 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             aiMap.putAll(text);
             StageASummary summary;
             try {
-                summary = analyzer.stageA(r, aiMap, aiCfg, ctx);
+                // FR-007 验收②：API 兼容性静态分级随 aiMap 注入 AI 上下文（接口 default 合成条目，实现类零改动）
+                summary = analyzer.stageA(r, aiMap, aiCfg, ctx, apiCompat);
             } catch (RuntimeException ex) {
                 LOG.log(java.util.logging.Level.WARNING, "[AI] 阶段A 调用失败，已降级：{0}", ex.getMessage());
                 summary = new StageASummary();
@@ -362,7 +369,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             System.out.println("AI 整体风险=" + summary.getOverallRisk() + "  阶段B 深读=" + b.size() + " 文件"); // NOSONAR
             System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size() // NOSONAR(S106) - CLI 控制台输出
                     + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-            return new ReportOut(s, r, summary);
+            return new ReportOut(s, r, summary, apiCompat);
         }
 
         rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
@@ -371,7 +378,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() // NOSONAR(S106) - CLI 控制台输出
                 + "  text=" + text.size()
                 + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-        return new ReportOut(s, r, null);
+        return new ReportOut(s, r, null, apiCompat);
     }
 
     /** Req 6：差异依赖 JAR 内部源码对比。自动识别差异 lib jar → 提取内部 class → 反编译 → 逐对源码 diff，
@@ -788,6 +795,23 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                 ai.put("overallRisk", out.summary().getOverallRisk());
                 ai.put("impactScope", out.summary().getImpactScope());
                 j.put("ai", ai);
+            }
+            // FR-007：API 兼容性分级进 JSON（CI 门禁可对不兼容项做阻断规则）
+            if (out.apiCompat() != null && !out.apiCompat().isEmpty()) {
+                Map<String, Object> ac = new LinkedHashMap<>();
+                ac.put("removed", out.apiCompat().removed);
+                ac.put("signatureChanged", out.apiCompat().sigChanged);
+                ac.put("added", out.apiCompat().added);
+                List<Map<String, Object>> items = new ArrayList<>();
+                for (com.bempdiff.diff.ApiCompat.Item it : out.apiCompat().items) {
+                    Map<String, Object> im = new LinkedHashMap<>();
+                    im.put("level", it.level.name());
+                    im.put("class", it.cls);
+                    im.put("api", it.api);
+                    items.add(im);
+                }
+                ac.put("items", items);
+                j.put("apiCompat", ac);
             }
             Files.writeString(jsonPath, com.bempdiff.server.Json.write(j) + "\n", java.nio.charset.StandardCharsets.UTF_8);
             System.out.println("json: " + jsonPath); // NOSONAR

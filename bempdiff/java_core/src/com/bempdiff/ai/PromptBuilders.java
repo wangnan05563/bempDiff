@@ -85,8 +85,22 @@ public final class PromptBuilders {
         boolean compactMode = totalChanged > cfg.getStageATopK();
         appendDiffHeader(p, diff, cfg, topStats, compactMode, totalChanged);
         appendContextSection(p, ctx);
+        appendApiCompatSection(p, decompiled);
         appendFileSummaries(p, diff, decompiled, cfg);
         return sanitize(p.toString(), cfg);
+    }
+
+    /**
+     * FR-007：注入 API 兼容性静态分级（验收②「结论进入 AI 分析上下文」）。
+     * 分级摘要由 AiAnalyzer default stageA 以合成条目 __api_compat__ 携带——该 key 不在
+     * diff 差异清单里，appendFileSummaries（按 diff keys 遍历）不会重复呈现；此处显式消费。
+     */
+    private static void appendApiCompatSection(StringBuilder p, Map<String, DecompiledUnit> decompiled) {
+        if (decompiled == null) return;
+        DecompiledUnit u = decompiled.get("__api_compat__");
+        if (u != null && u.getDiffText() != null && !u.getDiffText().isEmpty()) {
+            p.append(u.getDiffText());
+        }
     }
 
     /** 注入项目级上下文章节（ctx 为空则不注入，行为与旧版一致）。 */

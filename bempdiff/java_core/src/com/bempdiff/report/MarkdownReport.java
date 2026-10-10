@@ -58,6 +58,15 @@ public final class MarkdownReport {
     /** AI 章节标题（含编号，如「七、AI 智能分析…」）；聚焦报告可改为无编号标题避免跳空。 */
     private String aiSectionTitle = "## 七、AI 智能分析（两阶段 / 项目级上下文增强）";
 
+    /** FR-007：API 兼容性分级章节文本（ApiCompat.Result.toMarkdownSection 产物；空串=不插入）。 */
+    private String apiCompatSection = "";
+
+    /** 设置 API 兼容性分级章节（在破坏性变更清单之后、AI 章节之前插入）。 */
+    public MarkdownReport setApiCompatSection(String section) {
+        this.apiCompatSection = section == null ? "" : section;
+        return this;
+    }
+
     /** 设置报告 AI 章节的分析聚焦标注（由 BempServer.runAiAnalysis 按 category/prompt 派生）。 */
     public MarkdownReport setAiFocus(String focus) {
         this.aiFocus = focus;
@@ -95,6 +104,10 @@ public final class MarkdownReport {
         renderTextDiff(sb, text);
         renderLibJarDiff(sb, libJar);
         renderBreakingChanges(sb, r);
+        // FR-007：非 AI 报告同样插入 API 兼容性分级章节（与 AI 版 render 同口径）
+        if (apiCompatSection != null && !apiCompatSection.isEmpty()) {
+            sb.append(apiCompatSection);
+        }
         renderFooter(sb, oldSnap, newSnap, false);
         return sb.toString();
     }
@@ -130,6 +143,10 @@ public final class MarkdownReport {
         renderTextDiff(sb, text);
         renderLibJarDiff(sb, libJar);
         renderBreakingChanges(sb, r);
+        // FR-007：API 兼容性分级章节（静态判定，不兼容项 sev 徽章醒目），无差异时不插入
+        if (apiCompatSection != null && !apiCompatSection.isEmpty()) {
+            sb.append(apiCompatSection);
+        }
         appendAiSection(sb, summary, fileAnalyses, ctx);
         renderFooter(sb, oldSnap, newSnap, summary != null);
         return sb.toString();
