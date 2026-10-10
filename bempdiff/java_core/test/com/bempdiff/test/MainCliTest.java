@@ -472,4 +472,66 @@ public final class MainCliTest {
             deleteTree(p.dir);
         }
     }
+
+    // ---------------- ci（FR-005） ----------------
+    // ci 用 Main.cliMain 断言退出码（main 会 System.exit 杀死 TestRunner 进程）。
+
+    /** 差异对 + --json：报告与 JSON 落地，hasDiff=true，退出码 0（未启用 --fail-on-diff）。 */
+    public void testCiWritesReportAndJson() throws Exception {
+        Pair p = pair("ci-json");
+        Path md = p.dir.resolve("ci-report.md");
+        Path json = p.dir.resolve("out/ci.json");
+        try {
+            int code = Main.cliMain(cli("ci", "--left", p.oldP.toString(), "--right", p.newP.toString(),
+                    "--report", md.toString(), "--json", json.toString(), "--top-k", "2"));
+            Asserts.assertEquals("未启用 fail-on-diff 时退出码应为 0", 0, code);
+            Asserts.assertTrue("CI 报告应生成: " + md, Files.isRegularFile(md));
+            Asserts.assertTrue("JSON 摘要应生成: " + json, Files.isRegularFile(json));
+            String s = read(json);
+            Asserts.assertContains("hasDiff 应为 true", s, "\"hasDiff\":true");
+            Asserts.assertContains("stats 应含 added 字段", s, "\"added\":");
+            Asserts.assertContains("差异清单应含 modified 分组", s, "\"modified\":");
+            Asserts.assertContains("差异清单应含删除的配置文件", s, "WEB-INF/classes/conf/dropped.xml");
+            Asserts.assertFalse("无 --ai 不应出现 ai 段", s.contains("\"ai\":"));
+        } finally {
+            deleteTree(p.dir);
+        }
+    }
+
+    /** --fail-on-diff + 差异对：退出码 1（CI 门禁阻断语义）。 */
+    public void testCiFailOnDiffReturnsOne() throws Exception {
+        Pair p = pair("ci-fail");
+        try {
+            int code = Main.cliMain(cli("ci", "--left", p.oldP.toString(), "--right", p.newP.toString(),
+                    "--fail-on-diff", "--top-k", "1"));
+            Asserts.assertEquals("有差异且启用 fail-on-diff 应返回 1", 1, code);
+        } finally {
+            deleteTree(p.dir);
+        }
+    }
+
+    /** 同包自比（无差异）：hasDiff=false，--fail-on-diff 下仍退出 0。 */
+    public void testCiNoDiffReturnsZero() throws Exception {
+        Pair p = pair("ci-nodiff");
+        Path json = p.dir.resolve("nodiff.json");
+        try {
+            int code = Main.cliMain(cli("ci", "--left", p.oldP.toString(), "--right", p.oldP.toString(),
+                    "--fail-on-diff", "--json", json.toString(), "--top-k", "1"));
+            Asserts.assertEquals("无差异即使 fail-on-diff 也应返回 0", 0, code);
+            Asserts.assertContains("hasDiff 应为 false", read(json), "\"hasDiff\":false");
+        } finally {
+            deleteTree(p.dir);
+        }
+    }
+
+    /** 缺 --right：返回 2（用法错误），且不得 System.exit 杀死测试进程。 */
+    public void testCiMissingArgsReturnsTwo() throws Exception {
+        Pair p = pair("ci-badargs");
+        try {
+            int code = Main.cliMain(new String[]{"ci", "--left", p.oldP.toString()});
+            Asserts.assertEquals("参数缺失应返回 2", 2, code);
+        } finally {
+            deleteTree(p.dir);
+        }
+    }
 }

@@ -294,7 +294,10 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     }
 
     /** T12/FR7：全链路 + Markdown 报告导出（真实包验证）。--ai 时加载持久化 AI 配置，运行两阶段分析并原生写回「七、AI 智能分析」章节。 */
-    private static void report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
+    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要。 */
+    private record ReportOut(DiffStats s, DiffResult r, StageASummary summary) {}
+
+    private static ReportOut report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
         PrepResult prep = prepCompare(oldP, newP, expandAll);
         PackageSnapshot oldSnap = prep.oldSnap();
         PackageSnapshot newSnap = prep.newSnap();
@@ -359,7 +362,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             System.out.println("AI 整体风险=" + summary.getOverallRisk() + "  阶段B 深读=" + b.size() + " 文件"); // NOSONAR
             System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size() // NOSONAR(S106) - CLI 控制台输出
                     + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-            return;
+            return new ReportOut(s, r, summary);
         }
 
         rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
@@ -368,6 +371,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() // NOSONAR(S106) - CLI 控制台输出
                 + "  text=" + text.size()
                 + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
+        return new ReportOut(s, r, null);
     }
 
     /** Req 6：差异依赖 JAR 内部源码对比。自动识别差异 lib jar → 提取内部 class → 反编译 → 逐对源码 diff，
@@ -614,9 +618,33 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     }
 
     public static void main(String[] args) throws Exception {
+        int code = cliMain(args);
+        // 仅非 0 才显式退出：exit 0 走自然结束（JVM 默认码即 0），
+        // 避免嵌入式调用方（TestRunner 等）被 System.exit(0) 无故终止。
+        if (code != 0) System.exit(code);
+    }
+
+    /**
+     * CLI 统一入口（FR-005）：返回进程退出码而不直接 System.exit——
+     * 0=正常/无差异，1=有差异（仅 ci 子命令带 --fail-on-diff 时），2=用法或运行错误。
+     * 与 main 分离是为了可测性：测试进程直接断言返回值，不会被 System.exit 杀死。
+     */
+    public static int cliMain(String[] args) {
+        try {
+            return dispatch(args);
+        } catch (Throwable t) {
+            // FR-005 语义：任何运行期失败（含 NoClassDefFoundError 等 Error，如 CFR 缺失）统一归为
+            // exit 2，供 CI 门禁区分「有差异」与「跑不起来」；catch Throwable 是刻意的门禁兜底。
+            System.out.println("error: " + t.getMessage()); // NOSONAR(S106) - CLI 控制台输出
+            t.printStackTrace(); // NOSONAR
+            return 2;
+        }
+    }
+
+    private static int dispatch(String[] args) throws IOException {
         if (args.length == 0) {
             printUsage();
-            System.exit(2);
+            return 2;
         }
         List<String> a = Arrays.asList(args);
         String cmd = args[0];
@@ -635,43 +663,46 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             case "inspect":
                 requireArgs(args, 2, cmd);
                 inspect(Paths.get(args[1]));
-                break;
+                return 0;
             case "compare":
                 requireArgs(args, 3, cmd);
                 compare(Paths.get(args[1]), Paths.get(args[2]), expandAll);
-                break;
+                return 0;
             case "compare-folders":
                 requireArgs(args, 3, cmd);
                 folderDiff(Paths.get(args[1]), Paths.get(args[2]), topK, fopts, null);
-                break;
+                return 0;
             case "folderdiff":
                 requireArgs(args, 3, cmd);
                 folderDiff(Paths.get(args[1]), Paths.get(args[2]), topK, fopts, folderReport);
-                break;
+                return 0;
             case "decompile":
                 requireArgs(args, 3, cmd);
                 decompile(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar);
-                break;
+                return 0;
             case "report":
                 requireArgs(args, 3, cmd);
                 report(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
                         reportOutPath(a, "bempdiff-report.md"), a);
-                break;
+                return 0;
+            case "ci":
+                // FR-005：CI 门禁入口（旗标式参数，退出码承载差异判定）
+                return ci(a, topK, cfrJar);
             case "export":
                 requireArgs(args, 3, cmd);
                 export(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
                         outPath(a, "--out", "bempdiff-export"));
-                break;
+                return 0;
             case "diff-jars":
                 requireArgs(args, 3, cmd);
                 diffJars(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
                         reportOutPath(a, "bempdiff-libjar-report.md"));
-                break;
+                return 0;
             case "ai":
                 requireArgs(args, 3, cmd);
                 ai(Paths.get(args[1]), Paths.get(args[2]), expandAll, topK, cfrJar,
                         outPath(a, ARG_REPLAY, "bempdiff-ai-replay"), a);
-                break;
+                return 0;
             case "server": {
                 int srvPort = 18765;
                 Path srvWeb = null;
@@ -681,12 +712,12 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                         new com.bempdiff.server.BempServer(
                                 com.bempdiff.server.ServerConfig.defaultLocation(), srvWeb);
                 srv.start(srvPort);
-                break;
+                return 0;
             }
             default:
                 System.out.println("unknown subcommand: " + cmd); // NOSONAR
                 printUsage();
-                System.exit(2);
+                return 2;
         }
     }
 
@@ -702,15 +733,78 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         System.out.println("  ai      <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--replay <dir>] [--apikey KEY] [--baseurl URL] [--provider P]"); // NOSONAR
         System.out.println("  diff-jars <old> <new> [--expand-all] [--top-k N] [--cfr <cfr.jar>] [--out <md>]   (Req6: 差异 lib jar 内部 class 反编译源码对比)"); // NOSONAR
         System.out.println("  server [--port N] [--webroot <dir>]   (Web UI 后端：启动内嵌 HTTP 服务，托管 SPA + REST API)"); // NOSONAR
+        System.out.println("  ci --left <old> --right <new> [--report <md>] [--json <out.json>] [--fail-on-diff] [--ai] [--top-k N] [--cfr <cfr.jar>] [--expand-all]"); // NOSONAR
+        System.out.println("     （FR-005 CI 门禁：exit 0=无差异 / 1=有差异(--fail-on-diff) / 2=错误；HTML 报告由桌面端/FR-009 提供）"); // NOSONAR
         System.out.println("（省略 --out/--replay 时输出到当前目录的相对路径）"); // NOSONAR
     }
 
-    /** 子命令参数个数校验：不足则打印用法并以 exit 2 退出，避免 ArrayIndexOutOfBounds 崩溃。 */
+    /** 取旗标参数的值；缺失返回 null（ci 子命令旗标式参数用）。 */
+    private static String flagValue(List<String> a, String flag) {
+        int i = a.indexOf(flag);
+        return (i >= 0 && i + 1 < a.size()) ? a.get(i + 1) : null;
+    }
+
+    /**
+     * FR-005：CI/CI 门禁子命令。旗标式参数对齐 PRD 形态（--left/--right），
+     * 复用 {@link #report} 全链路（含可选 --ai 两阶段分析，--apikey 为空串时按 Mock 降级），
+     * 额外产出 JSON 摘要（--json）并以退出码承载差异判定（--fail-on-diff）。
+     * 返回：0=无差异或未启用 fail-on-diff；1=有差异且启用 fail-on-diff；2=参数缺失。
+     */
+    private static int ci(List<String> a, int topK, Path cfrJar) throws IOException {
+        String l = flagValue(a, "--left");
+        String rr = flagValue(a, "--right");
+        if (l == null || rr == null) {
+            System.out.println("错误: ci 需要 --left <old> 与 --right <new>"); // NOSONAR
+            printUsage();
+            return 2;
+        }
+        Path outMd = reportOutPath(a, "bempdiff-ci-report.md");
+        ReportOut out = report(Paths.get(l), Paths.get(rr),
+                a.contains("--expand-all"), topK, cfrJar, outMd, a);
+        DiffStats s = out.s();
+        boolean hasDiff = s.getAdded() + s.getDeleted() + s.getModified() > 0;
+
+        if (a.contains("--json")) {
+            Path jsonPath = Paths.get(flagValue(a, "--json"));
+            if (jsonPath.getParent() != null) Files.createDirectories(jsonPath.getParent());
+            Map<String, Object> j = new LinkedHashMap<>();
+            j.put("left", l);
+            j.put("right", rr);
+            j.put("hasDiff", hasDiff);
+            Map<String, Object> st = new LinkedHashMap<>();
+            st.put("added", s.getAdded());
+            st.put("deleted", s.getDeleted());
+            st.put("modified", s.getModified());
+            st.put("unchanged", s.getUnchanged());
+            st.put("bizChanged", s.getBizChanged());
+            st.put("jarChanged", s.getJarChanged());
+            j.put("stats", st);
+            // 差异清单按状态分组（与差异树同源的 key 口径，供 CI 侧做门禁细分规则）
+            Map<String, Object> entries = new LinkedHashMap<>();
+            for (DiffStatus stt : DiffStatus.values()) entries.put(stt.name().toLowerCase(), out.r().get(stt));
+            j.put("entries", entries);
+            if (out.summary() != null) {
+                Map<String, Object> ai = new LinkedHashMap<>();
+                ai.put("overallRisk", out.summary().getOverallRisk());
+                ai.put("impactScope", out.summary().getImpactScope());
+                j.put("ai", ai);
+            }
+            Files.writeString(jsonPath, com.bempdiff.server.Json.write(j) + "\n", java.nio.charset.StandardCharsets.UTF_8);
+            System.out.println("json: " + jsonPath); // NOSONAR
+        }
+        // 日志打印裸判定而非实际返回值：实际返回还受 --fail-on-diff 开关控制，混排会误导门禁使用者
+        System.out.println("hasDiff: " + hasDiff + (a.contains("--fail-on-diff")
+                ? " (fail-on-diff on, exit=" + (hasDiff ? 1 : 0) + ")"
+                : " (fail-on-diff off, exit=0)")); // NOSONAR
+        return (a.contains("--fail-on-diff") && hasDiff) ? 1 : 0;
+    }
+
+    /** 子命令参数个数校验：不足则打印用法并抛异常（由 cliMain 统一归为 exit 2），不再直接 System.exit。 */
     private static void requireArgs(String[] args, int need, String cmd) {
         if (args.length < need) {
             System.out.println("错误: " + cmd + " 需要至少 " + (need - 1) + " 个位置参数，实际 " + (args.length - 1)); // NOSONAR
             printUsage();
-            System.exit(2);
+            throw new IllegalArgumentException(cmd + ": missing positional args");
         }
     }
 
