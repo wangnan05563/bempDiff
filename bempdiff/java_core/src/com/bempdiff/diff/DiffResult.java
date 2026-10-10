@@ -5,14 +5,22 @@ import com.bempdiff.model.LogicalEntry;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** 差异结果（prototype: compute_diff）。状态 -> key 列表（保持排序）。 */
 public final class DiffResult {
     private final Map<DiffStatus, List<String>> byStatus = new LinkedHashMap<>();
     private final Map<String, LogicalEntry> oldEntries;   // 供 UI/导出回填 layer
     private final Map<String, LogicalEntry> newEntries;
+    /**
+     * FR-006 展示层（T01810）：AST 口径判定为「格式或位置变更」的条目（格式化调整/注释增删/成员重排）
+     * ——判定层已折叠为 UNCHANGED，此旁路单独记录供报告统计行与差异树徽标区分呈现，不改变既有四态口径
+     * （状态机/筛选/AI/导出全部不受影响，避免为展示层引入第五态的连带改动）。
+     */
+    private final Set<String> formattedOnly = new LinkedHashSet<>();
     /**
      * 版本改名配对（旧侧 key → 新侧 key）：DiffEngine 在把「版本等价路径 + 内容不同」的文件
      * 配对为 MODIFIED 时记录。内容级 diff / AI / 报告按 MODIFIED 的 key（旧侧路径）取新侧内容时，
@@ -72,5 +80,20 @@ public final class DiffResult {
 
     public Map<String, LogicalEntry> getNewEntries() {
         return newEntries;
+    }
+
+    /** 标记该 key 为 AST 口径「格式或位置变更」（判定层已折叠为 UNCHANGED）。 */
+    public void markFormattedOnly(String key) {
+        if (key != null) formattedOnly.add(key);
+    }
+
+    /** 该 key 是否被 AST 口径判定为「格式或位置变更」（非该类条目返回 false）。 */
+    public boolean isFormattedOnly(String key) {
+        return key != null && formattedOnly.contains(key);
+    }
+
+    /** 「格式或位置变更」条目数（报告统计行用）。 */
+    public int formattedOnlyCount() {
+        return formattedOnly.size();
     }
 }

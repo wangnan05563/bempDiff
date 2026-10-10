@@ -290,8 +290,10 @@ public final class ArchiveChildrenTest {
      *  buildNode 为 private static，沿用 AiTest/DecompileTest 的反射先例直调，守护三个口径：
      *  双端存在都透传 / 单侧缺失不输出对侧字段 / parse 未算哈希（sha256=null）时不输出字段。 */
     public void testTopNodeSha256Passthrough() throws Exception {
+        // T01810 buildNode 增加 DiffResult 参数（formattedOnly 徽标旁路）——反射签名同步更新
         java.lang.reflect.Method buildNode = BempServer.class.getDeclaredMethod("buildNode",
-                String.class, PackageSnapshot.class, PackageSnapshot.class, DiffStatus.class);
+                String.class, PackageSnapshot.class, PackageSnapshot.class, DiffStatus.class,
+                com.bempdiff.diff.DiffResult.class);
         buildNode.setAccessible(true);
 
         Map<String, byte[]> oldE = new LinkedHashMap<>();
@@ -303,14 +305,14 @@ public final class ArchiveChildrenTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> both = (Map<String, Object>) buildNode.invoke(
-                null, "app.zip", oldSnap, newSnap, DiffStatus.MODIFIED);
+                null, "app.zip", oldSnap, newSnap, DiffStatus.MODIFIED, null);
         Asserts.assertEquals("双端应透传旧侧 sha256", "sha-app.zip", both.get("oldSha256"));
         Asserts.assertEquals("双端应透传新侧 sha256", "sha-app.zip", both.get("newSha256"));
 
         // DELETED 场景：key 仅存在于旧侧快照 → 不应输出任何新侧字段
         @SuppressWarnings("unchecked")
         Map<String, Object> del = (Map<String, Object>) buildNode.invoke(
-                null, "app.zip", oldSnap, snap("other.zip", newE), DiffStatus.DELETED);
+                null, "app.zip", oldSnap, snap("other.zip", newE), DiffStatus.DELETED, null);
         Asserts.assertNotNull("删除节点应带旧侧 sha256", del.get("oldSha256"));
         Asserts.assertTrue("删除节点不应带新侧 sha256", !del.containsKey("newSha256"));
         Asserts.assertTrue("删除节点不应带新侧大小", !del.containsKey("newSize"));
@@ -319,7 +321,7 @@ public final class ArchiveChildrenTest {
         PackageSnapshot noSha = snapWithSha("app.zip", null);
         @SuppressWarnings("unchecked")
         Map<String, Object> ns = (Map<String, Object>) buildNode.invoke(
-                null, "app.zip", noSha, noSha, DiffStatus.UNCHANGED);
+                null, "app.zip", noSha, noSha, DiffStatus.UNCHANGED, null);
         Asserts.assertTrue("sha256 为 null 时不应输出 old/new 字段",
                 !ns.containsKey("oldSha256") && !ns.containsKey("newSha256"));
         Asserts.assertNotNull("size 等其余字段不受影响", ns.get("size"));

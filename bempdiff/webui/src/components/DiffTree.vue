@@ -950,6 +950,9 @@ function ruleTypeLabel(t) {
               <i class="bi" :class="fileIcon(row.node.fileClass)" style="color:var(--bs-secondary-color)"></i>
               <span class="node-key text-truncate flex-1" :class="{'child-name': row.kind === 'archiveChild'}">{{ row.name || row.node.name || basenameOf(row.node.key) }}</span>
               <span class="badge text-bg-light badge-fc border" :title="t('dt.fileType', { fc: row.node.fileClass || t('dt.unknown') })">{{ row.node.fileClass }}</span>
+              <!-- T01810 FR-006 展示层：AST 口径「格式或位置变更」——被折叠为未变的格式化/重排差异显式可辨 -->
+              <span v-if="row.node.formattedOnly" class="badge text-bg-light badge-fc border"
+                    :title="t('dt.formattedOnly')"><i class="bi bi-brush" style="font-size:.68rem"></i> {{ t('dt.formattedOnly') }}</span>
               <template v-if="aiClassify[row.node.key] && row.kind !== 'archiveChild'">
                 <span class="badge" :class="riskMeta(aiClassify[row.node.key].risk).cls"
                       :title="t('dt.aiRisk', { label: riskLabel(aiClassify[row.node.key].risk) })">{{ riskLabel(aiClassify[row.node.key].risk) }}</span>

@@ -67,6 +67,12 @@ public final class MarkdownReport {
     /** FR-013：AI 实际消耗行（如「输入 1234 / 输出 567 tokens（3 次调用）」；空串=不插入）。 */
     private String aiUsageLine = "";
 
+    /** T01810 FR-006 展示层：AST 口径「格式或位置变更」条目数（0=不渲染统计行）。 */
+    private int formattedOnlyCount = 0;
+
+    /** T01810 FR-006 验收④：AST 不可解析降级行级的文件数（0=不渲染降级提示）。 */
+    private int astDegradedCount = 0;
+
     /** 设置 AI 实际消耗行（渲染进审计摘要，输入/输出分段）。 */
     public MarkdownReport setAiUsageLine(String line) {
         this.aiUsageLine = line == null ? "" : line;
@@ -82,6 +88,18 @@ public final class MarkdownReport {
     /** 设置变更影响面章节（紧跟 API 兼容性分级之后）。 */
     public MarkdownReport setImpactSection(String section) {
         this.impactSection = section == null ? "" : section;
+        return this;
+    }
+
+    /** 设置「格式或位置变更」条目数（DiffResult.formattedOnlyCount；0=不渲染）。 */
+    public MarkdownReport setFormattedOnlyCount(int n) {
+        this.formattedOnlyCount = Math.max(0, n);
+        return this;
+    }
+
+    /** 设置 AST 降级文件数（AstNormalizer.degradedCount；0=不渲染）。 */
+    public MarkdownReport setAstDegradedCount(int n) {
+        this.astDegradedCount = Math.max(0, n);
         return this;
     }
 
@@ -583,7 +601,19 @@ public final class MarkdownReport {
         sb.append("- 新增 **").append(stats.getAdded()).append(ATTR_DELETED_BETWEEN).append(stats.getDeleted())
                 .append(ATTR_MODIFIED_BETWEEN).append(stats.getModified()).append("** · 未变 ").append(stats.getUnchanged()).append("\n");
         sb.append("- 业务/类级变更(非jar)：").append(stats.getBizChanged())
-                .append(" · jar 级变更：").append(stats.getJarChanged()).append("\n\n");
+                .append(" · jar 级变更：").append(stats.getJarChanged()).append("\n");
+        // T01810 FR-006 展示层：AST 口径折叠的「格式或位置变更」单独计数——
+        // 让用户知道「有多少文件曾出现格式化/重排差异但被 AST 归位」，而非静默混入未变
+        if (formattedOnlyCount > 0) {
+            sb.append("- 其中按 AST 口径判定为「格式或位置变更」（已折叠为未变，不计入差异）：")
+              .append(formattedOnlyCount).append("\n");
+        }
+        // FR-006 验收④：不可解析的 .java 已降级行级口径——明示降级避免「为何该类还有格式假差异」困惑
+        if (astDegradedCount > 0) {
+            sb.append("> 注：").append(astDegradedCount)
+              .append(" 个 Java 文件无法解析为 AST（超限/语法不完整），已降级为行级比对口径。\n");
+        }
+        sb.append("\n");
     }
 
     private void renderFileTree(StringBuilder sb, DiffResult r) {

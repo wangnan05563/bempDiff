@@ -49,8 +49,10 @@ public final class DiffEngine {
                 boolean sameText = textuallySameEntries(oldSnap, newSnap, o, n);
                 // FR-006：.java 源码追加 AST 口径——格式化调整/注释增删/成员重排等非实质变更折叠为
                 // UNCHANGED（零假差异）；实质逻辑变更仍不等（不漏报）。任一侧解析失败自动降级行级口径。
+                // T01810 展示层：被 AST 口径折叠的条目旁路标记为「格式或位置变更」，供报告/树区分呈现。
                 if (!sameText && k.endsWith(".java") && astSameEntries(oldSnap, newSnap, o, n)) {
                     sameText = true;
+                    r.markFormattedOnly(k);
                 }
                 r.put(sameText ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, k);
             } else {

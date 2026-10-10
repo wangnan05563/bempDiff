@@ -30,6 +30,68 @@ public final class DiffTest {
         return new PackageSnapshot(Path.of("dummy"), null, null, entries);
     }
 
+    /** T01810 FR-006 展示层：AST 口径折叠的 .java 旁路标记「格式或位置变更」，与行级折叠/实质变更区分。 */
+    public void testCompute_formattedOnlyMarker() throws Exception {
+        String v1 = """
+                package com.demo;
+                // 头注释
+                public class Svc {
+                    private int count = 1;
+                    public String hello(String name) { return "hi, " + name; }
+                    public void run() { int x = 1; }
+                }
+                """;
+        // 重排 + 重新格式化 + 注释改写：AST 归一化相等 → UNCHANGED + formattedOnly
+        String v2Reordered = """
+                package com.demo;
+                /* 新注释 */
+                public class Svc {
+                    public void run() { int x = 1; }
+                    private int count = 1;
+                    public String hello(String name) { return "hi, " + name; }
+                }
+                """;
+        // 实质变更：方法体不同 → MODIFIED 且不标 formattedOnly
+        String v3Substantive = v1.replace("return \"hi, \" + name;", "return \"hello, \" + name;");
+
+        java.nio.file.Path f1 = java.nio.file.Files.createTempFile("bempdiff-fmt1-", ".java");
+        java.nio.file.Path f2 = java.nio.file.Files.createTempFile("bempdiff-fmt2-", ".java");
+        java.nio.file.Path f3 = java.nio.file.Files.createTempFile("bempdiff-fmt3-", ".java");
+        java.nio.file.Path f4 = java.nio.file.Files.createTempFile("bempdiff-fmt4-", ".java");
+        java.nio.file.Files.write(f1, v1.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.nio.file.Files.write(f2, v2Reordered.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.nio.file.Files.write(f3, v1.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.nio.file.Files.write(f4, v3Substantive.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        // CRLF 版：行级折叠（textuallySameEntries），不应标 formattedOnly（口径只标 AST 层）
+        java.nio.file.Path f5 = java.nio.file.Files.createTempFile("bempdiff-fmt5-", ".java");
+        java.nio.file.Files.write(f5, v1.replace("\n", "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        Map<String, LogicalEntry> old = new LinkedHashMap<>();
+        old.put("src/Svc.java", e("src/Svc.java", f1));
+        old.put("src/Sub.java", e("src/Sub.java", f3));
+        old.put("src/Eol.java", e("src/Eol.java", f3));
+        Map<String, LogicalEntry> now = new LinkedHashMap<>();
+        now.put("src/Svc.java", e("src/Svc.java", f2));
+        now.put("src/Sub.java", e("src/Sub.java", f4));
+        now.put("src/Eol.java", e("src/Eol.java", f5));
+
+        DiffResult r = new DiffEngine().compute(snap(old), snap(now));
+        Asserts.assertContains("重排+格式化应折叠为未变", r.get(DiffStatus.UNCHANGED).toString(), "src/Svc.java");
+        Asserts.assertTrue("AST 折叠条目应标记 formattedOnly", r.isFormattedOnly("src/Svc.java"));
+        Asserts.assertContains("实质变更应保持修改", r.get(DiffStatus.MODIFIED).toString(), "src/Sub.java");
+        Asserts.assertTrue("实质变更不应标记 formattedOnly", !r.isFormattedOnly("src/Sub.java"));
+        Asserts.assertContains("仅行尾差异应折叠为未变", r.get(DiffStatus.UNCHANGED).toString(), "src/Eol.java");
+        Asserts.assertTrue("行级折叠不应标记 formattedOnly（口径仅 AST 层）", !r.isFormattedOnly("src/Eol.java"));
+        Asserts.assertEquals("计数应恰为 1", 1, r.formattedOnlyCount());
+    }
+
+    /** 构造 folder 模式 .java 条目（EntrySource 指向磁盘真实文件，供 AST 判定读内容）。 */
+    private static LogicalEntry e(String key, java.nio.file.Path f) throws java.io.IOException {
+        return new LogicalEntry(key, Layer.L0, FileClass.OTHER,
+                java.nio.file.Files.size(f), "sha-" + key + "-" + f.getFileName(),
+                new EntrySource(f.toString(), null));
+    }
+
     /** 仅行尾(CRLF/LF)差异的文本(.sh)应视为无差异；内容确不同才判修改（与 diff 视图口径一致，避免误进导出/破坏性）。 */
     public void testCompute_lineEndingOnlyShIsUnchanged() throws Exception {
         java.nio.file.Path oldF = java.nio.file.Files.createTempFile("bempdiff-old-", ".sh");

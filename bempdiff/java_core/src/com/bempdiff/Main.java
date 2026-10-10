@@ -315,6 +315,9 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                 oldSnap, newSnap, r, dec, topK);
 
         MarkdownReport rep = new MarkdownReport(topK);
+        // T01810 FR-006 展示层：AST 折叠计数与降级计数进报告统计段
+        rep.setFormattedOnlyCount(r.formattedOnlyCount());
+        rep.setAstDegradedCount(com.bempdiff.diff.AstNormalizer.degradedCount());
 
         // FR-007：API 兼容性静态分级（复用 FR-006 AST 基建）——decompiled 此刻仅含 class 候选
         //（text 尚未并入），天然是 Java 源码集；结果进报告章节 + AI 上下文 + ci JSON。
@@ -443,7 +446,10 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         // 生成聚焦报告（含通用章节 + 差异 JAR 内部源码对比章节）
         Map<String, DecompiledUnit> decompiled = decompileTop(prep, dec, topK);
         Map<String, DecompiledUnit> text = buildTextMap(r, oldSnap, newSnap, topK);
-        new MarkdownReport(topK).writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
+        new MarkdownReport(topK)
+                .setFormattedOnlyCount(r.formattedOnlyCount())
+                .setAstDegradedCount(com.bempdiff.diff.AstNormalizer.degradedCount())
+                .writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
         System.out.println("report: " + outMd); // NOSONAR
     }
 

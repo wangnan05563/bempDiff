@@ -17,6 +17,7 @@ import com.bempdiff.diff.DiffEngine;
 import com.bempdiff.diff.DiffResult;
 import com.bempdiff.diff.DiffStats;
 import com.bempdiff.diff.DiffStatus;
+import com.bempdiff.diff.AstNormalizer;
 import com.bempdiff.diff.FrontendTextDiff;
 import com.bempdiff.diff.LibJarDiff;
 import com.bempdiff.diff.ArchiveTree;
@@ -518,7 +519,7 @@ public final class BempServer {
                 // 自动解包去重：仅当本次作业启用了物理解包时才跳过扁平化嵌套后代——避免误藏
                 // 未解包模式下已存在的嵌套条目（如 expandAll 正常生成、非平铺的带归档祖先路径）。
                 if (unpackNested && isFlattenedDescendant(k, oldSnap, newSnap)) continue;
-                tree.add(buildNode(k, oldSnap, newSnap, st));
+                tree.add(buildNode(k, oldSnap, newSnap, st, r));
             }
         }
         return tree;
@@ -549,7 +550,8 @@ public final class BempServer {
         return fc == FileClass.ARCHIVE || fc == FileClass.JAR;
     }
 
-    private static Map<String, Object> buildNode(String k, PackageSnapshot oldSnap, PackageSnapshot newSnap, DiffStatus st) {
+    private static Map<String, Object> buildNode(String k, PackageSnapshot oldSnap, PackageSnapshot newSnap,
+                                                  DiffStatus st, DiffResult r) {
         LogicalEntry e = oldSnap.getEntries().get(k);
         if (e == null) e = newSnap.getEntries().get(k);
         LogicalEntry oe = oldSnap.getEntries().get(k);
@@ -560,6 +562,9 @@ public final class BempServer {
         node.put("layer", (e != null && e.getLayer() != null) ? e.getLayer().name() : "?");
         node.put("fileClass", (e != null && e.getFileClass() != null) ? e.getFileClass().name() : "OTHER");
         node.put("size", e != null ? e.getSize() : 0);
+        // T01810 FR-006 展示层：AST 口径「格式或位置变更」徽标——仅在 true 时下发，
+        // 避免全量树每节点多一个 false 字段（大包万级节点的序列化体积）
+        if (r != null && r.isFormattedOnly(k)) node.put("formattedOnly", true);
         // R2 二进制摘要卡（二期 T01454）：双端大小 + 双端 SHA-256。
         // SHA-256 在 parse 期已随 LogicalEntry 计算，此处仅透传，零额外 IO。
         if (oe != null) node.put("oldSize", oe.getSize());
@@ -696,6 +701,9 @@ public final class BempServer {
             // 复用 per-job 工作缓存（反编译/文本差异/jar 分析），与 ai-analyze/export 共享，避免重复计算
             AiWorkCache work = getAiWork(job);
             MarkdownReport rep = new MarkdownReport(job.opts.getTopK());
+            // T01810 FR-006 展示层：AST 折叠/降级计数进报告统计段（AI 分支由 runAiAnalysis 内同口径接线）
+            rep.setFormattedOnlyCount(job.getResult().formattedOnlyCount());
+            rep.setAstDegradedCount(AstNormalizer.degradedCount());
             String md = buildMarkdown(job, ai, projDir, category, prompt,
                     work.decompiled, work.text, work.libJar, rep);
             sendText(ex, 200, "text/markdown", md);
@@ -776,6 +784,9 @@ public final class BempServer {
         MarkdownReport rep = new MarkdownReport(job.opts.getTopK());
         // 报告 AI 章节标注本次分析聚焦项，让「所选分析项」在报告内容中显式可见
         rep.setAiFocus(categoryLabel(category, prompt));
+        // T01810 FR-006 展示层：AST 折叠/降级计数——AI 与非 AI 两条报告路径同口径
+        rep.setFormattedOnlyCount(job.getResult().formattedOnlyCount());
+        rep.setAstDegradedCount(AstNormalizer.degradedCount());
         // 聚焦精简报告：仅当用户显式选择具体专项（权威类别为破坏性/影响/测试要点/自定义）时启用——
         // 以 AI 章节为核心，其余章节压缩为背景（差异规模、变更文件清单），标题随分析主题（如「测试要点分析报告」）；
         // 整体风险分析（risk）与默认整体分析（normCat=null）仍走完整差异报告，

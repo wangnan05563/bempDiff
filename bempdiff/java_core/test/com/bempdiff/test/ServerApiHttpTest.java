@@ -3,6 +3,7 @@ package com.bempdiff.test;
 import com.bempdiff.server.ServerConfig;
 
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -197,7 +198,8 @@ public final class ServerApiHttpTest {
             Asserts.assertTrue("响应体应非空", b.length > 0);
             Asserts.assertTrue("应为 zip 魔数（PK）", b.length > 2 && b[0] == 'P' && b[1] == 'K');
             Asserts.assertTrue("验收②：包体应 <5MB", b.length < 5 * 1024 * 1024);
-            Asserts.assertTrue("应含 env.json 内容特征", new String(b, StandardCharsets.ISO_8859_1).contains("osName"));
+            // env.json 内容断言在 DiagBundleTest（zip 条目 deflate 压缩后无法按明文搜特征，
+            // 此处仅验证端到端 zip 通道；内容正确性由构建器单测覆盖）
 
             HttpResponse<String> post = s.post("/api/admin/diag-bundle", "{}");
             Asserts.assertEquals("非 GET 应 405", 405, post.statusCode());
