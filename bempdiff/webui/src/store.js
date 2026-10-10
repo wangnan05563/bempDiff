@@ -32,7 +32,7 @@ export function statusLabel(s) {
 //   busy      - true 表示反编译请求中（即便 decompile 已为 null）
 //   error     - 反编译抛异常的 message；与 decompile.ok=false 区分（一个是后端说不行，一个是网络/解析挂了）
 export const state = reactive({
-  theme: localStorage.getItem('bempdiff-theme') || 'light',
+  theme: localStorage.getItem('bempdiff-theme') || 'light', // 偏好值：light|dark|system（system 由 applyTheme 实时解析；字面量与下方 THEME_KEY 保持一致，此处先于其声明执行）
   accent: 'blue',        // R10 主题强调色 key（ToolBar 启动时从 localStorage 恢复）
   job: null,
   leftType: 'package',     // 比对输入类型：package（war/jar）| folder（解压目录）
@@ -109,14 +109,41 @@ export function toast(type, text, ms = 3200) {
   toastTimer = setTimeout(() => { state.toast = null }, ms)
 }
 
+// 主题三态（FR-004）：'light' | 'dark' | 'system'（跟随系统）。
+// data-bs-theme 只接受实际两态，'system' 需按 matchMedia 解析——
+// 持久化保存用户原始选择，解析结果实时反映；系统切换时无刷新跟随。
+const THEME_KEY = 'bempdiff-theme'
+const THEME_ORDER = ['light', 'dark', 'system']
+const themeMedia = (typeof window !== 'undefined' && window.matchMedia)
+  ? window.matchMedia('(prefers-color-scheme: dark)') : null
+
+/** 把偏好值解析为实际主题：'system' 依赖系统亮暗，其余原样。 */
+export function resolveTheme(pref) {
+  if (pref !== 'system') return pref
+  return (themeMedia && themeMedia.matches) ? 'dark' : 'light'
+}
+
 export function applyTheme(t) {
   state.theme = t
-  localStorage.setItem('bempdiff-theme', t)
-  document.documentElement.setAttribute('data-bs-theme', t)
+  localStorage.setItem(THEME_KEY, t)
+  document.documentElement.setAttribute('data-bs-theme', resolveTheme(t))
+}
+
+/** 循环切换 亮 → 暗 → 跟随系统 → 亮（工具栏单按钮三态）。 */
+export function cycleTheme() {
+  const i = THEME_ORDER.indexOf(state.theme)
+  applyTheme(THEME_ORDER[(i + 1) % THEME_ORDER.length])
 }
 
 export async function init() {
   applyTheme(state.theme)
+  // 「跟随系统」实时切换：系统亮暗变化时按当前偏好重新解析（验收③无刷新切换）。
+  // 只在 system 偏好下监听也需覆盖「切换到 system 之后」的场景，故常驻监听、回调内部判偏好。
+  if (themeMedia && typeof themeMedia.addEventListener === 'function') {
+    themeMedia.addEventListener('change', () => {
+      if (state.theme === 'system') document.documentElement.setAttribute('data-bs-theme', resolveTheme('system'))
+    })
+  }
   state.ignoreRules = loadIgnoreRules() // 右键菜单「忽略」规则：跨会话持久化
   try {
     state.config = await api.getConfig()

@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
+import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, cycleTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import { ACCENTS, loadAccentKey, applyAccent } from '../lib/accents'
 import { i18n, LOCALES, setLocale, t } from '../lib/i18n'
@@ -183,9 +183,14 @@ function goForward() {
   applySnapshot(histStack.value[histIndex.value])
 }
 
-// 主题切换：整合进工具栏（原在 TopBar 内）
-const isDark = computed(() => state.theme === 'dark')
-function toggleTheme() { applyTheme(isDark.value ? 'light' : 'dark') }
+// 主题切换：整合进工具栏（原在 TopBar 内）。FR-004 三态循环：亮 → 暗 → 跟随系统 → 亮。
+const THEME_META = {
+  light:  { icon: 'bi-sun',         labelKey: 'tb.theme.light' },
+  dark:   { icon: 'bi-moon-stars',  labelKey: 'tb.theme.dark' },
+  system: { icon: 'bi-circle-half', labelKey: 'tb.theme.system' },
+}
+const themeIcon = computed(() => (THEME_META[state.theme] || THEME_META.light).icon)
+const themeTip = computed(() => t((THEME_META[state.theme] || THEME_META.light).labelKey))
 
 // R10 强调色（二期 T01475）：预设色盘选择，明暗主题正交叠加
 state.accent = loadAccentKey()
@@ -366,9 +371,9 @@ function doCompare() { triggerCompare() }
         </div>
         <span class="text-secondary" style="font-size:.66rem">{{ state.exportProgress.percent }}% {{ state.exportProgress.etaText }}</span>
       </div>
-      <button class="btn btn-outline-secondary btn-sm" @click="toggleTheme"
-              :aria-label="isDark ? t('tb.themeLight') : t('tb.themeDark')" :title="isDark ? t('tb.themeLight') : t('tb.themeDark')">
-        <i class="bi" :class="isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
+      <button class="btn btn-outline-secondary btn-sm" @click="cycleTheme"
+              :aria-label="themeTip" :title="themeTip">
+        <i class="bi" :class="themeIcon"></i>
       </button>
       <!-- R10 强调色选择：色点下拉（明暗主题正交叠加） -->
       <div class="position-relative" ref="accentWrap">

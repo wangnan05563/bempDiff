@@ -1612,6 +1612,10 @@ onUpdated(() => measureVisible())
 .row .gt.gt-add, .prow .gt.gt-add { background: rgba(46, 160, 67, 0.10); color: #1a7f37; }
 .row .gt.gt-del, .prow .gt.gt-del { background: rgba(248, 81, 73, 0.10); color: #cf222e; }
 .row .gt.gt-rep, .prow .gt.gt-rep { background: rgba(187, 128, 9, 0.10); color: #9a6700; }
+/* 暗色下沿用 GitHub dark 色板同款亮色文字（#3fb950/#f85149/#d29922），保证 WCAG AA 对比度 */
+[data-bs-theme="dark"] .row .gt.gt-add, [data-bs-theme="dark"] .prow .gt.gt-add { color: #3fb950; }
+[data-bs-theme="dark"] .row .gt.gt-del, [data-bs-theme="dark"] .prow .gt.gt-del { color: #f85149; }
+[data-bs-theme="dark"] .row .gt.gt-rep, [data-bs-theme="dark"] .prow .gt.gt-rep { color: #d29922; }
 .row:hover, .prow:hover { background: var(--bs-tertiary-bg); }
 .row .ln, .prow .ln {
   text-align: right; padding: 0 .4rem;
