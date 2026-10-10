@@ -47,6 +47,11 @@ public final class DiffEngine {
                 // 避免这类 .sh/.properties 等被误标 MODIFIED 而进入导出/破坏性/统计（与 diff 视图行尾中性口径一致）。
                 // 仅在 sha 不同时才读内容规范化比较，缩小 IO；超限/读取失败回退 sha 判定。
                 boolean sameText = textuallySameEntries(oldSnap, newSnap, o, n);
+                // FR-006：.java 源码追加 AST 口径——格式化调整/注释增删/成员重排等非实质变更折叠为
+                // UNCHANGED（零假差异）；实质逻辑变更仍不等（不漏报）。任一侧解析失败自动降级行级口径。
+                if (!sameText && k.endsWith(".java") && astSameEntries(oldSnap, newSnap, o, n)) {
+                    sameText = true;
+                }
                 r.put(sameText ? DiffStatus.UNCHANGED : DiffStatus.MODIFIED, k);
             } else {
                 r.put(DiffStatus.UNCHANGED, k);
@@ -123,6 +128,18 @@ public final class DiffEngine {
         } catch (Exception ignored) {
             return Optional.empty();
         }
+    }
+
+    /** FR-006：.java 条目的 AST 口径判定——两侧解析成功且成员排序归一化相等（无实质逻辑变更）→ true。
+     *  任一侧读取失败/解析降级 → false（回退行级口径，降级次数由 AstNormalizer 计数供观测）。 */
+    private static boolean astSameEntries(PackageSnapshot os, PackageSnapshot ns, LogicalEntry o, LogicalEntry n) {
+        if (o.getSize() > AstNormalizer.MAX_SRC_CHARS || n.getSize() > AstNormalizer.MAX_SRC_CHARS) return false;
+        Optional<byte[]> a = readEntryBytesSafe(os, o);
+        Optional<byte[]> b = readEntryBytesSafe(ns, n);
+        if (a.isEmpty() || b.isEmpty()) return false;
+        return AstNormalizer.sameAst(
+                new String(a.get(), java.nio.charset.StandardCharsets.UTF_8),
+                new String(b.get(), java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /** 规范化文本内容：去 UTF-8 BOM、统一换行（\r\n/\r → \n）、去每行行尾空白。 */
