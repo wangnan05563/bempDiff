@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, cycleTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory } from '../store'
+import { state, triggerCompare, generateReport, downloadExport, runAiClassify, toast, applyTheme, cycleTheme, ingestShellPaths, inferType, startAiAnalysis, aiAnyRunning, isUnpacking, openExports, loadCompareHistory, restoreCompareHistory, removeCompareHistory, clearCompareHistory, loadSavedSessions, saveNamedSession, applyNamedSession, removeNamedSession } from '../store'
 import { isTauri, isElectron, pickPath } from '../lib/tauri'
 import { ACCENTS, loadAccentKey, applyAccent } from '../lib/accents'
 import { i18n, LOCALES, setLocale, t } from '../lib/i18n'
@@ -47,7 +47,7 @@ const showHistory = ref(false)
 const historyWrap = ref(null)
 function toggleHistory() {
   showHistory.value = !showHistory.value
-  if (showHistory.value) loadCompareHistory()
+  if (showHistory.value) { loadCompareHistory(); loadSavedSessions() }
 }
 function histTime(ts) {
   const d = new Date(ts)
@@ -72,6 +72,26 @@ function onClearHist() {
     clearCompareHistory()
     showHistory.value = false
   }
+}
+
+// ---------------- FR-010 命名保存常用对比任务 ----------------
+const sessionName = ref('')
+function onSaveSession() {
+  if (saveNamedSession(sessionName.value)) {
+    toast('success', t('tb.sessionSaved', { name: sessionName.value.trim() }))
+    sessionName.value = ''
+  } else {
+    toast('error', t('tb.sessionSaveNeedName'))
+  }
+}
+function onApplySession(i) {
+  if (applyNamedSession(i)) {
+    showHistory.value = false
+    toast('success', t('tb.sessionApplied'))
+  }
+}
+function onRemoveSession(i) {
+  if (window.confirm(t('tb.histRemoveConfirm'))) removeNamedSession(i)
 }
 
 // 收敛：工具栏仅保留「生成纯文本/Markdown 报告（不调用 AI）」；AI 报告入口统一在 InfoPanel / ReportPreview
@@ -274,6 +294,33 @@ function doCompare() { triggerCompare() }
       </button>
       <ul class="dropdown-menu show py-1" v-if="showHistory"
           style="position:absolute;left:0;top:100%;z-index:1000;min-width:22rem;max-height:24rem;overflow:auto">
+        <!-- FR-010 命名会话区（用户显式管理、不自动淘汰，与自动历史分池） -->
+        <li class="px-2 py-1 d-flex justify-content-between align-items-center" style="font-size:.72rem;color:var(--bs-secondary-color)">
+          <span>{{ t('tb.sessionTitle') }}</span>
+        </li>
+        <li class="px-2 pb-1 d-flex gap-1">
+          <input v-model="sessionName" class="form-control form-control-sm py-0" style="font-size:.72rem"
+                 :placeholder="t('tb.sessionNamePh')" maxlength="60"
+                 @keydown.enter="onSaveSession" :aria-label="t('tb.sessionNamePh')">
+          <button class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size:.72rem" @click="onSaveSession"
+                  :disabled="aiBusy" :aria-label="t('tb.sessionSave')" :title="t('tb.sessionSaveTip')">
+            <i class="bi bi-plus-lg"></i>
+          </button>
+        </li>
+        <li v-if="!state.savedSessions.length" class="px-2 py-1 text-secondary" style="font-size:.72rem">
+          {{ t('tb.sessionEmpty') }}
+        </li>
+        <li v-for="(s, i) in state.savedSessions" :key="'sv' + i + s.at"
+            class="dropdown-item d-flex align-items-center gap-2 text-wrap" style="font-size:.75rem">
+          <span role="button" style="flex:1 1 auto;min-width:0" :title="s.name + '：' + s.oldPath + '  ⇄  ' + s.newPath" @click="onApplySession(i)">
+            <i class="bi bi-bookmark-star" style="font-size:.7rem"></i>
+            <strong style="font-size:.74rem">{{ s.name }}</strong>
+            <span class="text-secondary ms-1" style="font-size:.68rem">{{ histTime(s.at) }}</span>
+          </span>
+          <i class="bi bi-x-lg" role="button" style="font-size:.7rem;opacity:.55" :title="t('tb.histRemove')" @click.stop="onRemoveSession(i)"></i>
+        </li>
+        <li><hr class="dropdown-divider"></li>
+        <!-- R5 自动历史区（LRU 20 条） -->
         <li class="px-2 py-1 d-flex justify-content-between align-items-center" style="font-size:.72rem;color:var(--bs-secondary-color)">
           <span>{{ t('tb.histCount', { n: state.compareHistory.length }) }}</span>
           <a href="#" v-if="state.compareHistory.length" @click.prevent="onClearHist" style="font-size:.7rem">{{ t('tb.clear') }}</a>

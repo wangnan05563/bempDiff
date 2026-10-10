@@ -78,6 +78,7 @@ export const state = reactive({
   aiTasks: [],            // { id, category, title, prompt, status, thinking[], answer, error }
   aiActiveTaskId: null,   // 当前聚焦的 AI 分析任务 tab
   compareHistory: [],     // R5 比对会话历史（跨启动 localStorage 持久化，仅路径元数据不含差异内容）
+  savedSessions: [],      // FR-010 命名保存的常用对比任务（与自动历史分池，用户显式管理不自动淘汰）
   treeFilterFocusTick: 0, // R6：全局快捷键 Ctrl+K 请求聚焦差异树过滤框（自增信号，DiffTree watch）
   aiSelCategory: 'risk',  // 「新建分析 / 生成报告(AI)」共享的当前分析项（risk/breaking/impact/testpoints/custom）
   reportCategory: null,   // 最近一次生成报告所用的分析项（ReportPreview「重新生成」沿用；null=基础报告/默认整体分析）
@@ -383,6 +384,65 @@ export function restoreCompareHistory(i) {
 export function clearCompareHistory() {
   state.compareHistory = []
   try { localStorage.removeItem(COMPARE_HISTORY_KEY) } catch (_) { /* 静默 */ }
+}
+
+// ---------------- FR-010 命名保存常用对比任务 ----------------
+// 与自动历史（20 条 LRU，会被新比对挤掉）分池：命名会话由用户显式管理、不自动淘汰，
+// 供高频固定比对场景（如每周升级包验收）一键回填。同样仅存路径元数据（Key 不落盘原则）。
+const SAVED_SESSIONS_KEY = 'bempdiff.savedSessions'
+const SAVED_SESSIONS_MAX = 30
+
+/** 读取命名会话列表（首次从 localStorage 装载；坏数据静默清空）。 */
+export function loadSavedSessions() {
+  if (!state.savedSessions.length) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SAVED_SESSIONS_KEY) || '[]')
+      if (Array.isArray(raw)) state.savedSessions = raw.slice(0, SAVED_SESSIONS_MAX)
+    } catch (_) { /* 忽坏数据 */ }
+  }
+  return state.savedSessions
+}
+function saveSavedSessions() {
+  try {
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(state.savedSessions.slice(0, SAVED_SESSIONS_MAX)))
+  } catch (_) { /* 非安全上下文等异常静默 */ }
+}
+/** 把当前左右路径 + 输入类型保存为命名会话；同名覆盖（刷新时间戳）。名为空不保存。 */
+export function saveNamedSession(name) {
+  const n = String(name || '').trim()
+  const o = String(state.oldPath || '').trim()
+  const p = String(state.newPath || '').trim()
+  if (!n || !o || !p) return false
+  const list = loadSavedSessions()
+  const exist = list.find(s => s.name === n)
+  if (exist) {
+    exist.oldPath = o
+    exist.newPath = p
+    exist.leftType = state.leftType || 'package'
+    exist.at = Date.now()
+  } else {
+    list.unshift({ name: n, oldPath: o, newPath: p, leftType: state.leftType || 'package', at: Date.now() })
+  }
+  state.savedSessions = list.slice(0, SAVED_SESSIONS_MAX)
+  saveSavedSessions()
+  return true
+}
+/** 应用第 i 个命名会话：回填路径与输入类型（回填不自动比对，与历史重放同款安全口径）。 */
+export function applyNamedSession(i) {
+  const item = loadSavedSessions()[i]
+  if (!item) return false
+  state.leftType = item.leftType || 'package'
+  state.oldPath = item.oldPath
+  state.newPath = item.newPath
+  return true
+}
+/** 删除第 i 个命名会话（i 越界静默）。 */
+export function removeNamedSession(i) {
+  const list = loadSavedSessions()
+  if (i < 0 || i >= list.length) return
+  list.splice(i, 1)
+  state.savedSessions = list
+  saveSavedSessions()
 }
 
 // ---------------- R9 启动更新检查（二期 T01471） ----------------
