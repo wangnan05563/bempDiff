@@ -52,7 +52,22 @@ function cycleGranularity() {
 }
 // 折叠未变：收起远离变化块的纯 ctx 行（对标 Beyond Compare 忽略未变更区段）
 const collapse = ref(false)
-const foldWin = 3
+// 折叠上下文行数：默认 3（变化行前后各保留 3 行）。FR-003 验收①要求「默认 3~5 行可配置」，
+// 故放开为用户可调并持久化——沿 DiffView 既有惯例（copyWithLineNo 同款 localStorage 轻量偏好）。
+const FOLD_WIN_KEY = 'bempdiff.diffFoldWin'
+const FOLD_WIN_CHOICES = [1, 3, 5, 10]
+const foldWin = ref((() => {
+  try { const v = parseInt(localStorage.getItem(FOLD_WIN_KEY), 10); if (FOLD_WIN_CHOICES.includes(v)) return v } catch (_) {}
+  return 3
+})())
+// select 的 v-model 代理：落库失败静默（偏好丢失仅回默认值，不阻塞交互）
+const foldWinSel = computed({
+  get: () => foldWin.value,
+  set: (v) => {
+    foldWin.value = Number(v)
+    try { localStorage.setItem(FOLD_WIN_KEY, String(foldWin.value)) } catch (_) {}
+  }
+})
 
 // 查看模式：diffOnly=false=全量内容（显示全部代码行，含未变更）；true=仅差异内容（未变更行全部折叠，只留差异行）。
 // 差异内容模式复用 foldContext(rows, true, 0)——win=0 时所有 ctx 行折叠成占位条，与报告「只写差异内容」语义一致。
@@ -204,7 +219,7 @@ const foldedRows = computed(() => {
   if (!rows.value.length) return []
   if (diffOnly.value) return foldContext(rows.value, true, 0)
   const hasChanges = rows.value.some(r => r.type === 'del' || r.type === 'add' || r.type === 'rep')
-  return foldContext(rows.value, collapse.value && hasChanges, foldWin)
+  return foldContext(rows.value, collapse.value && hasChanges, foldWin.value)
 })
 
 // 差异行（rep/del/add）快速定位序列；i = 原始下标 _i。
@@ -1244,6 +1259,12 @@ onUpdated(() => measureVisible())
               :aria-label="collapse ? t('dv.collapseOn') : t('dv.collapseOff')" :title="collapse ? t('dv.collapseOn') : t('dv.collapseOff')">
         <i class="bi" :class="collapse ? 'bi-arrows-expand' : 'bi-arrows-collapse'"></i>
       </button>
+      <!-- 折叠上下文行数（折叠态下变化行前后保留几行原文）；仅折叠激活时显示，避免未折叠时无效控件干扰 -->
+      <select v-if="collapse || diffOnly" v-model.number="foldWinSel" :disabled="diffOnly"
+              class="form-select form-select-sm py-0 px-1 ms-1" style="width:auto;font-size:.75rem"
+              :aria-label="t('dv.foldWin')" :title="t('dv.foldWin')">
+        <option v-for="n in FOLD_WIN_CHOICES" :key="n" :value="n">{{ t('dv.foldWinOpt', { n }) }}</option>
+      </select>
       <!-- 查看模式：全量内容 / 仅差异内容 合并为单个动画图标，点击切换（图标随状态翻转淡入） -->
       <button class="btn btn-sm dvt-mode-btn ms-1 py-0 px-2" style="font-size:1.05rem"
               :class="diffOnly ? 'btn-primary' : 'btn-outline-secondary'"

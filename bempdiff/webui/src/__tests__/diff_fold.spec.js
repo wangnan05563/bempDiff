@@ -46,6 +46,18 @@ describe('foldContext 折叠未变', () => {
     expect(out.map(r => r.type)).toEqual(['fold', 'add', 'fold'])
   })
 
+  it('win=5（可配置值域上限档）：5 行内 context 逐行保留，更远段折叠', () => {
+    // 对应 FR-003 验收①「默认上下文 3~5 行可配置」：DiffView foldWin 可选 1/3/5/10，
+    // 此用例锁定 win=5 的折叠边界与 win=3 语义一致（段首窗口判定）。
+    const src = mk(ctx(5), [{ type: 'del' }], ctx(8))
+    const out = foldContext(src, true, 5)
+    // del(5) 的窗口是 [0..10]：前段段首 0 落在窗口内 → 逐个保留 0..4；
+    // 后段段首 5 在窗口内 → 保留 5..9，10 超出 → 折叠 8-5=3 行。
+    expect(out.filter(r => r.type === 'ctx').length).toBe(5 + 5)
+    expect(out.filter(r => r.type === 'fold').map(r => r.count)).toEqual([3])
+    expect(out.filter(r => r.type === 'del').length).toBe(1)
+  })
+
   it('无差异（全 ctx）时 win=0 折叠成单条占位', () => {
     const out = foldContext(ctx(8), true, 0)
     expect(out.length).toBe(1)
