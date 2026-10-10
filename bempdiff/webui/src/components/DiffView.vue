@@ -69,6 +69,64 @@ function onHlThemeChange(e) {
   setHlTheme(e.target.value)
 }
 
+// ---------------- T01811 FR-015 gutter 操作：复制到对侧 + 标记已审阅 ----------------
+// 复制到对侧：内存态覆盖 rep 行对侧文本（旧→新=接受旧值，新→旧=回退新值），不写回源文件；
+// 切文件/重比对经 startParse 重建 rows 自然还原。del/add 行不做复制（需行号重排，语义成本高）。
+const editedRows = ref(new Set())
+function copyToOther(ri, side) {
+  const r = rows.value[ri]
+  if (!r || r.type !== 'rep') return
+  if (side === 'left') r.rightText = r.leftText
+  else r.leftText = r.rightText
+  editedRows.value.add(ri)
+  editedRows.value = new Set(editedRows.value) // 触发按钮可见性重算
+  inlineCache.delete(ri + '|' + lang.value)
+  rows.value = rows.value.slice() // 浅拷贝引用触发 shallowRef 重渲染（行对象已就地修改）
+  toast('success', t('dv.copiedToOther'))
+}
+/** 还原全部：从原始源码重建对齐与行文本（覆盖层整体作废，已审阅标记保留）。 */
+function revertAllEdits() {
+  editedRows.value = new Set()
+  startParse()
+}
+const hasEdits = computed(() => editedRows.value.size > 0)
+
+// 标记已审阅：按 job+file 维度持久化（同 job 同文件的行对齐是确定性的，行号稳定）；
+// 行视觉弱化（置灰）表示人工过目，一键清除。与行选择/复制互不干扰（.stop 阻断冒泡）。
+// curFileKey/watch 依赖后文定义的 at（tab 激活态），故拆到 at 初始化之后（见 fclassMeta 附近），
+// 避免 watch 建立即求值 source 时触发 TDZ。
+const REVIEWED_KEY = 'bempdiff.reviewed'
+const reviewedMarks = ref(new Set())
+const reviewedStoreKey = computed(() => (state.job && state.job.jobId) || '_')
+function loadReviewed() {
+  reviewedMarks.value = new Set()
+  try {
+    const all = JSON.parse(localStorage.getItem(REVIEWED_KEY) || '{}')
+    const arr = (all[reviewedStoreKey.value] || {})[curFileKey.value]
+    if (Array.isArray(arr)) reviewedMarks.value = new Set(arr)
+  } catch (_) { /* 损坏数据静默重置，不阻塞渲染 */ }
+}
+function saveReviewed() {
+  try {
+    const all = JSON.parse(localStorage.getItem(REVIEWED_KEY) || '{}')
+    const job = all[reviewedStoreKey.value] || {}
+    job[curFileKey.value] = [...reviewedMarks.value]
+    all[reviewedStoreKey.value] = job
+    localStorage.setItem(REVIEWED_KEY, JSON.stringify(all))
+  } catch (_) { /* 持久化失败仅丢失跨会话标记，不影响本次会话 */ }
+}
+function toggleReviewed(ri) {
+  if (reviewedMarks.value.has(ri)) reviewedMarks.value.delete(ri)
+  else reviewedMarks.value.add(ri)
+  reviewedMarks.value = new Set(reviewedMarks.value)
+  saveReviewed()
+}
+const hasReviewed = computed(() => reviewedMarks.value.size > 0)
+function clearReviewed() {
+  reviewedMarks.value = new Set()
+  saveReviewed()
+}
+
 // 折叠上下文行数：默认 3（变化行前后各保留 3 行）。FR-003 验收①要求「默认 3~5 行可配置」，
 // 故放开为用户可调并持久化——沿 DiffView 既有惯例（copyWithLineNo 同款 localStorage 轻量偏好）。
 const FOLD_WIN_KEY = 'bempdiff.diffFoldWin'
@@ -111,6 +169,13 @@ const forceFull = ref(false) // 用户在超大文件时手动「展开完整差
 
 const tabs = computed(() => state.tabs)
 const at = computed(() => activeTab())
+// T01811（接前）：curFileKey 依赖 at（tab 激活态）——at 定义后才能建立 watch（避免 TDZ）。
+const curFileKey = computed(() => (at.value && at.value.node && at.value.node.key) || (at.value && at.value.key) || '')
+// 切文件/切 job：手动覆盖作废（行号属旧对齐），已审阅标记按新维度恢复
+watch([reviewedStoreKey, curFileKey], () => {
+  editedRows.value = new Set()
+  loadReviewed()
+})
 const node = computed(() => at.value ? at.value.node : null)
 const dec = computed(() => at.value ? at.value.decompile : null)
 const busy = computed(() => !!(at.value && at.value.busy && !dec.value))
@@ -1245,6 +1310,15 @@ onUpdated(() => measureVisible())
         <span class="text-warning"><i class="bi bi-pencil-square"></i> {{ totalStats.modified.toLocaleString() }}</span>
         <span class="text-secondary"><i class="bi bi-equals"></i> {{ totalStats.unchanged.toLocaleString() }}</span>
       </span>
+      <!-- T01811 FR-015 gutter 操作的全局入口：存在手动覆盖/已审阅标记时才显示（避免常驻噪声） -->
+      <button v-if="hasEdits" class="btn btn-sm btn-outline-warning py-0 px-2 me-1" style="font-size:.78rem"
+              @click="revertAllEdits" :aria-label="t('dv.revertAll')" :title="t('dv.revertAll')">
+        <i class="bi bi-arrow-counterclockwise"></i> {{ t('dv.revertAll') }}
+      </button>
+      <button v-if="hasReviewed" class="btn btn-sm btn-outline-secondary py-0 px-2 me-1" style="font-size:.78rem"
+              @click="clearReviewed" :aria-label="t('dv.clearReviewed')" :title="t('dv.clearReviewed')">
+        <i class="bi bi-check2-all"></i> {{ t('dv.clearReviewed') }}
+      </button>
       <!-- R2 行级选中操作条：复制选中行（可含行号前缀）/ 清除选择；Ctrl+C / Esc 同效 -->
       <div class="btn-group btn-group-sm me-1" v-if="selRows.size" role="group" :aria-label="t('dv.selGroup')">
         <span class="btn btn-outline-primary py-0 px-2 disabled d-flex align-items-center sel-chip-count" style="font-size:.72rem;pointer-events:none">
@@ -1427,7 +1501,7 @@ onUpdated(() => measureVisible())
         <div class="diff-pane" ref="leftPaneRef" @scroll="onPaneScroll('left')">
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
             <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
-                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs }]"
+                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs, reviewed: v.ri >= 0 && reviewedMarks.has(v.ri) }]"
                  :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'left')"
                  @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
                  :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0', minHeight: (heights[v.abs] || EST_ROW_H) + 'px' }">
@@ -1439,6 +1513,13 @@ onUpdated(() => measureVisible())
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'left')" class="bi" :class="gtIcon(v, 'left')"></i></span>
                 <span class="ln ln-pick" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.abs, 'left')">{{ v.left }}</span>
+                <!-- T01811 FR-015 gutter 操作（hover 浮出行号列）：复制到对侧仅 rep 行（del/add 需行号重排不支持）；已审阅任意差异行可标 -->
+                <span class="gt-ops" v-if="v.type === 'rep' || v.type === 'del' || v.type === 'add'">
+                  <button v-if="v.type === 'rep'" type="button" class="gt-op" @click.stop="copyToOther(v.ri, 'left')"
+                          :aria-label="t('dv.copyToOther')" :title="t('dv.copyToOther')"><i class="bi bi-arrow-right-square"></i></button>
+                  <button type="button" class="gt-op" @click.stop="toggleReviewed(v.ri)"
+                          :aria-label="t('dv.markReviewed')" :title="t('dv.markReviewed')"><i class="bi bi-check2-circle"></i></button>
+                </span>
                 <span class="code flex-1" data-side="left"><span v-for="(s, si) in v.leftSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'left')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -1450,7 +1531,7 @@ onUpdated(() => measureVisible())
         <div class="diff-pane right" ref="rightPaneRef" @scroll="onPaneScroll('right')">
           <div class="pane-grid" :style="{ height: totalHeight + 'px' }">
             <div v-for="(v, k) in visibleRows" :key="v.ri >= 0 ? 'r' + v.ri : 'f' + v.abs"
-                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs }]"
+                 class="prow" :class="[v.type === 'fold' ? 'fold' : v.type, { current: v.ri === currentRowIdx, flash: v.ri === flashRi, selected: v.ri >= 0 && selRows.has(v.ri), findhit: findHitAbsSet.has(v.abs), findcur: v.abs === findCurrentAbs, reviewed: v.ri >= 0 && reviewedMarks.has(v.ri) }]"
                  :data-ri="v.ri" :ref="el => setRowRef(v.abs, el, 'right')"
                  @mousemove="onRowMove($event, v)" @click="onRowClick($event, v)"
                  :style="{ position: 'absolute', top: offsets[v.abs] + 'px', left: '0', right: '0', minHeight: (heights[v.abs] || EST_ROW_H) + 'px' }">
@@ -1462,6 +1543,12 @@ onUpdated(() => measureVisible())
               <template v-else>
                 <span class="gt" :class="'gt-' + v.type"><i v-if="gtIcon(v, 'right')" class="bi" :class="gtIcon(v, 'right')"></i></span>
                 <span class="ln ln-pick" :title="t('dv.lnPick')" @click.stop="onLnClick($event, v.abs, 'right')">{{ v.right }}</span>
+                <span class="gt-ops" v-if="v.type === 'rep' || v.type === 'del' || v.type === 'add'">
+                  <button v-if="v.type === 'rep'" type="button" class="gt-op" @click.stop="copyToOther(v.ri, 'right')"
+                          :aria-label="t('dv.copyToOther')" :title="t('dv.copyToOther')"><i class="bi bi-arrow-left-square"></i></button>
+                  <button type="button" class="gt-op" @click.stop="toggleReviewed(v.ri)"
+                          :aria-label="t('dv.markReviewed')" :title="t('dv.markReviewed')"><i class="bi bi-check2-circle"></i></button>
+                </span>
                 <span class="code flex-1" data-side="right"><span v-for="(s, si) in v.rightSegs" :key="si" :class="{'im-del': s.m && s.kind === 'del', 'im-add': s.m && s.kind === 'add'}"><template v-for="(t, ti) in s.toks" :key="ti"><span v-if="t.type !== 'ws' && t.type !== 'plain'" class="tok" :class="'tok-' + t.type">{{ t.text }}</span><template v-else>{{ t.text }}</template></template></span><span v-if="showCaret(v, 'right')" class="code-caret" :style="{ left: caretX(v, caretPos.col0) + 'px' }"></span></span>
               </template>
             </div>
@@ -1658,6 +1745,23 @@ onUpdated(() => measureVisible())
 [data-bs-theme="dark"] .row .gt.gt-del, [data-bs-theme="dark"] .prow .gt.gt-del { color: #f85149; }
 [data-bs-theme="dark"] .row .gt.gt-rep, [data-bs-theme="dark"] .prow .gt.gt-rep { color: #d29922; }
 .row:hover, .prow:hover { background: var(--bs-tertiary-bg); }
+/* T01811 FR-015 gutter 操作浮层：hover 行时浮出行号列上方（不挤占 grid 列），focus-within 保持键盘可达 */
+.prow .gt-ops {
+  display: none; position: absolute; z-index: 3;
+  left: calc(1.15rem + .1rem); top: 0; height: 100%;
+  align-items: center; gap: 2px;
+}
+.prow:hover .gt-ops, .prow:focus-within .gt-ops { display: inline-flex; }
+.gt-op {
+  border: 1px solid var(--bs-border-color); background: var(--bs-body-bg);
+  color: var(--bs-secondary-color); font-size: .68rem; line-height: 1;
+  padding: 2px 3px; cursor: pointer; border-radius: 3px;
+}
+.gt-op:hover { color: var(--bs-body-color); background: var(--bs-tertiary-bg); }
+/* 已审阅行：内容弱化置灰（视觉上「人工过目」），行号列打勾标识 */
+.prow.reviewed .code { opacity: .45; }
+.prow.reviewed .ln { color: var(--bs-success); }
+.prow.reviewed .ln::after { content: '\2713'; margin-left: .25rem; font-size: .68rem; }
 .row .ln, .prow .ln {
   text-align: right; padding: 0 .4rem;
   color: var(--bs-secondary-color);
