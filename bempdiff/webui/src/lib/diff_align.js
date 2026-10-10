@@ -154,7 +154,10 @@ function linearAlign(a, b) {
   const midTrace = []
   for (let t = 0; t < midOld; t++) midTrace.push({ type: 'del', left: a[i + t], right: '' })
   for (let t = 0; t < midNew; t++) midTrace.push({ type: 'add', left: '', right: b[j + t] })
-  out.push(...postPair(midTrace))
+  // 逐项 push 而非 spread：10 万级 mid 块展开成 push 参数会超出引擎调用栈上限
+  //（V8 约 6.5 万~12.5 万），linearAlign 作为超大输入兜底反而最先在此崩溃
+  const pairedMid = postPair(midTrace)
+  for (let t = 0; t < pairedMid.length; t++) out.push(pairedMid[t])
   for (let t = 0; t < s; t++) out.push({ type: 'ctx', left: a[n - s + t], right: b[m - s + t] })
   return out
 }
