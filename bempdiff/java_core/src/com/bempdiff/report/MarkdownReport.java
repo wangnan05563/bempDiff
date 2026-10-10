@@ -61,9 +61,18 @@ public final class MarkdownReport {
     /** FR-007：API 兼容性分级章节文本（ApiCompat.Result.toMarkdownSection 产物；空串=不插入）。 */
     private String apiCompatSection = "";
 
+    /** FR-012：变更影响面章节文本（ImpactAnalyzer.Result.toMarkdownSection 产物；空串=不插入）。 */
+    private String impactSection = "";
+
     /** 设置 API 兼容性分级章节（在破坏性变更清单之后、AI 章节之前插入）。 */
     public MarkdownReport setApiCompatSection(String section) {
         this.apiCompatSection = section == null ? "" : section;
+        return this;
+    }
+
+    /** 设置变更影响面章节（紧跟 API 兼容性分级之后）。 */
+    public MarkdownReport setImpactSection(String section) {
+        this.impactSection = section == null ? "" : section;
         return this;
     }
 
@@ -104,9 +113,12 @@ public final class MarkdownReport {
         renderTextDiff(sb, text);
         renderLibJarDiff(sb, libJar);
         renderBreakingChanges(sb, r);
-        // FR-007：非 AI 报告同样插入 API 兼容性分级章节（与 AI 版 render 同口径）
+        // FR-007/FR-012：非 AI 报告同样插入 API 兼容性分级 + 影响面章节（与 AI 版 render 同口径）
         if (apiCompatSection != null && !apiCompatSection.isEmpty()) {
             sb.append(apiCompatSection);
+        }
+        if (impactSection != null && !impactSection.isEmpty()) {
+            sb.append(impactSection);
         }
         renderFooter(sb, oldSnap, newSnap, false);
         return sb.toString();
@@ -143,9 +155,12 @@ public final class MarkdownReport {
         renderTextDiff(sb, text);
         renderLibJarDiff(sb, libJar);
         renderBreakingChanges(sb, r);
-        // FR-007：API 兼容性分级章节（静态判定，不兼容项 sev 徽章醒目），无差异时不插入
+        // FR-007/FR-012：API 兼容性分级 + 变更影响面章节（静态判定，不兼容项 sev 徽章醒目），无差异时不插入
         if (apiCompatSection != null && !apiCompatSection.isEmpty()) {
             sb.append(apiCompatSection);
+        }
+        if (impactSection != null && !impactSection.isEmpty()) {
+            sb.append(impactSection);
         }
         appendAiSection(sb, summary, fileAnalyses, ctx);
         renderFooter(sb, oldSnap, newSnap, summary != null);

@@ -212,6 +212,9 @@ public final class ApiCompat {
             }
             Map<String, Set<String>> out = new LinkedHashMap<>();
             for (CompilationUnitTree cu : units) {
+                // fq 初值 = 包名（TreeScanner 不携带 package 信息，须显式传入作前缀），
+                // 否则类键只有 simpleName，跨包引用判定与调用方 FQN 对不上（实测缺陷）
+                String pkg = cu.getPackageName() == null ? "" : cu.getPackageName().toString();
                 cu.accept(new TreeScanner<Void, String>() {
                     @Override
                     public Void visitClass(ClassTree ct, String outer) {
@@ -235,7 +238,7 @@ public final class ApiCompat {
                         // super 下钻嵌套类（fq 作前缀），成员级节点不触发 visitClass
                         return super.visitClass(ct, fq);
                     }
-                }, null);
+                }, pkg);
             }
             return out.isEmpty() ? null : out;
         } catch (Throwable t) {

@@ -294,9 +294,10 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     }
 
     /** T12/FR7：全链路 + Markdown 报告导出（真实包验证）。--ai 时加载持久化 AI 配置，运行两阶段分析并原生写回「七、AI 智能分析」章节。 */
-    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要；apiCompat 供 ci JSON 分级段。 */
+    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要；apiCompat/impact 供 ci JSON 分级段。 */
     private record ReportOut(DiffStats s, DiffResult r, StageASummary summary,
-                             com.bempdiff.diff.ApiCompat.Result apiCompat) {}
+                             com.bempdiff.diff.ApiCompat.Result apiCompat,
+                             com.bempdiff.diff.ImpactAnalyzer.Result impact) {}
 
     private static ReportOut report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
         PrepResult prep = prepCompare(oldP, newP, expandAll);
@@ -318,6 +319,16 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         //（text 尚未并入），天然是 Java 源码集；结果进报告章节 + AI 上下文 + ci JSON。
         com.bempdiff.diff.ApiCompat.Result apiCompat = com.bempdiff.diff.ApiCompat.analyze(decompiled);
         rep.setApiCompatSection(apiCompat.toMarkdownSection());
+
+        // FR-012：变更影响面（反编译集内调用关系 × 签名分级 → 风险等级 + 证据链）。
+        // 删除类取 DiffResult.DELETED 中 .java 条目（源码包场景的反编译集内整类删除）。
+        List<String> deletedJavaKeys = new ArrayList<>();
+        for (String dk : r.get(DiffStatus.DELETED)) {
+            if (dk.endsWith(".java")) deletedJavaKeys.add(dk);
+        }
+        com.bempdiff.diff.ImpactAnalyzer.Result impact =
+                com.bempdiff.diff.ImpactAnalyzer.analyze(decompiled, apiCompat, deletedJavaKeys);
+        rep.setImpactSection(impact.toMarkdownSection());
 
         // --ai：两阶段 AI 分析并写回「七、AI 智能分析」章节（FR-CX-01），支持项目级上下文增强。
         // 有 API Key 走真实 Http 调用；无 Key 时降级为离线 Mock 回放（仍能产出 AI 章节 + 项目上下文影响说明）。
@@ -341,8 +352,8 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             aiMap.putAll(text);
             StageASummary summary;
             try {
-                // FR-007 验收②：API 兼容性静态分级随 aiMap 注入 AI 上下文（接口 default 合成条目，实现类零改动）
-                summary = analyzer.stageA(r, aiMap, aiCfg, ctx, apiCompat);
+                // FR-007/FR-012 验收②：API 分级 + 影响面随 aiMap 注入 AI 上下文（接口 default 合成条目，实现类零改动）
+                summary = analyzer.stageA(r, aiMap, aiCfg, ctx, apiCompat, impact);
             } catch (RuntimeException ex) {
                 LOG.log(java.util.logging.Level.WARNING, "[AI] 阶段A 调用失败，已降级：{0}", ex.getMessage());
                 summary = new StageASummary();
@@ -369,7 +380,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             System.out.println("AI 整体风险=" + summary.getOverallRisk() + "  阶段B 深读=" + b.size() + " 文件"); // NOSONAR
             System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size() // NOSONAR(S106) - CLI 控制台输出
                     + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-            return new ReportOut(s, r, summary, apiCompat);
+            return new ReportOut(s, r, summary, apiCompat, impact);
         }
 
         rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
@@ -378,7 +389,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() // NOSONAR(S106) - CLI 控制台输出
                 + "  text=" + text.size()
                 + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-        return new ReportOut(s, r, null, apiCompat);
+        return new ReportOut(s, r, null, apiCompat, impact);
     }
 
     /** Req 6：差异依赖 JAR 内部源码对比。自动识别差异 lib jar → 提取内部 class → 反编译 → 逐对源码 diff，
@@ -812,6 +823,27 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                 }
                 ac.put("items", items);
                 j.put("apiCompat", ac);
+            }
+            // FR-012：变更影响面进 JSON（风险计数 + 引用证据链，CI 可按 CRITICAL/HIGH 阻断）
+            if (out.impact() != null && !out.impact().isEmpty()) {
+                Map<String, Object> im0 = new LinkedHashMap<>();
+                im0.put("maxRisk", out.impact().maxRisk().name());
+                im0.put("critical", out.impact().critical);
+                im0.put("high", out.impact().high);
+                im0.put("medium", out.impact().medium);
+                im0.put("low", out.impact().low);
+                List<Map<String, Object>> iitems = new ArrayList<>();
+                for (com.bempdiff.diff.ImpactAnalyzer.ImpactItem it : out.impact().items) {
+                    Map<String, Object> im = new LinkedHashMap<>();
+                    im.put("risk", it.risk.name());
+                    im.put("class", it.changedClass);
+                    im.put("status", it.status);
+                    im.put("reason", it.reason);
+                    im.put("referencedBy", it.referencedBy);
+                    iitems.add(im);
+                }
+                im0.put("items", iitems);
+                j.put("impact", im0);
             }
             Files.writeString(jsonPath, com.bempdiff.server.Json.write(j) + "\n", java.nio.charset.StandardCharsets.UTF_8);
             System.out.println("json: " + jsonPath); // NOSONAR

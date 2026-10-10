@@ -72,6 +72,24 @@ public interface AiAnalyzer {
         return stageA(diff, augmented, cfg, ctx);
     }
 
+    /**
+     * FR-012：阶段A 携带 API 兼容性分级 + 变更影响面（两段拼接进同一合成条目）。
+     * 注入机制与 FR-007 相同（合成条目 + PromptBuilders 显式消费），实现类零改动。
+     */
+    default StageASummary stageA(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg,
+                                 ProjectContext ctx, com.bempdiff.diff.ApiCompat.Result apiCompat,
+                                 com.bempdiff.diff.ImpactAnalyzer.Result impact) {
+        String section = (apiCompat == null ? "" : apiCompat.toPromptSection())
+                + (impact == null ? "" : impact.toPromptSection());
+        Map<String, DecompiledUnit> augmented = decompiled;
+        if (!section.isEmpty()) {
+            augmented = new java.util.LinkedHashMap<>(decompiled);
+            augmented.put("__api_compat__", new DecompiledUnit("__api_compat__",
+                    null, section, section, "none", null, true));
+        }
+        return stageA(diff, augmented, cfg, ctx);
+    }
+
     /** 构建阶段A prompt（聚焦类别增强）：focus 非空时追加聚焦指令，引导模型在该维度深入。 */
     default String buildStageAPrompt(DiffResult diff, Map<String, DecompiledUnit> decompiled, AiConfig cfg, ProjectContext ctx, String focus) {
         return buildStageAPrompt(diff, decompiled, cfg, ctx);
