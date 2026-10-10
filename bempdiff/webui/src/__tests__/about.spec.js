@@ -141,3 +141,59 @@ describe('About 组件', () => {
     w.unmount()
   })
 })
+
+// T01726 回归护栏：「立即更新」按钮只在确有新版（upToDate===false）时显示。
+// 缺陷背景：按钮原先只看 downloadUrl && canOneClick()，已最新用户点击会把旧版安装回本机（降级）。
+describe('About 一键更新按钮显隐（T01726 降级防护）', () => {
+  const mkResult = (upToDate) => ({
+    ok: true, current: resolveAppVersion(), upToDate,
+    latest: {
+      tag: 'v9.9.9', name: '', url: 'https://github.com/acme/bempDiff/releases/tag/v9.9.9',
+      downloadUrl: 'https://example.com/BempDiff-9.9.9-setup.exe', publishedAt: '', body: ''
+    },
+    repo: 'acme/bempDiff', message: ''
+  })
+
+  // 模拟桌面壳具备一键更新能力（组件通过 window.bempdiff.downloadInstall 探测）
+  function stubShell() {
+    window.bempdiff = { downloadInstall: vi.fn() }
+  }
+  function unstubShell() { delete window.bempdiff }
+
+  it('upToDate=false（确有新版）时显示「立即更新」', async () => {
+    stubShell()
+    checkUpdate.mockResolvedValueOnce(mkResult(false))
+    const w = mount(About)
+    await flushPromises()
+    expect(w.text()).toContain('发现新版本，建议立即更新')
+    const btn = w.findAll('button').find((b) => b.text().includes('立即更新'))
+    expect(btn).toBeDefined()
+    unstubShell()
+    w.unmount()
+  })
+
+  it('upToDate=true（已最新）时即使有 downloadUrl 也不显示「立即更新」', async () => {
+    stubShell()
+    checkUpdate.mockResolvedValueOnce(mkResult(true))
+    const w = mount(About)
+    await flushPromises()
+    expect(w.text()).toContain('当前已是最新版本，无需更新')
+    const btn = w.findAll('button').find((b) => b.text().includes('立即更新'))
+    expect(btn).toBeUndefined()
+    unstubShell()
+    w.unmount()
+  })
+
+  it('upToDate=null（版本未知）时不显示「立即更新」，保留前往下载页链接', async () => {
+    stubShell()
+    checkUpdate.mockResolvedValueOnce(mkResult(null))
+    const w = mount(About)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => b.text().includes('立即更新'))
+    expect(btn).toBeUndefined()
+    const link = w.find('a[target="_blank"]')
+    expect(link.exists()).toBe(true)
+    unstubShell()
+    w.unmount()
+  })
+})

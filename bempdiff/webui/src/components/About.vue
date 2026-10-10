@@ -182,7 +182,8 @@ onMounted(() => { seedToken(); doCheck() })
             <span class="badge text-bg-light border about-ver">{{ t('ab.currentShort') }} v{{ currentVersion }}</span>
             <i class="bi bi-arrow-right text-secondary"></i>
             <span class="badge text-bg-primary border about-ver">{{ result.latest.tag || t('ab.latest') }}</span>
-            <button v-if="result.latest.downloadUrl && canOneClick()" class="btn btn-primary btn-sm"
+            <!-- T01726：仅在确有新版（upToDate===false）时显示一键更新，防止已最新用户误降级安装旧版 -->
+            <button v-if="result.upToDate === false && result.latest.downloadUrl && canOneClick()" class="btn btn-primary btn-sm"
                     type="button" :disabled="updating" @click="oneClickUpdate"
                     :title="t('ab.oneClickTip')">
               <i class="bi" :class="updating ? 'bi-arrow-repeat spinning' : 'bi-cloud-arrow-down'"></i>
