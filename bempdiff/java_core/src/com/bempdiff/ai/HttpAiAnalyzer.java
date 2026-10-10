@@ -71,6 +71,22 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
      *  截断时不整体抛错，降级保留已返回的部分结论，由上层在报告标注「结果可能不完整」。 */
     private volatile boolean lastOutputTruncated = false;
 
+    // ---------- FR-013 实际消耗监控 ----------
+    // 实例级累计：analyzer 实例在每次分析流程（stageA + stageB）中新建，字段天然圈定「本次分析」范围，
+    // 无需显式 reset。handleResponse 从 OpenAI 兼容响应的 usage 段解析（缺该段时静默跳过，不计入）。
+    private volatile long usagePromptTokens = 0;
+    private volatile long usageCompletionTokens = 0;
+    private volatile int usageCalls = 0;
+
+    /** 本次分析累计输入 tokens（usage 段缺失的响应不计入）。 */
+    public long getUsagePromptTokens() { return usagePromptTokens; }
+
+    /** 本次分析累计输出 tokens。 */
+    public long getUsageCompletionTokens() { return usageCompletionTokens; }
+
+    /** 本次分析累计调用次数。 */
+    public int getUsageCalls() { return usageCalls; }
+
     /**
      * 通用兼容 SSLSocketFactory（静态初始化时创建并设为全局默认）。
      *
@@ -809,7 +825,44 @@ public final class HttpAiAnalyzer implements AiAnalyzer {
             LOG.log(Level.WARNING,
                     "[AI] 输出被 max_tokens 截断（finish_reason=length），已降级保留部分结论，结果可能不完整");
         }
+        accumulateUsage(resp);
         return content;
+    }
+
+    /** FR-013：从 OpenAI 兼容响应解析 usage 段并累计（prompt/completion 分段）。缺段或解析失败静默跳过——
+     *  消耗展示是增强信息，不得影响分析主流程；沿用 isTruncatedByLength 同款轻量定位风格。 */
+    private void accumulateUsage(String resp) {
+        try {
+            int ui = resp.indexOf("\"usage\"");
+            if (ui < 0) return;
+            int end = resp.indexOf('}', ui);
+            if (end < 0 || end - ui > 400) return; // usage 段应极短，超界视为定位错误
+            String seg = resp.substring(ui, end);
+            long p = extractLong(seg, "prompt_tokens");
+            long comp = extractLong(seg, "completion_tokens");
+            if (p < 0 && comp < 0) return;
+            if (p > 0) usagePromptTokens += p;
+            if (comp > 0) usageCompletionTokens += comp;
+            usageCalls++;
+        } catch (RuntimeException ignored) {
+            // 消耗解析失败不影响分析主流程
+        }
+    }
+
+    /** 从 usage 片段提取整数字段（未找到返回 -1）。 */
+    private static long extractLong(String seg, String field) {
+        int i = seg.indexOf("\"" + field + "\"");
+        if (i < 0) return -1;
+        int colon = seg.indexOf(':', i);
+        if (colon < 0) return -1;
+        StringBuilder digits = new StringBuilder();
+        for (int p = colon + 1; p < seg.length(); p++) {
+            char ch = seg.charAt(p);
+            if (Character.isDigit(ch)) digits.append(ch);
+            else if (digits.length() > 0) break;
+            else if (!Character.isWhitespace(ch)) break;
+        }
+        return digits.length() > 0 ? Long.parseLong(digits.toString()) : -1;
     }
 
     /** 判断 OpenAI 兼容响应中 finish_reason 是否为 "length"（输出被 token 上限截断）。 */

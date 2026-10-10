@@ -790,6 +790,20 @@ public final class BempServer {
                     decompiled, text, summary, b, ctx, libJar);
         }
         List<Map<String, Object>> thinking = buildThinkingSteps(job, summary, b, ctx);
+        // FR-013：实际消耗（输入/输出分段）进思考步骤（前端 AiConsole 自动渲染）与报告审计摘要；
+        // Mock/离线链路无 usage → usageCalls=0 不追加，行为与旧版一致。
+        if (analyzer instanceof HttpAiAnalyzer http && http.getUsageCalls() > 0) {
+            addStep(thinking, STAGE_THINKING, "AI 实际消耗：输入 " + http.getUsagePromptTokens()
+                    + " / 输出 " + http.getUsageCompletionTokens()
+                    + " tokens（" + http.getUsageCalls() + " 次调用）");
+            rep.setAiUsageLine("输入 " + http.getUsagePromptTokens() + " / 输出 "
+                    + http.getUsageCompletionTokens() + " tokens（" + http.getUsageCalls() + " 次调用）");
+            // 消耗行渲染进审计摘要：整体分析报告在此重渲染 footer；聚焦报告路径无审计摘要则跳过
+            if (overallRisk) {
+                md = rep.render(job.getOldSnap(), job.getNewSnap(), job.getResult(), job.getStats(),
+                        decompiled, text, summary, b, ctx, libJar);
+            }
+        }
         return new AiAnalysisResult(md, thinking);
     }
 
@@ -851,6 +865,12 @@ public final class BempServer {
         if (fa != null) {
             addStep(thinking, STAGE_THINKING, "分析文件 " + fileKey + "：意图=" + nz(fa.getIntent())
                     + "；风险=" + nz(fa.getRisk()) + "；影响=" + nz(fa.getImpact()));
+        }
+        // FR-013：单文件分析的实际消耗（真实 LLM 才有 usage，Mock 链路 usageCalls=0 跳过）
+        if (analyzer instanceof HttpAiAnalyzer http && http.getUsageCalls() > 0) {
+            addStep(thinking, STAGE_THINKING, "AI 实际消耗：输入 " + http.getUsagePromptTokens()
+                    + " / 输出 " + http.getUsageCompletionTokens()
+                    + " tokens（" + http.getUsageCalls() + " 次调用）");
         }
         return new AiAnalysisResult(md, thinking);
     }

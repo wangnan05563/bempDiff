@@ -294,10 +294,11 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
     }
 
     /** T12/FR7：全链路 + Markdown 报告导出（真实包验证）。--ai 时加载持久化 AI 配置，运行两阶段分析并原生写回「七、AI 智能分析」章节。 */
-    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要；apiCompat/impact 供 ci JSON 分级段。 */
+    /** report/ci 共用产物：stats 与 DiffResult 供 ci 子命令判定 hasDiff 并生成 JSON 摘要；apiCompat/impact 供 ci JSON 分级段；aiUsageLine 供 ai.usage。 */
     private record ReportOut(DiffStats s, DiffResult r, StageASummary summary,
                              com.bempdiff.diff.ApiCompat.Result apiCompat,
-                             com.bempdiff.diff.ImpactAnalyzer.Result impact) {}
+                             com.bempdiff.diff.ImpactAnalyzer.Result impact,
+                             String aiUsageLine) {}
 
     private static ReportOut report(Path oldP, Path newP, boolean expandAll, int topK, Path cfrJar, Path outMd, List<String> a) throws IOException { // NOSONAR - 顶层 main 方法通用异常捕获，用于统一错误处理入口
         PrepResult prep = prepCompare(oldP, newP, expandAll);
@@ -373,14 +374,22 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
             } catch (RuntimeException ex) {
                 LOG.log(java.util.logging.Level.WARNING, "[AI] 阶段B 调用失败，已降级（仅保留阶段A）：{0}", ex.getMessage());
             }
+            // FR-013：实际消耗（输入/输出分段）写进审计摘要与 ReportOut（Mock/离线链路无 usage → 空行不渲染）
+            String usageLine = "";
+            if (analyzer instanceof HttpAiAnalyzer http) {
+                usageLine = "输入 " + http.getUsagePromptTokens() + " / 输出 "
+                        + http.getUsageCompletionTokens() + " tokens（" + http.getUsageCalls() + " 次调用）";
+                rep.setAiUsageLine(usageLine);
+            }
             rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, summary, b, ctx, libJar, outMd);
             System.out.println("== REPORT (AI) =="); // NOSONAR
             System.out.println("项目级上下文: " + (ctx != null && !ctx.isEmpty() ? ("已启用（构建系统=" + ctx.getBuildSystem() + ", 模块数=" + ctx.getModules().size() + "）") : "未启用")); // NOSONAR
             System.out.println("out: " + outMd); // NOSONAR
             System.out.println("AI 整体风险=" + summary.getOverallRisk() + "  阶段B 深读=" + b.size() + " 文件"); // NOSONAR
+            if (!usageLine.isEmpty()) System.out.println("AI 实际消耗: " + usageLine); // NOSONAR
             System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() + "  text=" + text.size() // NOSONAR(S106) - CLI 控制台输出
                     + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-            return new ReportOut(s, r, summary, apiCompat, impact);
+            return new ReportOut(s, r, summary, apiCompat, impact, usageLine);
         }
 
         rep.writeToFile(oldSnap, newSnap, r, s, decompiled, text, libJar, outMd);
@@ -389,7 +398,7 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
         System.out.println(STATS_PREFIX + s + "  decompiled=" + decompiled.size() // NOSONAR(S106) - CLI 控制台输出
                 + "  text=" + text.size()
                 + "  libJar=" + (libJar.isEmpty() ? "无差异JAR" : libJar.totalJars + "个")); // NOSONAR
-        return new ReportOut(s, r, null, apiCompat, impact);
+        return new ReportOut(s, r, null, apiCompat, impact, "");
     }
 
     /** Req 6：差异依赖 JAR 内部源码对比。自动识别差异 lib jar → 提取内部 class → 反编译 → 逐对源码 diff，
@@ -805,6 +814,10 @@ public final class Main { // NOSONAR(S6539) - CLI 聚合入口，依赖面广但
                 Map<String, Object> ai = new LinkedHashMap<>();
                 ai.put("overallRisk", out.summary().getOverallRisk());
                 ai.put("impactScope", out.summary().getImpactScope());
+                // FR-013：实际消耗明细（输入/输出分段；Mock/离线为空串不写入）
+                if (out.aiUsageLine() != null && !out.aiUsageLine().isEmpty()) {
+                    ai.put("usage", out.aiUsageLine());
+                }
                 j.put("ai", ai);
             }
             // FR-007：API 兼容性分级进 JSON（CI 门禁可对不兼容项做阻断规则）

@@ -64,6 +64,15 @@ public final class MarkdownReport {
     /** FR-012：变更影响面章节文本（ImpactAnalyzer.Result.toMarkdownSection 产物；空串=不插入）。 */
     private String impactSection = "";
 
+    /** FR-013：AI 实际消耗行（如「输入 1234 / 输出 567 tokens（3 次调用）」；空串=不插入）。 */
+    private String aiUsageLine = "";
+
+    /** 设置 AI 实际消耗行（渲染进审计摘要，输入/输出分段）。 */
+    public MarkdownReport setAiUsageLine(String line) {
+        this.aiUsageLine = line == null ? "" : line;
+        return this;
+    }
+
     /** 设置 API 兼容性分级章节（在破坏性变更清单之后、AI 章节之前插入）。 */
     public MarkdownReport setApiCompatSection(String section) {
         this.apiCompatSection = section == null ? "" : section;
@@ -820,6 +829,10 @@ public final class MarkdownReport {
         sb.append("- 老包标识：").append(nullToNA(oldSnap.getVersion())).append("\n");
         sb.append("- 新包标识：").append(nullToNA(newSnap.getVersion())).append("\n");
         sb.append("- AI 分析：").append(aiEnabled ? "已接入（含项目级上下文增强）" : "未接入，本报告不含 AI 章节。").append("\n");
+        // FR-013：实际消耗（输入/输出分段）；仅 AI 报告且后端返回了 usage 时出现
+        if (aiEnabled && aiUsageLine != null && !aiUsageLine.isEmpty()) {
+            sb.append("- AI 实际消耗：").append(aiUsageLine).append("\n");
+        }
     }
 
     public void writeToFile(PackageSnapshot oldSnap, PackageSnapshot newSnap, // NOSONAR(S107) - 多参重载为既有公开 API
