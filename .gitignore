@@ -177,3 +177,57 @@ __pycache__/
 !tooling/quality/jacoco/*.ps1
 tooling/quality/jacoco/jacoco.exec
 tooling/quality/jacoco/jacoco.xml
+
+# ---------- Node.js 依赖（全局规则，覆盖所有子目录） ----------
+node_modules/
+package-lock.json
+
+# ---------- Python 缓存与虚拟环境 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+.eggs/
+venv/
+env/
+.env
+
+# ---------- 工作空间临时诊断产物（scripts/scratch） ----------
+# 每轮排查/验证的临时脚本、日志、中间结果，可重跑生成，不入库
+bempdiff/scripts/scratch/
+scripts/scratch/
+
+# ---------- AI 生成中间产物（assets 目录） ----------
+# _wip_ 前缀为设计稿迭代草稿；t01xxx-request.json 为单次调试请求体
+bempdiff/assets/_wip_*
+bempdiff/assets/t*-request.json
+bempdiff/assets/gen_social_preview.py
+
+# ---------- 运行时日志（补充 bempdiff 子目录） ----------
+bempdiff/logs/
+bempdiff/*.log
+jmeter.log
+
+# ---------- .workbuddy 运行时临时文件 ----------
+.workbuddy/tmp/
+
+# ---------- Java 编译中间产物（补充 dev_classes） ----------
+bempdiff/java_core/dev_classes/
+
+# ---------- Electron/Tauri 构建临时产物 ----------
+# src-tauri/target 已在第54行忽略；此处补充 dist_exe 解压中间态
+bempdist/dist_exe/
+
+# ---------- CI/CD 报告与审计产物 ----------
+bempdiff/*-ci-report.md
+bempdiff/java_core/*-ci-report.md
+
+# ---------- IDE 配置文件（补充 JetBrains 全家桶） ----------
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
