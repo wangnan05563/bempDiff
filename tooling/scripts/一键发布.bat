@@ -22,7 +22,7 @@ REM ============================================================
 
 REM ---------- Â·¾¶ ----------
 set "SCRIPT_DIR=%~dp0"
-set "REPO_ROOT=%SCRIPT_DIR%.."
+set "REPO_ROOT=%SCRIPT_DIR%..\.."
 set "BEMPDIFF=%REPO_ROOT%\bempdiff"
 set "RELEASE_DIR=%REPO_ROOT%\release"
 set "PUBLISH_PY=%REPO_ROOT%\tooling\scripts\publish-release.py"
