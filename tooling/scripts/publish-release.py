@@ -5,7 +5,7 @@
 ======================================================
 
 把「创建 Release + 附带说明（读 Markdown 文件）+ 上传资产」三步原子化做完。
-token 默认复用 git 凭据库（git credential fill），不落盘、不打印。
+token 优先从本地 .env（GH_TOKEN）读取，其次复用 git 凭据库（git credential fill）；不打印、也不落盘进仓库（.env 已被 .gitignore 忽略）。
 
 用法：
     python publish-release.py <资产路径> <说明md路径> [资产显示名]
@@ -13,7 +13,7 @@ token 默认复用 git 凭据库（git credential fill），不落盘、不打�
 环境变量（均可选，缺省自动推断）：
     GH_REPO        仓库坐标 owner/name。缺省从 `git remote get-url origin` 推断。
     GH_TAG         Release 标签（=版本号）。缺省用 `git describe --tags --abbrev=0`。
-    GH_TOKEN       GitHub token。缺省自动从 git 凭据库读取。
+    GH_TOKEN       GitHub token。优先读本地 .env，其次自动从 git 凭据库读取。
     GH_TARGET      目标分支/commit。缺省为当前分支。
     GH_DRAFT       1=草稿。缺省 0（正式发布）。
     GH_PRERELEASE  1=预发布。缺省 0。
@@ -33,6 +33,58 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+def _load_dotenv():
+    """从本地 .env 读取配置（GitHub Token 等），不覆盖已存在的环境变量。
+
+    查找顺序：当前工作目录（仓库根，bat 已 cd 到此）-> 脚本所在目录。
+    .env 已被 .gitignore 忽略，不会入库；入库模板请用 .env.example。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = []
+    for d in (os.getcwd(), here):
+        p = os.path.join(d, ".env")
+        if p not in candidates:
+            candidates.append(p)
+    for p in candidates:
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    if len(v) >= 2 and v[0] in ("'", '"') and v[-1] == v[0]:
+                        v = v[1:-1]
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+
+def _read_text(path):
+    """读取文本文件，编码回退：utf-8 -> gbk -> 系统默认。
+
+    兼容中文 Windows 下记事本以 GBK 保存的 .md 说明文件。
+    """
+    import locale
+    for enc in ("utf-8", "gbk", None):
+        try:
+            with open(path, encoding=enc) as f:
+                return f.read()
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    with open(path, encoding=locale.getpreferredencoding(False)) as f:
+        return f.read()
+
+
+_load_dotenv()
 
 API_BASE = os.environ.get("GH_API_BASE", "https://api.github.com").rstrip("/")
 REPO = (os.environ.get("GH_REPO") or "").strip()
@@ -165,7 +217,7 @@ def main():
     print(f"仓库={REPO}  标签={TAG}  目标={TARGET}  draft={DRAFT} prerelease={PRERELEASE}")
     print(f"资产={asset}\n说明={notes}")
 
-    body = open(notes, encoding="utf-8").read()
+    body = _read_text(notes)
 
     # ---- 0) DRY-RUN：只打印将要执行的动作，不触碰 GitHub ----
     if DRY_RUN:
