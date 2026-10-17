@@ -20,3 +20,7 @@ bempdiff/scripts/_p0_result.txt export-ignore
 # 清理技能审计清单与工作目录（若被误入库，亦不导出）
 cleanup_targets.txt export-ignore
 cleanup_targets.resume.txt export-ignore
+
+# 行尾与编码规范：避免 Windows .bat 因 LF 换行 + UTF-8 在 GBK 代码页 CMD 下被错乱解析
+*.bat text eol=crlf
+*.sh  text eol=lf
