@@ -23,6 +23,7 @@ REM ============================================================
 REM ---------- 路径 ----------
 set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%SCRIPT_DIR%..\.."
+for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 set "BEMPDIFF=%REPO_ROOT%\bempdiff"
 set "RELEASE_DIR=%REPO_ROOT%\release"
 set "PUBLISH_PY=%REPO_ROOT%\tooling\scripts\publish-release.py"
@@ -89,7 +90,7 @@ if not exist "%NOTES%" (
     echo.
     echo 自动生成的发布说明（来自 git 提交记录，建议使用前替换为正式说明）：
     echo.
-    git -C "%REPO_ROOT%" log --no-merges --oneline -20 2^>nul
+    git -C "%REPO_ROOT%" log --no-merges --oneline -20 2>nul
   ) > "%NOTES%"
 )
 echo   说明  : %NOTES%
