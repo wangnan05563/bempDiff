@@ -266,12 +266,8 @@ export async function runCompare({ leftType, leftPath, rightPath, options }) {
   try {
     const r = await api.compare({ leftType, leftPath, rightPath, options })
     const jobId = r.jobId
-    // 智能识别：后端已按版本自动排序（同名不同版本）
-    if (r.autoOrdered) {
-      const vOld = r.oldVersion || '?'
-      const vNew = r.newVersion || '?'
-      toast('info', `已识别为同一包的不同版本，自动按版本排序：旧 ${vOld} → 新 ${vNew}`)
-    }
+    // T02741：不再按版本号自动重排——左框即老包、右框即新包，方向完全由用户显式放置决定，
+    // 故移除「已自动按版本排序」提示；oldVersion/newVersion 仍用于状态栏展示文件名版号。
     state.activeCompareId = jobId
     state.jobProgress = {
       status: r.status || 'queued',
@@ -1134,9 +1130,9 @@ export function closeReportPreview() {
   state.previewMd = null
 }
 
-export function downloadExport() {
-  // 兼容旧入口：一律走「小包同步 / 大包异步」的新机制。
-  return startExport()
+export function downloadExport(granularity = 'all') {
+  // 兼容旧入口：一律走「小包同步 / 大包异步」的新机制；granularity 透传导出粒度（T02742）。
+  return startExport(granularity)
 }
 
 /** 格式化字节为可读字符串。 */
@@ -1208,8 +1204,9 @@ export function cancelExport() {
   toast('info', '已取消导出')
 }
 
-/** 差异资产导出入口：由后端按规模分流 —— 小包同步流式（读流显示进度）、大包异步（后台生成 + 下载管理页）。 */
-export async function startExport() {
+/** 差异资产导出入口：由后端按规模分流 —— 小包同步流式（读流显示进度）、大包异步（后台生成 + 下载管理页）。
+ *  @param {string} granularity 导出粒度：'all'=增量全量，'jar'=仅变化 jar，'class'=仅变化 class（T02742）。 */
+export async function startExport(granularity = 'all') {
   if (!state.job || state.exporting) return
   // 解包中禁止导出：须待自动逐层解包比对完成后（job DONE）方可导出差异资产；
   // 后端 /export/start 同样以 status==DONE 兜底 409，此处前端先行拦截以给出友好提示。
@@ -1222,7 +1219,7 @@ export async function startExport() {
     const res = await fetch(`/api/job/${encodeURIComponent(state.job.jobId)}/export/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({ granularity }),
       signal: ctrl.signal
     })
     const ct = (res.headers.get('content-type') || '').toLowerCase()
@@ -1237,7 +1234,7 @@ export async function startExport() {
       if (rec && rec.id) pollExport(rec.id)
     } else {
       // 小包：同步读流，展示实时进度；完成后触发浏览器保存
-      await consumeExportStream(res)
+      await consumeExportStream(res, granularity)
     }
   } catch (e) {
     // 用户取消（AbortError）不应视为失败；取消提示已由 cancelExport 给出。
@@ -1251,8 +1248,9 @@ export async function startExport() {
   }
 }
 
-/** 同步导出：读取响应体并实时更新进度，写完转为 Blob 下载。 */
-async function consumeExportStream(res) {
+/** 同步导出：读取响应体并实时更新进度，写完转为 Blob 下载。
+ *  @param {string} granularity 导出粒度，用于下载文件名区分（T02742）。 */
+async function consumeExportStream(res, granularity) {
   if (!res || !res.ok) {
     let msg = `${res ? res.status : ''} ${res ? res.statusText : '无法连接'}`
     try { if (res) { const j = await res.json(); if (j && j.error) msg = j.error } } catch (e) { /* 非 JSON 忽略 */ }
@@ -1283,7 +1281,9 @@ async function consumeExportStream(res) {
   }
   const blob = new Blob(chunks, { type: 'application/zip' })
   const url = URL.createObjectURL(blob)
-  const filename = `bempdiff-export-${state.job.jobId}.zip`
+  // T02742：文件名携带粒度（all 不额外标注），便于区分三种导出产物。
+  const g = (granularity && granularity !== 'all') ? '-' + granularity : ''
+  const filename = `bempdiff-export${g}-${state.job.jobId}.zip`
   const a = document.createElement('a')
   a.href = url
   a.download = filename

@@ -352,19 +352,15 @@ public final class BempServer {
             ParseConfig pc = opts.toParseConfig();
             final String mode = MODE_FOLDER.equals(leftType) ? MODE_FOLDER : "package";
 
-            // 智能识别：同名不同版本的压缩包 → 自动按版本升序（旧→新），无需手动分辨新旧。
+            // T02741：尊重用户在「左框=老包 / 右框=新包」的显式放置，不再按文件名版本号自动重排。
+            // 旧逻辑会自动按版本升序交换 left/right，当用户放置方向与版本号不符时会出现「对比栏方向反了」。
+            // 现在 leftPath/rightPath 完全由用户决定（runCompareTask 中 oldSnap=左、newSnap=右），
+            // 左栏即老包快照、右栏即新包快照，方向始终与用户选择一致。
+            // autoOrdered 保留字段但恒为 false（不再自动重排）；oldVersion/newVersion 仅作文件名版号展示，
+            // 真正的状态栏/详情版号来自快照（状态接口的 oldSnap/newSnap 版本），与用户放置方向一致。
             boolean autoOrdered = false;
-            String oldVersion = null;
-            String newVersion = null;
-            if (!MODE_FOLDER.equals(mode)
-                    && com.bempdiff.parse.PackageVersion.sameBaseDifferentVersion(leftPath, rightPath)) {
-                String[] ordered = com.bempdiff.parse.PackageVersion.orderOldNew(leftPath, rightPath);
-                leftPath = ordered[0];
-                rightPath = ordered[1];
-                oldVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(leftPath);
-                newVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(rightPath);
-                autoOrdered = true;
-            }
+            String oldVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(leftPath);
+            String newVersion = com.bempdiff.parse.PackageVersion.extractFromFileName(rightPath);
 
             String jobId = "job-" + seq.incrementAndGet();
             Job job = new Job(jobId, mode, opts);
@@ -1047,7 +1043,7 @@ public final class BempServer {
         Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
         try {
             // P1-2：同 job 已导出过则直接复用缓存 zip，跳过重复 exportIncrement+zipTree（增量 zip 由不可变 diff/snap 幂等派生）。
-            Path cached = cachedExportZip(job.id);
+            Path cached = cachedExportZip(job.id, "all");
             if (cached != null) {
                 Path finalZip = materializeCachedZip(cached, outDir);
                 sendFile(ex, 200, MIME_ZIP, finalZip);
@@ -1059,7 +1055,7 @@ public final class BempServer {
             exporter.exportIncrement(job.getResult(), job.getOldSnap(), job.getNewSnap(), outDir);
             // 所有产物（increment/、deleted/）统一打包为最终下载 zip
             Path finalZip = exporter.zipTree(outDir, outDir.resolve(EXPORT_ZIP_NAME));
-            cacheExportZip(job.id, finalZip); // 本 job 增量资产不可变，落盘缓存供二次导出复用
+            cacheExportZip(job.id, "all", finalZip); // 本 job 增量资产不可变，落盘缓存供二次导出复用
             // 流式下发 zip：避免整包读入内存（readAll）导致超大响应体传输中断/断连（前端报 Failed to fetch）
             sendFile(ex, 200, MIME_ZIP, finalZip);
         } catch (Exception e) {
@@ -1157,19 +1153,25 @@ public final class BempServer {
         return exportsDir().resolve(EXPORT_CACHE_SUBDIR);
     }
 
-    /** 取某 job 的缓存 zip 路径；未生成过则返回 null。 */
-    private Path cachedExportZip(String jobId) {
-        Path p = exportZipCache.get(jobId);
+    /** 取某 job + 粒度 的缓存 zip 路径；未生成过则返回 null。
+     *  粒度（all/jar/class）纳入缓存键，避免不同粒度的导出结果互相复用（T02742）。 */
+    private Path cachedExportZip(String jobId, String granularity) {
+        Path p = exportZipCache.get(cacheKey(jobId, granularity));
         return (p != null && Files.isRegularFile(p)) ? p : null;
     }
 
-    /** 生成后回填缓存：把新 zip 拷入缓存目录并按 jobId 记录，供同 job 二次导出复用。 */
-    private Path cacheExportZip(String jobId, Path srcZip) throws IOException {
+    /** 生成后回填缓存：把新 zip 拷入缓存目录并按 jobId+粒度 记录，供同 job 同粒度二次导出复用（T02742）。 */
+    private Path cacheExportZip(String jobId, String granularity, Path srcZip) throws IOException {
         Files.createDirectories(exportCacheDir());
-        Path dst = exportCacheDir().resolve(EXPORT_CACHE_FILE_PREFIX + jobId + ".zip");
+        Path dst = exportCacheDir().resolve(EXPORT_CACHE_FILE_PREFIX + cacheKey(jobId, granularity) + ".zip");
         Files.copy(srcZip, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        exportZipCache.put(jobId, dst);
+        exportZipCache.put(cacheKey(jobId, granularity), dst);
         return dst;
+    }
+
+    /** 导出缓存复合键：jobId + 粒度，保证不同粒度（all/jar/class）缓存彼此独立（T02742）。 */
+    private static String cacheKey(String jobId, String granularity) {
+        return jobId + "_" + (granularity == null ? "all" : granularity);
     }
 
     /** P1-2：从缓存 zip 生成一个可发送的副本到 outDir（保留原临时目录清理语义，不污染缓存）。 */
@@ -1200,6 +1202,22 @@ public final class BempServer {
         return m;
     }
 
+    /** 按粒度导出差异资产到 outDir（T02742）：
+     *  - all   ：增量全量（increment/ + deleted/，可覆盖部署）
+     *  - jar   ：仅变化的 lib/*.jar（diff-jars/）
+     *  - class ：仅变化的 L1 class 字节（diff-classes/）
+     *  三者均只导出「有差异」的资产（ADDED/DELETED/MODIFIED），未变化文件不进入产物。 */
+    private void exportByGranularity(AssetExporter exporter, String granularity, DiffResult r,
+                                     PackageSnapshot oldSnap, PackageSnapshot newSnap, Path outDir) throws IOException {
+        if ("jar".equals(granularity)) {
+            exporter.exportDiffJars(r, oldSnap, newSnap, outDir);
+        } else if ("class".equals(granularity)) {
+            exporter.exportDiffClasses(r, oldSnap, newSnap, outDir);
+        } else {
+            exporter.exportIncrement(r, oldSnap, newSnap, outDir);
+        }
+    }
+
     /** 导出入口：小包同步流式（200 zip，前端读流显示进度）；大包异步生成（202 JSON 任务 id，前端轮询）。 */
     private void handleExportStart(HttpExchange ex, Job job) throws IOException {
         if (!"DONE".equals(job.getStatus())) {
@@ -1207,7 +1225,9 @@ public final class BempServer {
             return;
         }
         if (!ex.getRequestMethod().equals("POST")) { sendError(ex, 405, "仅支持 POST"); return; }
-        readBody(ex); // 排空请求体
+        Map<String, Object> reqBody = Json.parseObject(readBody(ex));
+        // T02742：导出粒度（all=增量全量 / jar=变化 jar / class=变化 class）；缺省回退 all 保持向后兼容。
+        String granularity = Json.str(reqBody, "granularity", "all");
         DiffResult r = job.getResult();
         Map<String, Object> est = exportEstimate(r, job.getOldSnap().getEntries(), job.getNewSnap().getEntries());
         long files = ((Number) est.get(KEY_FILES)).longValue();
@@ -1216,15 +1236,15 @@ public final class BempServer {
             // 小包：同步流式导出。发送完成后才返回，删除临时树不会截断响应体。
             Path outDir = Files.createTempDirectory(EXPORT_TEMP_PREFIX); // NOSONAR java:S5443 — 复核通过：临时文件唯一前缀命名、用后即删并以 deleteOnExit 兜底，不用于跨进程共享数据
             try {
-                // P1-2：同 job 已导出过则复用缓存 zip，跳过重复 exportIncrement+zipTree（增量 zip 幂等）。
-                Path cached = cachedExportZip(job.id);
+                // P1-2：同 job 同粒度已导出过则复用缓存 zip，跳过重复导出+打包（差异资产按 job+粒度 幂等派生）。
+                Path cached = cachedExportZip(job.id, granularity);
                 if (cached != null) {
                     sendFile(ex, 200, MIME_ZIP, materializeCachedZip(cached, outDir));
                 } else {
                     AssetExporter exporter = new AssetExporter();
-                    exporter.exportIncrement(r, job.getOldSnap(), job.getNewSnap(), outDir);
+                    exportByGranularity(exporter, granularity, r, job.getOldSnap(), job.getNewSnap(), outDir);
                     Path zip = exporter.zipTree(outDir, outDir.resolve(EXPORT_ZIP_NAME));
-                    cacheExportZip(job.id, zip);
+                    cacheExportZip(job.id, granularity, zip);
                     sendFile(ex, 200, MIME_ZIP, zip);
                 }
             } catch (Exception e) {
@@ -1238,14 +1258,15 @@ public final class BempServer {
         // 大包：异步后台生成，返回任务 id 供前端轮询/下载管理。
         String id = "exp_" + Long.toHexString(System.nanoTime()) + "_" + job.id;
         ExportRecord rec = new ExportRecord(id, job.id);
-        rec.filename = EXPORT_TEMP_PREFIX + job.id + ".zip";
+        // T02742：文件名携带粒度，便于下载管理区分 all/jar/class 三种导出产物。
+        rec.filename = EXPORT_TEMP_PREFIX + job.id + "_" + granularity + ".zip";
         rec.estimatedBytes = bytes;
         exports.put(id, rec);
-        exportPool.submit(() -> runAsyncExport(rec, job));
+        exportPool.submit(() -> runAsyncExport(rec, job, granularity));
         sendJson(ex, 202, exportToJson(rec));
     }
 
-    private void runAsyncExport(ExportRecord rec, Job job) {
+    private void runAsyncExport(ExportRecord rec, Job job, String granularity) {
         try {
             rec.status = "running";
             Path dir = exportsDir().resolve(rec.id);
@@ -1255,11 +1276,19 @@ public final class BempServer {
             try {
                 DiffResult r = job.getResult();
                 AssetExporter exporter = new AssetExporter();
-                exporter.exportIncrement(r, job.getOldSnap(), job.getNewSnap(), outRoot);
+                exportByGranularity(exporter, granularity, r, job.getOldSnap(), job.getNewSnap(), outRoot);
                 Path zip = exporter.zipTree(outRoot, dir.resolve(rec.filename));
                 rec.size = Files.size(zip);
-                rec.incrementCount = r.get(DiffStatus.ADDED).size() + r.get(DiffStatus.MODIFIED).size();
-                rec.deletedCount = r.get(DiffStatus.DELETED).size();
+                // T02742 计数语义：全量增量导出区分 increment/deleted；jar/class 粒度下差异资产统一归入
+                // 对应目录（diff-jars/ 或 diff-classes/），故增量数按该粒度实际导出的差异条目计、删除数为 0。
+                if ("all".equals(granularity)) {
+                    rec.incrementCount = r.get(DiffStatus.ADDED).size() + r.get(DiffStatus.MODIFIED).size();
+                    rec.deletedCount = r.get(DiffStatus.DELETED).size();
+                } else {
+                    rec.incrementCount = r.get(DiffStatus.ADDED).size() + r.get(DiffStatus.MODIFIED).size()
+                            + r.get(DiffStatus.DELETED).size();
+                    rec.deletedCount = 0;
+                }
                 rec.status = "done";
             } finally {
                 deleteTree(outRoot);

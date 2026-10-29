@@ -73,7 +73,8 @@ public final class ServerCompareFlowTest {
             Asserts.assertEquals("提交应 200", 200, submit.statusCode());
             Map<String, Object> sub = json(submit);
             Asserts.assertEquals("mode 应为 package", "package", sub.get("mode"));
-            Asserts.assertEquals("应识别为同名不同版本自动排序", Boolean.TRUE, sub.get("autoOrdered"));
+            // T02741：不再按文件名版本号自动重排，autoOrdered 恒为 false；左=老包/右=新包由用户显式放置决定。
+            Asserts.assertEquals("不再自动重排（尊重用户左/右放置）", Boolean.FALSE, sub.get("autoOrdered"));
             String jobId = String.valueOf(sub.get("jobId"));
 
             Map<String, Object> st = pollUntil(s, jobId, "DONE");

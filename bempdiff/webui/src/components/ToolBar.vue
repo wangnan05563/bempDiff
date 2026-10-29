@@ -23,6 +23,8 @@ const props = defineProps({
 })
 
 const showExport = ref(false)
+// T02742：导出粒度（全量 all / 仅变化 jar / 仅变化 class），默认全量，供「导出差异资产」打包时透传后端。
+const exportGranularity = ref('all')
 // 拖拽高亮状态：'old' | 'new' | null
 const dragOver = ref(null)
 
@@ -96,7 +98,7 @@ function onRemoveSession(i) {
 
 // 收敛：工具栏仅保留「生成纯文本/Markdown 报告（不调用 AI）」；AI 报告入口统一在 InfoPanel / ReportPreview
 function onReport() { showExport.value = false; generateReport(false) }
-function onExport() { showExport.value = false; downloadExport() }
+function onExport() { showExport.value = false; downloadExport(exportGranularity.value) }
 function onExports() { showExport.value = false; openExports() }
 // 大包异步导出进行中记录数：在「下载管理」入口显示轻量角标提醒（不自动弹面板——方案 B，避免遮挡导出下拉）
 const runningExports = computed(() => state.exportRecords.filter(r => r.status === 'running').length)
@@ -401,6 +403,18 @@ function doCompare() { triggerCompare() }
             style="position:absolute;right:0;top:100%;z-index:1000">
           <li><a class="dropdown-item" href="#" :class="{ disabled: unpacking }" @click.prevent="!unpacking && onReport()" :title="t('tb.genReportTip')"><i class="bi bi-filetype-md"></i> {{ t('info.generate') }}</a></li>
           <!-- AI 分析入口统一收敛到右上角「发起新的 AI 分析」（onAiAnalyze），此处不再重复提供「生成报告(AI)」 -->
+          <!-- T02742：导出粒度选择（全量 / JAR / CLASS），默认全量；选中后再点「导出差异资产」按该粒度打包 -->
+          <li class="px-3 py-2" style="min-width: 13.5rem">
+            <div class="small text-secondary mb-1">{{ t('tb.exportGranularity') }}</div>
+            <div class="btn-group btn-group-sm w-100" role="group" aria-label="export granularity">
+              <input type="radio" class="btn-check" name="expGran" id="expGranAll" value="all" v-model="exportGranularity">
+              <label class="btn btn-outline-secondary" for="expGranAll">{{ t('tb.gAll') }}</label>
+              <input type="radio" class="btn-check" name="expGran" id="expGranJar" value="jar" v-model="exportGranularity">
+              <label class="btn btn-outline-secondary" for="expGranJar">{{ t('tb.gJar') }}</label>
+              <input type="radio" class="btn-check" name="expGran" id="expGranClass" value="class" v-model="exportGranularity">
+              <label class="btn btn-outline-secondary" for="expGranClass">{{ t('tb.gClass') }}</label>
+            </div>
+          </li>
           <li><a class="dropdown-item" href="#" :class="{ disabled: state.exporting || unpacking }" @click.prevent="!state.exporting && !unpacking && onExport()" :title="t('tb.exportZipTip')">
             <span v-if="state.exporting" class="spinner-border spinner-border-sm align-middle me-1" role="status" aria-hidden="true"></span>
             <i v-else class="bi bi-box-seam"></i> {{ state.exporting
