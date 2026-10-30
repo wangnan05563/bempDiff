@@ -39,7 +39,7 @@
 | `bempdiff` | **`@tauri-apps/cli`** | `^2.11.4` | 全项目**零代码引用** |
 
 **证据链**：
-- 全仓（排除 `node_modules`/`dist_input`/`package-lock`）对该包名的命中**只有 `bempdiff/package.json` 自身**，另两处是历史设计文档（`WebUI迁移方案.md`、`本机实测清单.md`）；
+- 全仓（排除 `node_modules`/`dist_input`/`package-lock`）对该包名的命中**只有 `bempdiff/package.json` 自身**，另两处是历史设计文档（`WebUI迁移方案.md`、`WebUI迁移方案.md`）；
 - 其唯一消费者是同一个 `package.json` 里的死脚本 `"tauri": "tauri"`；
 - 配套的 `bempdiff/scripts/build_tauri_app.ps1` 同为死代码；
 - 与项目历史一致（2026-08-16 记录）：「`build_tauri_app.ps1` 与 `node_modules/@tauri-apps/cli` 已是死代码（未被任何脚本引用），可后续清理」；
