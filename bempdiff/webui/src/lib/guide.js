@@ -46,7 +46,7 @@ export const GUIDE_STEPS = [
   { group: 'toolbar', title: '① 选择输入（老包 / 新包）', titleKey: 'guide.step1.title', text: '在顶部左侧选择"包"或"目录"类型，然后在老包/新包输入框填入路径。支持点击浏览选择，桌面壳也支持直接拖入文件。', textKey: 'guide.step1.text', target: '.drop-zone', minWidth: 1000 },
   { group: 'toolbar', title: '② 开始比对', titleKey: 'guide.step2.title', text: '两侧路径就绪后，点击蓝色"比对"按钮（arrow-left-right 图标），后端将反编译并生成差异文件树。', textKey: 'guide.step2.text', target: '.btn-primary[title*="反编译"]', minWidth: 900 },
   // 差异文件树
-  { group: 'difftree', title: '③ 差异文件树', titleKey: 'guide.step3.title', text: '左侧为差异文件树：按层级展示修改/新增/删除/未变文件，可搜索、按状态或风险过滤。若尚未比对，此区域会显示"暂无差异"。', textKey: 'guide.step3.text', target: '.col-tree', placeholder: true },
+  { group: 'difftree', title: '③ 差异文件树', titleKey: 'guide.step3.title', text: '左侧为差异文件树：按层级展示修改/新增/删除/未变文件，可搜索、按状态或风险过滤。若尚未比对，此区域会提示先开始比对；若比对失败，失败原因会常驻显示在这里，不会与"两个包一致"混淆。', textKey: 'guide.step3.text', target: '.col-tree', placeholder: true },
   // 对比视图
   { group: 'diffview', title: '④ 双栏源码比对', titleKey: 'guide.step4.title', text: '点击差异树中的文件，中间区域展示双栏（或 Git 风格）内容比对，差异行高亮、支持换行/全屏专注等切换。', textKey: 'guide.step4.text', target: '.app-main', placeholder: true },
   // 智能分析

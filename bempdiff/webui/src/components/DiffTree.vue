@@ -733,8 +733,9 @@ function ruleTypeLabel(t) {
     <div v-if="!state.treePanelCollapsed" class="pane-head" :title="t('dt.paneTitle')">
       <i class="bi bi-diagram-3"></i> {{ t('dt.treeTitle') }}
       <span class="fw-normal" style="font-size:.75rem;color:var(--bs-secondary-color)"
-            :title="filtersActive ? t('dt.hitTitle') : t('dt.totalTitle')">
-        <template v-if="filtersActive">{{ t('dt.hitCount', { hit: hitCount, total: tree.length }) }}</template>
+            :title="state.error ? t('dt.failedCountTitle') : (filtersActive ? t('dt.hitTitle') : t('dt.totalTitle'))">
+        <template v-if="state.error">{{ t('dt.noResult') }}</template>
+        <template v-else-if="filtersActive">{{ t('dt.hitCount', { hit: hitCount, total: tree.length }) }}</template>
         <template v-else>{{ t('dt.totalCount', { total: tree.length }) }}</template>
       </span>
       <button class="btn btn-sm btn-outline-secondary border-0 ms-auto px-1 py-0"
@@ -963,8 +964,17 @@ function ruleTypeLabel(t) {
           </template>
         </div>
       </div>
-      <div v-if="!tree.length" class="text-center text-secondary py-4" style="font-size:.8rem">
-        {{ t('dt.empty') }}
+      <!-- T03669 三态空态：比对失败 / 尚未比对 / 确实无差异。
+           此前三者共用一句 dt.empty，比对失败（toast 3~5 秒后消失）就被显示成「暂无差异」，
+           在发布评审场景会被误读成「两个包完全一致」。 -->
+      <div v-if="state.error" class="dt-failed text-center py-4" style="font-size:.8rem">
+        <i class="bi bi-exclamation-octagon-fill d-block mb-1" style="font-size:1.3rem"></i>
+        <div class="fw-semibold">{{ t('dt.failed') }}</div>
+        <div class="mt-1 px-3" style="word-break:break-all">{{ state.error }}</div>
+        <div class="dt-failed-tip mt-2">{{ t('dt.failedTip') }}</div>
+      </div>
+      <div v-else-if="!tree.length" class="text-center text-secondary py-4" style="font-size:.8rem">
+        {{ state.job ? t('dt.identical') : t('dt.empty') }}
       </div>
       <!-- 修复「勾选过滤条件后机构树消失」：tree 非空但 filtered 全被过滤掉时，给出明确提示
            （避免渲染区空白用户无所适从）。常见诱因：4 个过滤全未勾选 / 搜索/风险过滤过严。 -->
@@ -1072,4 +1082,11 @@ function ruleTypeLabel(t) {
   background: var(--bs-warning-bg-subtle);
   z-index: 5;
 }
+/* T03669 比对失败态：常驻红色错误条，替代会被误读成「两个包一致」的灰色空态 */
+.dt-failed {
+  color: var(--bs-danger-text-emphasis);
+  background: var(--bs-danger-bg-subtle);
+  border-top: 1px solid var(--bs-danger-border-subtle);
+}
+.dt-failed-tip { color: var(--bs-danger); font-size: .74rem; }
 </style>

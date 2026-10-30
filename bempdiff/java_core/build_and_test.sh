@@ -84,6 +84,7 @@ echo "==> 运行 TestRunner"
   com.bempdiff.test.FolderReportTest \
   com.bempdiff.test.MarkdownReportBranchTest \
   com.bempdiff.test.JobStateTest \
+  com.bempdiff.test.CompareInputValidationTest \
   com.bempdiff.test.CompareOptionsRequestTest \
   com.bempdiff.test.UpdateCheckStubTest \
   com.bempdiff.test.NestedUnpackerBranchTest \

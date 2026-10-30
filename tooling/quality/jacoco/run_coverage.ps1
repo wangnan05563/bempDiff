@@ -23,7 +23,7 @@ $classes = @('ParseTest','DiffTest','DecompileTest','AiTest','ReportTest','Expor
   'ContextPromptTest','ContextAiTest','UnpackTest',
   'UpdateCheckServiceContractTest','ServerApiHttpTest','ServerCompareFlowTest','ServerStaticAndConfigTest',
   'MainCliTest','MainReflectTest','MarkdownParserTest','LibJarDiffTest','FolderReportTest','MarkdownReportBranchTest',
-  'JobStateTest','CompareOptionsRequestTest','UpdateCheckStubTest','NestedUnpackerBranchTest',
+  'JobStateTest','CompareInputValidationTest','CompareOptionsRequestTest','UpdateCheckStubTest','NestedUnpackerBranchTest',
   'DecompilerBranchTest','OfficeTextDiffBranchTest','FrontendTextDiffBranchTest',
   'MemoryReleaseTest','MockAiAnalyzerTest') | ForEach-Object { "com.bempdiff.test.$_" }
 $cp = @(

@@ -352,6 +352,15 @@ public final class BempServer {
             ParseConfig pc = opts.toParseConfig();
             final String mode = MODE_FOLDER.equals(leftType) ? MODE_FOLDER : "package";
 
+            // T03669：输入校验前置——路径不存在 / 类型不匹配时在「建作业」之前直接 400，
+            // 不进入解包与比对流程。此前缺失文件会一路走到 PackageParser 抛异常，错误只以
+            // 3~5 秒的 toast 出现，toast 消失后界面回落成与「两个包完全一致」无法区分的空态。
+            String inputErr = validateCompareInput(leftPath, rightPath, mode);
+            if (inputErr != null) {
+                sendError(ex, 400, inputErr);
+                return;
+            }
+
             // T02741：尊重用户在「左框=老包 / 右框=新包」的显式放置，不再按文件名版本号自动重排。
             // 旧逻辑会自动按版本升序交换 left/right，当用户放置方向与版本号不符时会出现「对比栏方向反了」。
             // 现在 leftPath/rightPath 完全由用户决定（runCompareTask 中 oldSnap=左、newSnap=右），
@@ -387,6 +396,48 @@ public final class BempServer {
             LOG.log(Level.WARNING, "比对提交失败", e);
             sendError(ex, 500, "比对提交失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 比对输入存在性校验（T03669）：返回 null 表示可以开始比对，否则返回面向用户的原因短句。
+     * 只做「能不能比」的判断，不做任何解析。原因文案不带「比对失败」前缀——
+     * 前缀由界面统一添加，两层都加会出现「比对失败：比对失败: …」的重复。
+     */
+    public static String validateCompareInput(String leftPath, String rightPath, String mode) {
+        String leftErr = validateOneInput(leftPath, "老包", mode);
+        return leftErr != null ? leftErr : validateOneInput(rightPath, "新包", mode);
+    }
+
+    private static String validateOneInput(String raw, String label, String mode) {
+        Path p;
+        try {
+            p = Paths.get(raw);
+        } catch (RuntimeException e) {
+            return label + "路径不合法：" + raw;
+        }
+        boolean folderMode = MODE_FOLDER.equals(mode);
+        if (!Files.exists(p)) {
+            return label + (folderMode ? "目录不存在：" : "文件不存在：") + p.toAbsolutePath();
+        }
+        if (folderMode && !Files.isDirectory(p)) {
+            return label + "不是目录：" + p.toAbsolutePath();
+        }
+        if (!folderMode && Files.isDirectory(p)) {
+            return label + "是目录，请改用目录对比：" + p.toAbsolutePath();
+        }
+        return null;
+    }
+
+    /** 把比对异常翻译成不带「比对失败」前缀的原因短句（前缀由界面统一加，避免重复）。 */
+    public static String describeCompareFailure(Exception e) {
+        if (e instanceof java.io.FileNotFoundException) {
+            return "文件不存在：" + e.getMessage();
+        }
+        if (e instanceof java.nio.file.NoSuchFileException) {
+            return "文件不存在：" + ((java.nio.file.NoSuchFileException) e).getFile();
+        }
+        String m = e.getMessage();
+        return (m == null || m.isEmpty()) ? e.getClass().getSimpleName() : m;
     }
 
     /** 后台比对任务：解析 → 差异计算 → 构建统计，按阶段推进进度；阶段边界检查取消请求。 */
@@ -467,7 +518,7 @@ public final class BempServer {
             }
         } catch (Exception e) {
             LOG.log(Level.WARNING, e, () -> "比对失败: " + job.id);
-            job.fail("比对失败: " + e.getMessage());
+            job.fail(describeCompareFailure(e));
         } finally {
             compareSem.release();
         }

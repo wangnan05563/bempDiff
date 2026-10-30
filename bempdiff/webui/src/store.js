@@ -276,7 +276,7 @@ export async function runCompare({ leftType, leftPath, rightPath, options }) {
       message: r.message || '已提交'
     }
     const final = await pollJob(jobId)
-    if (!final) return // 已取消 / 被新比对取代 → 不清空旧结果，直接返回
+    if (!final) return true // 已取消 / 被新比对取代 → 不清空旧结果，直接返回（作业确实提交成功过）
     state.job = final
     // 重新比对：中止并清空旧 AI 分析任务（旧任务与旧树/旧 job 不再对应，避免残留任务对新 job 误跑）
     for (const t of state.aiTasks) { const c = aiControllers.get(t.id); if (c) c.abort() }
@@ -297,9 +297,26 @@ export async function runCompare({ leftType, leftPath, rightPath, options }) {
     if (state.config && state.config.autoAiOnCompare && state.config.aiEnabled) {
       generateReport(true, { silent: true })
     }
+    return true
   } catch (e) {
-    state.error = e.message
-    toast('danger', '比对失败：' + e.message)
+    // T03669：失败必须留下持久可见的痕迹。此前只发一条 3.2 秒自动消失的 toast，toast 一走
+    // 左侧就回落成「暂无差异，请先「开始比对」」——把「没比成」显示成「两个包完全一致」，
+    // 在发布评审场景是代价最高的一类误判。这里清空上一轮结果（否则旧 job 的树与统计会冒充
+    // 本次结果），原因留在 state.error，由差异树空态与状态栏长期显示；前缀只在此处加一次。
+    state.error = e.message || String(e)
+    state.job = null
+    state.tabs = []
+    state.activeKey = null
+    state.reportMd = null
+    state.reportCache = {}
+    state.archiveChildren = {}
+    state.expandedArchives = {}
+    for (const t of state.aiTasks) { const c = aiControllers.get(t.id); if (c) c.abort() }
+    aiControllers.clear()
+    state.aiTasks = []
+    state.aiActiveTaskId = null
+    toast('danger', '比对失败：' + state.error)
+    return false
   } finally {
     state.busy = false
     state.jobProgress = null
@@ -339,14 +356,17 @@ export function triggerCompare() {
     toast('warning', '请先填写老包与新包（或目录）的路径')
     return
   }
+  // R5（二期 T01463）：成功发起的比对会话记入历史（供跨启动恢复路径对）。
+  // T03669 起按后端受理结果记录：路径不存在会被输入校验直接 400 拒绝，
+  // 这种从未真正开始的比对不再进「最近比对」，免得列表本身成为「做过」的假证据。
   runCompare({
     leftType: state.leftType,
     leftPath: state.oldPath.trim(),
     rightPath: state.newPath.trim(),
     options: buildOptions()
+  }).then((ok) => {
+    if (ok) pushCompareHistory(state.oldPath, state.newPath, state.leftType)
   })
-  // R5（二期 T01463）：成功发起的比对会话记入历史（供跨启动恢复路径对）
-  pushCompareHistory(state.oldPath, state.newPath, state.leftType)
 }
 
 // ---------------- R5 比对会话历史（二期 T01463） ----------------
